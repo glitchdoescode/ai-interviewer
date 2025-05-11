@@ -9,6 +9,7 @@ import uuid
 
 from langchain_core.tools import tool
 from ai_interviewer.models.coding_challenge import get_coding_challenge, CodingChallenge
+from ai_interviewer.tools.code_quality import CodeQualityMetrics
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -50,7 +51,13 @@ def start_coding_challenge(challenge_id: Optional[str] = None) -> Dict:
             "difficulty": challenge.difficulty,
             "starter_code": challenge.starter_code,
             "visible_test_cases": visible_test_cases,
-            "time_limit_mins": challenge.time_limit_mins
+            "time_limit_mins": challenge.time_limit_mins,
+            "evaluation_criteria": {
+                "correctness": "Code produces correct output for all test cases",
+                "efficiency": "Code uses efficient algorithms and data structures",
+                "code_quality": "Code follows best practices and style guidelines",
+                "documentation": "Code is well-documented with comments and docstrings"
+            }
         }
     except Exception as e:
         logger.error(f"Error starting coding challenge: {e}")
@@ -73,19 +80,17 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
         A dictionary containing the evaluation results
     """
     try:
-        # For MVP, we'll implement a placeholder evaluation
-        # In a real implementation, this would execute the code against test cases
         logger.info(f"Received code submission for challenge: {challenge_id}")
         
-        # Simple validation check - does the code contain more than just comments/whitespace?
-        code_without_comments = candidate_code
-        # Remove Python comments
+        # Get the challenge details
+        challenge = get_coding_challenge(challenge_id)
+        
+        # Basic validation - check for empty submission
         code_without_comments = "\n".join(
-            line for line in code_without_comments.split("\n") 
+            line for line in candidate_code.split("\n") 
             if not line.strip().startswith("#")
         )
         
-        # Check if there's actual code content (not just whitespace)
         if not code_without_comments.strip():
             return {
                 "status": "submitted",
@@ -96,12 +101,10 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
                 }
             }
         
-        # Get the challenge details to know what we're validating against
-        challenge = get_coding_challenge(challenge_id)
-        
-        # For MVP, we'll just check if certain keywords are present
-        # as a very basic proxy for correctness
-        essential_keywords = []
+        # Analyze code quality
+        quality_metrics = {}
+        if challenge.language.lower() == "python":
+            quality_metrics = CodeQualityMetrics.analyze_python_code(candidate_code)
         
         # Language-specific basic checks
         if challenge.language.lower() == "python":
@@ -111,10 +114,10 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
                     "challenge_id": challenge_id,
                     "evaluation": {
                         "passed": False,
-                        "message": "Your solution doesn't appear to define any functions."
+                        "message": "Your solution doesn't appear to define any functions.",
+                        "quality_metrics": quality_metrics
                     }
                 }
-            essential_keywords = ["return", "def"]
             
         elif challenge.language.lower() == "javascript":
             if "function " not in candidate_code and "=>" not in candidate_code:
@@ -123,32 +126,53 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
                     "challenge_id": challenge_id,
                     "evaluation": {
                         "passed": False,
-                        "message": "Your solution doesn't appear to define any functions."
+                        "message": "Your solution doesn't appear to define any functions.",
+                        "quality_metrics": quality_metrics
                     }
                 }
-            essential_keywords = ["return", "function"]
         
-        # Check if essential keywords are present
-        missing_keywords = [kw for kw in essential_keywords if kw not in candidate_code]
-        if missing_keywords:
-            return {
-                "status": "submitted",
-                "challenge_id": challenge_id,
-                "evaluation": {
-                    "passed": False,
-                    "message": f"Your solution may be missing important elements: {', '.join(missing_keywords)}"
-                }
+        # For MVP, we'll provide a detailed evaluation without actual execution
+        evaluation = {
+            "passed": True,
+            "test_results": [],
+            "quality_metrics": quality_metrics,
+            "feedback": []
+        }
+        
+        # Add quality-based feedback
+        if quality_metrics:
+            evaluation["feedback"].extend(quality_metrics.get("interpretations", []))
+            
+            # Add specific recommendations
+            if quality_metrics["complexity"]["cyclomatic_complexity"] > 10:
+                evaluation["feedback"].append(
+                    "Consider breaking down complex functions into smaller, more manageable pieces."
+                )
+            
+            if quality_metrics["documentation"]["doc_ratio"] < 0.5:
+                evaluation["feedback"].append(
+                    "Adding docstrings to functions and classes would improve code maintainability."
+                )
+            
+            if quality_metrics["style"]["pylint_score"] < 7:
+                evaluation["feedback"].append(
+                    "Review PEP 8 style guidelines to improve code readability."
+                )
+        
+        # Add test case results (placeholder for MVP)
+        for test_case in challenge.test_cases:
+            test_result = {
+                "input": test_case.input,
+                "expected_output": test_case.expected_output,
+                "passed": True,  # Placeholder - would be actual test execution result
+                "explanation": test_case.explanation
             }
+            evaluation["test_results"].append(test_result)
         
-        # For MVP, we'll assume basic correctness if it passes these simple checks
-        # and contains a reasonable amount of code
         return {
             "status": "submitted",
             "challenge_id": challenge_id,
-            "evaluation": {
-                "passed": True,
-                "message": "Your solution has been submitted and preliminarily checked. In a real environment, we would run your code against test cases."
-            }
+            "evaluation": evaluation
         }
         
     except Exception as e:
@@ -160,40 +184,57 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
 
 
 @tool
-def get_coding_hint(challenge_id: str, current_code: Optional[str] = None) -> Dict:
+def get_coding_hint(challenge_id: str, current_code: str, error_message: Optional[str] = None) -> Dict:
     """
     Get a hint for the current coding challenge.
     
     Args:
-        challenge_id: ID of the challenge the candidate is working on
-        current_code: Optional current code attempt to contextualize the hint
+        challenge_id: ID of the challenge
+        current_code: Current code state
+        error_message: Optional error message if the code is failing
         
     Returns:
-        A dictionary containing a hint for the challenge
+        Dictionary containing the hint and any additional guidance
     """
     try:
-        # Get the challenge
         challenge = get_coding_challenge(challenge_id)
-        logger.info(f"Providing hint for challenge: {challenge.id}")
         
-        if not challenge.hints:
-            return {
-                "status": "success",
-                "message": "Think about the problem step by step. Try breaking it down into smaller parts."
-            }
+        # Get available hints
+        available_hints = challenge.hints
         
-        # For MVP, simply return the first hint
-        # In a more advanced implementation, we could analyze the current code
-        # and provide a contextual hint
-        hint = challenge.hints[0]
+        # Analyze current code state
+        code_state = {
+            "has_function_definition": "def " in current_code or "function" in current_code,
+            "has_return_statement": "return" in current_code,
+            "line_count": len(current_code.splitlines())
+        }
+        
+        # Select appropriate hint based on code state
+        if not code_state["has_function_definition"]:
+            hint = "Start by defining a function with the correct name and parameters."
+        elif not code_state["has_return_statement"]:
+            hint = "Don't forget to return your result using a return statement."
+        elif error_message:
+            hint = f"Your code is raising an error: {error_message}. Check your logic and data types."
+        elif available_hints:
+            # Use the next available hint
+            hint = available_hints[0]  # In production, would track which hints were already given
+        else:
+            hint = "Try breaking down the problem into smaller steps and solve each part separately."
         
         return {
             "status": "success",
-            "message": hint
+            "hint": hint,
+            "additional_resources": [
+                "Review the problem description carefully",
+                "Look at the test cases for examples",
+                "Consider edge cases in your solution"
+            ]
         }
+        
     except Exception as e:
-        logger.error(f"Error providing coding hint: {e}")
+        logger.error(f"Error getting coding hint: {e}")
         return {
             "status": "error",
-            "message": "Failed to provide a hint. Please try again."
+            "message": "Failed to generate hint. Please try again."
         } 
