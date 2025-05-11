@@ -91,9 +91,10 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [x] Track evaluation history and trust scores
 
 *   **Task 4.4: Basic Report Generation**
-    *   [ ] Create report generation tool
-    *   [ ] Implement JSON and PDF export options
-    *   [ ] Add summary statistics and visualizations
+    *   [x] Create report generation tool with JSON and PDF support
+    *   [x] Implement performance statistics and visualizations
+    *   [x] Add state tracking for report file paths
+    *   [x] Integrate report generation into workflow
 
 ### Sprint 5: Enhanced Features & Polish
 *   **Task 5.1: Asynchronous Interview Support**
