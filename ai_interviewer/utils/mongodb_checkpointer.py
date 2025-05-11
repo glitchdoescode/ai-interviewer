@@ -55,13 +55,14 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         self.collection.create_index([("thread_id", 1), ("created_at", -1)])
         self.collection.create_index([("thread_id", 1), ("checkpoint_id", 1)], unique=True)
     
-    def put(self, config: Dict, checkpoint_data: Dict[str, Any], metadata: Dict[str, Any]) -> Dict:
+    def put(self, config: Dict, checkpoint_data: Dict[str, Any], metadata: Dict[str, Any], new_versions: Any = None) -> Dict:
         """Store a checkpoint in MongoDB.
         
         Args:
             config: Configuration containing thread ID
             checkpoint_data: The checkpoint data to store
             metadata: Additional metadata
+            new_versions: Version information (optional)
             
         Returns:
             Updated config with checkpoint ID
@@ -83,7 +84,8 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             "parent_id": config["configurable"].get("parent_id"),
             "created_at": datetime.utcnow(),
             "data": self.serializer.dumps(checkpoint_data),
-            "metadata": metadata
+            "metadata": metadata,
+            "versions": new_versions if new_versions is not None else {}
         }
         
         # Insert or update checkpoint
@@ -214,9 +216,49 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             writes: List of intermediate writes
             task_id: ID of the task
         """
-        # This is a placeholder implementation
-        # In a production setting, you might want to store these in a separate collection
-        pass
+        thread_id = config["configurable"].get("thread_id")
+        if not thread_id:
+            raise ValueError("Thread ID is required in config")
+        
+        # Get the checkpoint ID
+        checkpoint_id = config["configurable"].get("checkpoint_id")
+        if not checkpoint_id:
+            # If we don't have a checkpoint ID, we can't store intermediate writes
+            logger.warning("No checkpoint_id in config, can't store intermediate writes")
+            return
+        
+        # Create a writes collection if it doesn't exist yet
+        writes_collection_name = f"{self.collection.name}_writes"
+        writes_collection = self.db[writes_collection_name]
+        
+        # Set up indexes for the writes collection if needed
+        if writes_collection_name not in self.db.list_collection_names():
+            writes_collection.create_index([
+                ("thread_id", 1),
+                ("checkpoint_id", 1),
+                ("task_id", 1)
+            ], unique=True)
+        
+        # Store each write
+        for write in writes:
+            document = {
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint_id,
+                "task_id": task_id,
+                "write": self.serializer.dumps(write),
+                "created_at": datetime.utcnow()
+            }
+            
+            # Insert or update the write
+            writes_collection.replace_one(
+                {
+                    "thread_id": thread_id,
+                    "checkpoint_id": checkpoint_id,
+                    "task_id": task_id
+                },
+                document,
+                upsert=True
+            )
     
     def close(self):
         """Close MongoDB connection."""

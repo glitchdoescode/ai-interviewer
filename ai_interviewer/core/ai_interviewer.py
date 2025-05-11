@@ -123,25 +123,32 @@ class AIInterviewer:
         
         # Set up database connections if using MongoDB
         if use_mongodb:
-            # Get database config
-            db_config = get_db_config()
-            mongodb_uri = connection_uri or db_config["uri"]
-            
-            # Initialize MongoDB checkpointer
-            self.checkpointer = MongoDBCheckpointer(
-                connection_uri=mongodb_uri,
-                database_name=db_config["database"],
-                collection_name=db_config["sessions_collection"],
-            )
-            
-            # Initialize session manager
-            self.session_manager = SessionManager(
-                connection_uri=mongodb_uri,
-                database_name=db_config["database"],
-                collection_name=db_config["metadata_collection"],
-            )
-            
-            logger.info("Using MongoDB for persistence")
+            try:
+                # Get database config
+                db_config = get_db_config()
+                mongodb_uri = connection_uri or db_config["uri"]
+                
+                # Initialize MongoDB checkpointer
+                self.checkpointer = MongoDBCheckpointer(
+                    connection_uri=mongodb_uri,
+                    database_name=db_config["database"],
+                    collection_name=db_config["sessions_collection"],
+                )
+                
+                # Initialize session manager
+                self.session_manager = SessionManager(
+                    connection_uri=mongodb_uri,
+                    database_name=db_config["database"],
+                    collection_name=db_config["metadata_collection"],
+                )
+                
+                logger.info("Using MongoDB for persistence")
+            except Exception as e:
+                # If there's an error with MongoDB, fall back to in-memory persistence
+                logger.warning(f"Failed to connect to MongoDB: {e}. Falling back to in-memory persistence.")
+                self.checkpointer = InMemorySaver()
+                self.session_manager = None
+                logger.info("Using in-memory persistence as fallback")
         else:
             # Use in-memory persistence
             self.checkpointer = InMemorySaver()
