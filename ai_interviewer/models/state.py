@@ -26,6 +26,7 @@ class InterviewState(MessagesState):
         coding_challenge_state: State related to coding challenges
         evaluation: Complete interview evaluation using rubric
         interview_stage: Current stage of the interview
+        reports: Paths to generated reports
     """
     # Required for identification
     interview_id: str
@@ -44,6 +45,9 @@ class InterviewState(MessagesState):
     
     # Evaluation using our rubric
     evaluation: InterviewEvaluation = InterviewEvaluation(trust_score=0.0)
+    
+    # Report paths
+    reports: Dict[str, str] = {}  # Paths to generated reports (e.g., {"json_path": "...", "pdf_path": "..."})
     
     # Workflow state
     interview_stage: str = "greeting"  # greeting, qa, coding, feedback, finished

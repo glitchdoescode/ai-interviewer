@@ -16,6 +16,7 @@ from ai_interviewer.models.state import InterviewState
 from ai_interviewer.tools.basic_tools import get_next_question, submit_answer
 from ai_interviewer.tools.dynamic_tools import generate_interview_question, evaluate_candidate_response
 from ai_interviewer.tools.coding_tools import start_coding_challenge, submit_code_for_challenge, get_coding_hint
+from ai_interviewer.tools.report_tools import generate_interview_report
 from langgraph.checkpoint.memory import MemorySaver
 
 # Configure logging
@@ -297,6 +298,37 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 # Update the coding challenge state in the main state
                 normalized_state["coding_challenge_state"] = coding_challenge_state
                 
+            # Handle generate_interview_report
+            elif tool_name == "generate_interview_report":
+                # Extract tool arguments
+                interview_id = tool_args.get("interview_id", normalized_state.get("interview_id"))
+                candidate_id = tool_args.get("candidate_id", normalized_state.get("candidate_id"))
+                output_format = tool_args.get("output_format", "both")
+                
+                # Get the evaluation from state
+                evaluation = normalized_state.get("evaluation")
+                if not evaluation:
+                    logger.warning("No evaluation data found in state")
+                    continue
+                
+                # Generate the report
+                result = generate_interview_report(
+                    interview_id=interview_id,
+                    candidate_id=candidate_id,
+                    evaluation=evaluation,
+                    output_format=output_format
+                )
+                
+                # Store report paths in state if generation was successful
+                if result.get("success", False):
+                    if "reports" not in normalized_state:
+                        normalized_state["reports"] = {}
+                    
+                    if "json_path" in result:
+                        normalized_state["reports"]["json_path"] = result["json_path"]
+                    if "pdf_path" in result:
+                        normalized_state["reports"]["pdf_path"] = result["pdf_path"]
+            
             else:
                 logger.warning(f"Unknown tool name: {tool_name}")
                 
