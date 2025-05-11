@@ -113,10 +113,13 @@ class VoiceInterviewCLI:
                 silence_duration=self.silence_duration
             )
             
-            # If empty transcription, retry
+            # If empty transcription or error, retry
             if not user_input:
-                print("❌ Nothing heard. Please try again.")
+                print("❌ Nothing heard or transcription failed. Please try again.")
                 continue
+            
+            # Add debug logging of transcription
+            logger.debug(f"Transcribed text: {user_input[:100]}{'...' if len(user_input) > 100 else ''}")
                 
             print(f"👤 You: {user_input}")
             

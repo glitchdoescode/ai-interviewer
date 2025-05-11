@@ -46,9 +46,9 @@ class DeepgramSTT:
         self.default_params = {
             "model": "nova-2",
             "language": "en",
-            "smart_format": True,
-            "punctuate": True,
-            "utterances": True  # Include utterance boundaries
+            "smart_format": "true",  # Use string values for boolean params
+            "punctuate": "true",     # API expects "true"/"false" as strings
+            "utterances": "true"     # Include utterance boundaries
         }
         
         logger.info("Initialized Deepgram STT client")
@@ -68,7 +68,12 @@ class DeepgramSTT:
         # Combine default and custom parameters
         request_params = {**self.default_params, **(params or {})}
         
-        # Construct query parameters
+        # Convert boolean parameters to string "true"/"false" for API compatibility
+        for key, value in request_params.items():
+            if isinstance(value, bool):
+                request_params[key] = "true" if value else "false"
+        
+                    # Construct query parameters
         query_params = "&".join([f"{k}={v}" for k, v in request_params.items()])
         url = f"{self.base_url}?{query_params}"
         
@@ -76,6 +81,11 @@ class DeepgramSTT:
             "Authorization": f"Token {self.api_key}",
             "Content-Type": "audio/wav"  # Assuming WAV format - adjust as needed
         }
+        
+        # Log request details for debugging
+        logger.debug(f"STT API request to: {url}")
+        logger.debug(f"STT API headers: {headers}")
+        logger.debug(f"STT API params: {request_params}")
         
         try:
             # Handle string/Path or file-like object
@@ -87,17 +97,27 @@ class DeepgramSTT:
                 audio_file.seek(0)
                 audio_data = audio_file.read()
             
+            logger.debug(f"Audio data size: {len(audio_data)} bytes")
+            
             # Make API request
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, data=audio_data) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Deepgram API error: {response.status} - {error_text}")
-                        return {
-                            "success": False,
-                            "error": f"API error: {response.status}",
-                            "details": error_text
-                        }
+                try:
+                    async with session.post(url, headers=headers, data=audio_data) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.error(f"Deepgram STT API error: {response.status} - {error_text}")
+                            logger.error(f"Request URL was: {url}")
+                            return {
+                                "success": False,
+                                "error": f"API error: {response.status}",
+                                "details": error_text
+                            }
+                except aiohttp.ClientError as e:
+                    logger.error(f"STT API request failed: {e}")
+                    return {
+                        "success": False,
+                        "error": f"API request failed: {str(e)}"
+                    }
                     
                     result = await response.json()
                     
@@ -253,14 +273,19 @@ class DeepgramSTT:
                 elif has_speech:
                     silence_count += 1
                 
-                # Show audio level for debugging
+                # Show audio level visualization
                 if i % 5 == 0:  # Update every ~0.3 seconds at 16kHz
                     bars = int(audio_level * 50)
                     # Only print if we have significant audio or every second
                     if audio_level > silence_threshold or i % (sample_rate // chunk_size) == 0:
                         seconds_passed = i / (sample_rate / chunk_size)
+                        silence_count_display = silence_count if has_speech else 0
+                        silence_progress = min(1.0, silence_count / silence_threshold_count) if has_speech else 0
+                        silence_bar = f"[{'#' * int(silence_progress * 10)}{' ' * (10 - int(silence_progress * 10))}]"
+                        
                         print(f"\rRecording: {seconds_passed:.1f}s {'|' * bars}{' ' * (50-bars)} "
-                              f"[{'Active' if audio_level > silence_threshold else 'Silent'}]", end="")
+                              f"{'🎙️ ACTIVE' if audio_level > silence_threshold else '⏸️ SILENT'} "
+                              f"Pause: {silence_count_display}/{silence_threshold_count} {silence_bar}", end="")
                 
                 # Exit if we've had enough silence after speech
                 if has_speech and silence_count >= silence_threshold_count:
@@ -335,6 +360,9 @@ class DeepgramTTS:
             "container": "wav"
         }
         
+        logger.debug("Deepgram TTS initialized with default parameters")
+        logger.debug(f"TTS model: {self.default_params['model']}, voice: {self.default_params['voice']}")
+        
         logger.info("Initialized Deepgram TTS client")
     
     async def synthesize_speech(self, 
@@ -357,7 +385,12 @@ class DeepgramTTS:
         # Combine default and custom parameters
         request_params = {**self.default_params, **(params or {})}
         
-        # Prepare request payload
+        # Convert boolean parameters to string "true"/"false" for API compatibility
+        for key, value in request_params.items():
+            if isinstance(value, bool):
+                request_params[key] = "true" if value else "false"
+        
+        # Prepare request payload (must contain either 'text' or 'url', not both)
         payload = {
             "text": text,
             **request_params
@@ -369,17 +402,30 @@ class DeepgramTTS:
         }
         
         try:
+            # Log API request details for debugging
+            logger.debug(f"TTS API request to: {self.base_url}")
+            logger.debug(f"TTS API headers: {headers}")
+            logger.debug(f"TTS API payload: {json.dumps(payload, indent=2)}")
+            
             # Make API request
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.base_url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Deepgram API error: {response.status} - {error_text}")
-                        return {
-                            "success": False,
-                            "error": f"API error: {response.status}",
-                            "details": error_text
-                        }
+                try:
+                    async with session.post(self.base_url, headers=headers, json=payload) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.error(f"Deepgram TTS API error: {response.status} - {error_text}")
+                            logger.error(f"Request payload was: {json.dumps(payload)}")
+                            return {
+                                "success": False,
+                                "error": f"API error: {response.status}",
+                                "details": error_text
+                            }
+                except aiohttp.ClientError as e:
+                    logger.error(f"TTS API request failed: {e}")
+                    return {
+                        "success": False,
+                        "error": f"API request failed: {str(e)}"
+                    }
                     
                     # Get binary audio data
                     audio_data = await response.read()
