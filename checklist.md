@@ -147,20 +147,20 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Iteration 1: Real-time Conversational Interaction (STT/TTS) - *Post MVP Core Logic*
 *   **Task P2.1.1: Research STT/TTS Options**
-    *   [ ] Identify suitable Python libraries or cloud APIs for Speech-to-Text and Text-to-Speech (e.g., Google Speech-to-Text/Text-to-Speech, Azure Cognitive Services, open-source options like Whisper/Piper).
+    *   [x] Identify suitable Python libraries or cloud APIs for Speech-to-Text and Text-to-Speech (e.g., Google Speech-to-Text/Text-to-Speech, Azure Cognitive Services, open-source options like Whisper/Piper).
 *   **Task P2.1.2: Integrate STT**
-    *   [ ] Modify the test chat interface to accept audio input (e.g., record from microphone).
-    *   [ ] Send audio to STT service and get text.
-    *   [ ] Pass transcribed text to the LangGraph application.
+    *   [x] Modify the test chat interface to accept audio input (e.g., record from microphone).
+    *   [x] Send audio to STT service and get text.
+    *   [x] Pass transcribed text to the LangGraph application.
 *   **Task P2.1.3: Integrate TTS**
-    *   [ ] Take the AI interviewer's text response from LangGraph.
-    *   [ ] Send text to TTS service to generate audio.
-    *   [ ] Play back the audio response in the test chat interface.
+    *   [x] Take the AI interviewer's text response from LangGraph.
+    *   [x] Send text to TTS service to generate audio.
+    *   [x] Play back the audio response in the test chat interface.
 *   **Task P2.1.4: Refine Interaction Flow**
-    *   [ ] Adjust agent prompts or interface for voice interaction (e.g., "Speak your answer now").
-    *   [ ] Handle potential STT/TTS errors gracefully.
+    *   [x] Adjust agent prompts or interface for voice interaction (e.g., "Speak your answer now").
+    *   [x] Handle potential STT/TTS errors gracefully.
 *   **Task P2.1.5: Test Voice-Enabled Chat Interface**
-    *   [ ] Conduct E2E tests using voice input and receiving voice output.
+    *   [x] Conduct E2E tests using voice input and receiving voice output.
 
 ### Iteration 2: Advanced AI Interviewer & Adaptive Q&A
 *   **Task P2.2.1: Enhance `DynamicQuestionGenerationTool`**

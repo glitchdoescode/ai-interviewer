@@ -64,9 +64,12 @@ class VoiceInterviewCLI:
         self.recording_duration = speech_config["recording_duration"]
         self.sample_rate = speech_config["sample_rate"]
         self.tts_voice = speech_config["tts_voice"]
+        self.silence_threshold = speech_config["silence_threshold"]
+        self.silence_duration = speech_config["silence_duration"]
         
-        logger.info(f"Voice CLI initialized with recording duration: {self.recording_duration}s, "
-                   f"sample rate: {self.sample_rate}Hz, voice: {self.tts_voice}")
+        logger.info(f"Voice CLI initialized with max recording: {self.recording_duration}s, "
+                   f"sample rate: {self.sample_rate}Hz, voice: {self.tts_voice}, "
+                   f"silence detection: {self.silence_duration}s pause at threshold {self.silence_threshold}")
     
     async def start_interview(self):
         """Start an interactive voice-based interview session."""
@@ -100,12 +103,14 @@ class VoiceInterviewCLI:
         
         # Interview loop
         while True:
-            # Listen for user input
-            print("\n🎙️ Listening... (speak now)")
+            # Listen for user input with silence detection
+            print("\n🎙️ Listening... (speak now, pause for 2s to finish)")
             user_input = await self.voice_handler.listen(
                 duration_seconds=self.recording_duration,
                 sample_rate=self.sample_rate,
-                channels=1
+                channels=1,
+                silence_threshold=self.silence_threshold,
+                silence_duration=self.silence_duration
             )
             
             # If empty transcription, retry
@@ -197,10 +202,22 @@ def parse_args():
         help="Save interview transcript to the specified file"
     )
     parser.add_argument(
-        "--duration", 
+        "--max-duration", 
         type=float, 
-        default=10.0,
-        help="Recording duration in seconds (default: 10.0)"
+        default=30.0,
+        help="Maximum recording duration in seconds (default: 30.0)"
+    )
+    parser.add_argument(
+        "--silence-duration", 
+        type=float, 
+        default=2.0,
+        help="How long of a pause (in seconds) before ending recording (default: 2.0)"
+    )
+    parser.add_argument(
+        "--silence-threshold", 
+        type=float, 
+        default=0.03,
+        help="Volume threshold to detect silence (0.0-1.0) (default: 0.03)"
     )
     parser.add_argument(
         "--voice", 
@@ -236,8 +253,12 @@ async def _main():
         cli = VoiceInterviewCLI(api_key=api_key)
         
         # Override defaults with command line arguments
-        if args.duration:
-            cli.recording_duration = args.duration
+        if args.max_duration:
+            cli.recording_duration = args.max_duration
+        if args.silence_duration:
+            cli.silence_duration = args.silence_duration
+        if args.silence_threshold:
+            cli.silence_threshold = args.silence_threshold
         if args.voice:
             cli.tts_voice = args.voice
         

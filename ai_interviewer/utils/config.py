@@ -35,9 +35,11 @@ MAX_SESSION_HISTORY = int(os.environ.get("MAX_SESSION_HISTORY", "50"))
 
 # Speech configuration
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
-SPEECH_RECORDING_DURATION = float(os.environ.get("SPEECH_RECORDING_DURATION", "10.0"))
+SPEECH_RECORDING_DURATION = float(os.environ.get("SPEECH_RECORDING_DURATION", "30.0"))  # Max recording duration
 SPEECH_SAMPLE_RATE = int(os.environ.get("SPEECH_SAMPLE_RATE", "16000"))
 SPEECH_TTS_VOICE = os.environ.get("SPEECH_TTS_VOICE", "nova")
+SPEECH_SILENCE_THRESHOLD = float(os.environ.get("SPEECH_SILENCE_THRESHOLD", "0.03"))  # Volume threshold to detect silence
+SPEECH_SILENCE_DURATION = float(os.environ.get("SPEECH_SILENCE_DURATION", "2.0"))  # Seconds of silence to stop recording
 
 def get_db_config() -> Dict[str, str]:
     """
@@ -102,6 +104,8 @@ def get_speech_config() -> Dict[str, Any]:
         "recording_duration": SPEECH_RECORDING_DURATION,
         "sample_rate": SPEECH_SAMPLE_RATE,
         "tts_voice": SPEECH_TTS_VOICE,
+        "silence_threshold": SPEECH_SILENCE_THRESHOLD,
+        "silence_duration": SPEECH_SILENCE_DURATION,
     }
 
 def log_config():
@@ -115,6 +119,8 @@ def log_config():
     logger.info(f"- Session Timeout: {SESSION_TIMEOUT_MINUTES} minutes")
     logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages")
     logger.info(f"- Speech TTS Voice: {SPEECH_TTS_VOICE}")
-    logger.info(f"- Speech Recording Duration: {SPEECH_RECORDING_DURATION} seconds")
+    logger.info(f"- Speech Recording Max Duration: {SPEECH_RECORDING_DURATION} seconds")
     logger.info(f"- Speech Sample Rate: {SPEECH_SAMPLE_RATE} Hz")
+    logger.info(f"- Speech Silence Threshold: {SPEECH_SILENCE_THRESHOLD}")
+    logger.info(f"- Speech Silence Duration: {SPEECH_SILENCE_DURATION} seconds")
     logger.info(f"- Deepgram API Key: {'Configured' if DEEPGRAM_API_KEY else 'Not configured'}") 

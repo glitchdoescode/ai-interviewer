@@ -11,7 +11,8 @@ The AI Interviewer now supports voice interactions through speech-to-text (STT) 
 - **Speech-to-Text**: Record your voice responses and have them automatically transcribed
 - **Text-to-Speech**: Listen to the interviewer's responses in a natural-sounding voice
 - **Voice-Enabled CLI**: Conduct entire interviews using voice input/output
-- **Customizable Voice Settings**: Adjust recording duration, sample rate, and TTS voice
+- **Voice Activity Detection**: Smart recording that automatically stops when you pause
+- **Customizable Voice Settings**: Adjust silence detection parameters, sample rate, and TTS voice
 
 ## Prerequisites
 
@@ -54,9 +55,11 @@ The AI Interviewer now supports voice interactions through speech-to-text (STT) 
 
 2. **Customize speech settings** (optional) in `.env`:
    ```
-   SPEECH_RECORDING_DURATION=8.0
-   SPEECH_SAMPLE_RATE=16000
-   SPEECH_TTS_VOICE=nova
+   SPEECH_RECORDING_DURATION=30.0      # Maximum recording duration
+   SPEECH_SAMPLE_RATE=16000           # Audio sample rate in Hz
+   SPEECH_TTS_VOICE=nova              # Voice to use for TTS
+   SPEECH_SILENCE_THRESHOLD=0.03      # Volume threshold for silence detection (0.0-1.0)
+   SPEECH_SILENCE_DURATION=2.0        # Seconds of silence to end recording
    ```
 
 ## Usage
@@ -71,7 +74,9 @@ python -m ai_interviewer.voice_cli
 
 Options:
 - `--api-key KEY`: Manually provide a Deepgram API key
-- `--duration SECONDS`: Set recording duration (default: 10.0)
+- `--max-duration SECONDS`: Set maximum recording duration (default: 30.0)
+- `--silence-duration SECONDS`: Set pause duration to end recording (default: 2.0)
+- `--silence-threshold VALUE`: Set volume threshold for silence (default: 0.03)
 - `--voice VOICE`: Set TTS voice (default: nova)
 - `--save FILENAME`: Automatically save transcript to specified file
 - `--debug`: Enable debug logging
@@ -79,11 +84,14 @@ Options:
 ### Basic Interaction Flow
 
 1. The CLI will greet you and begin the interview
-2. When it's your turn to speak, the system will show "🎙️ Listening..."
+2. When it's your turn to speak, the system will show "🎙️ Listening... (speak now, pause for 2s to finish)"
 3. Speak clearly into your microphone
-4. Your transcribed response will be shown, and the AI will respond
-5. The AI's response will be both displayed and spoken aloud
-6. To end the interview, simply say "exit" or "quit"
+4. When you pause for the configured duration (default 2 seconds), recording will automatically stop
+5. Your transcribed response will be shown, and the AI will respond
+6. The AI's response will be both displayed and spoken aloud
+7. To end the interview, simply say "exit" or "quit"
+
+The recording will show audio levels in real-time, making it easy to see when your voice is being detected:
 
 ## Troubleshooting
 

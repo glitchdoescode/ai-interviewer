@@ -118,30 +118,36 @@ class DeepgramSTT:
             }
     
     async def transcribe_microphone(self, 
-                                  duration_seconds: float = 10.0,
+                                  duration_seconds: float = 30.0,
                                   sample_rate: int = 16000,
                                   channels: int = 1,
                                   chunk_size: int = 1024,
+                                  silence_threshold: float = 0.03,
+                                  silence_duration: float = 2.0,
                                   params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Record audio from microphone and transcribe using Deepgram's API.
         
         Args:
-            duration_seconds: Duration to record in seconds
+            duration_seconds: Maximum duration to record in seconds
             sample_rate: Audio sample rate
             channels: Number of audio channels
             chunk_size: Audio chunk size for recording
+            silence_threshold: Volume threshold to detect silence (0.0-1.0)
+            silence_duration: Duration of silence in seconds to stop recording
             params: Additional parameters to pass to Deepgram API
             
         Returns:
             Dictionary with transcription results
         """
-        # Record audio from microphone
+        # Record audio from microphone with voice activity detection
         audio_data = await self._record_audio(
             duration_seconds=duration_seconds,
             sample_rate=sample_rate,
             channels=channels,
-            chunk_size=chunk_size
+            chunk_size=chunk_size,
+            silence_threshold=silence_threshold,
+            silence_duration=silence_duration
         )
         
         if not audio_data.get("success", False):
@@ -177,18 +183,22 @@ class DeepgramSTT:
                     logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
     
     async def _record_audio(self, 
-                         duration_seconds: float = 10.0,
+                         duration_seconds: float = 30.0,
                          sample_rate: int = 16000,
                          channels: int = 1,
-                         chunk_size: int = 1024) -> Dict[str, Any]:
+                         chunk_size: int = 1024,
+                         silence_threshold: float = 0.03,
+                         silence_duration: float = 2.0) -> Dict[str, Any]:
         """
-        Record audio from microphone.
+        Record audio from microphone with voice activity detection.
         
         Args:
-            duration_seconds: Duration to record in seconds
+            duration_seconds: Maximum duration to record in seconds
             sample_rate: Audio sample rate
             channels: Number of audio channels
             chunk_size: Audio chunk size for recording
+            silence_threshold: Volume threshold to detect silence (0.0-1.0)
+            silence_duration: Duration of silence in seconds to stop recording
             
         Returns:
             Dictionary with audio data
@@ -215,22 +225,53 @@ class DeepgramSTT:
                 frames_per_buffer=chunk_size
             )
             
-            print(f"Recording for {duration_seconds} seconds...")
+            print(f"Recording... (speak now, pause for {silence_duration:.1f}s to finish)")
             
-            # Calculate number of frames to record
+            # Calculate parameters for silence detection
             frames = []
-            total_chunks = int(sample_rate / chunk_size * duration_seconds)
+            silence_threshold_count = int(silence_duration * sample_rate / chunk_size)
+            max_chunks = int(sample_rate / chunk_size * duration_seconds)
+            silence_count = 0
+            has_speech = False
+            chunks_recorded = 0
             
-            # Record audio
-            for _ in range(total_chunks):
-                data = stream.read(chunk_size)
+            # Record audio with silence detection
+            for i in range(max_chunks):
+                data = stream.read(chunk_size, exception_on_overflow=False)
                 frames.append(data)
-                # Show progress every second
-                if _ % int(sample_rate / chunk_size) == 0:
-                    seconds_passed = _ / (sample_rate / chunk_size)
-                    print(f"Recording: {seconds_passed:.1f}s / {duration_seconds:.1f}s")
+                chunks_recorded += 1
+                
+                # Calculate audio level to detect silence
+                audio_array = np.frombuffer(data, dtype=np.int16)
+                audio_level = np.abs(audio_array).mean() / 32767.0  # Normalize to 0.0-1.0
+                
+                # If we detect speech, reset silence counter
+                if audio_level > silence_threshold:
+                    silence_count = 0
+                    has_speech = True
+                # If we detect silence, increment counter
+                elif has_speech:
+                    silence_count += 1
+                
+                # Show audio level for debugging
+                if i % 5 == 0:  # Update every ~0.3 seconds at 16kHz
+                    bars = int(audio_level * 50)
+                    # Only print if we have significant audio or every second
+                    if audio_level > silence_threshold or i % (sample_rate // chunk_size) == 0:
+                        seconds_passed = i / (sample_rate / chunk_size)
+                        print(f"\rRecording: {seconds_passed:.1f}s {'|' * bars}{' ' * (50-bars)} "
+                              f"[{'Active' if audio_level > silence_threshold else 'Silent'}]", end="")
+                
+                # Exit if we've had enough silence after speech
+                if has_speech and silence_count >= silence_threshold_count:
+                    print("\nDetected end of speech (pause).")
+                    break
             
-            print("Recording complete.")
+            # We got to the end of max duration without detecting silence
+            if chunks_recorded >= max_chunks:
+                print("\nReached maximum recording duration.")
+            else:
+                print(f"Recording complete after {chunks_recorded * chunk_size / sample_rate:.1f} seconds.")
             
             # Stop and close the stream
             stream.stop_stream()
@@ -240,12 +281,20 @@ class DeepgramSTT:
             # Combine all frames into a single audio buffer
             audio_data = b''.join(frames)
             
+            # If we didn't record any meaningful audio, return an error
+            if not has_speech or len(frames) < 5:  # Arbitrary minimum length
+                logger.warning("No meaningful speech detected in recording")
+                return {
+                    "success": False,
+                    "error": "No speech detected during recording"
+                }
+            
             return {
                 "success": True,
                 "audio_data": audio_data,
                 "sample_rate": sample_rate,
                 "channels": channels,
-                "duration": duration_seconds
+                "duration": chunks_recorded * chunk_size / sample_rate
             }
             
         except Exception as e:
@@ -445,16 +494,20 @@ class VoiceHandler:
         logger.info("Initialized VoiceHandler")
     
     async def listen(self, 
-                  duration_seconds: float = 10.0,
+                  duration_seconds: float = 30.0,
                   sample_rate: int = 16000,
-                  channels: int = 1) -> str:
+                  channels: int = 1,
+                  silence_threshold: float = 0.03,
+                  silence_duration: float = 2.0) -> str:
         """
         Record audio from microphone and convert to text.
         
         Args:
-            duration_seconds: Duration to record in seconds
+            duration_seconds: Maximum duration to record in seconds
             sample_rate: Audio sample rate
             channels: Number of audio channels
+            silence_threshold: Volume threshold to detect silence (0.0-1.0)
+            silence_duration: Duration of silence in seconds to stop recording
             
         Returns:
             Transcribed text (empty string if failed)
@@ -462,7 +515,9 @@ class VoiceHandler:
         result = await self.stt.transcribe_microphone(
             duration_seconds=duration_seconds,
             sample_rate=sample_rate,
-            channels=channels
+            channels=channels,
+            silence_threshold=silence_threshold,
+            silence_duration=silence_duration
         )
         
         if result.get("success", False):
