@@ -10,6 +10,8 @@ import uuid
 from langchain_core.tools import tool
 from ai_interviewer.models.coding_challenge import get_coding_challenge, CodingChallenge
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
+from ai_interviewer.tools.code_execution import CodeExecutor, SafetyChecker
+from ai_interviewer.tools.code_feedback import CodeFeedbackGenerator
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -73,16 +75,17 @@ def start_coding_challenge(challenge_id: Optional[str] = None) -> Dict:
 
 
 @tool
-def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
+def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_level: str = "intermediate") -> Dict:
     """
     Submit a candidate's code solution for evaluation.
     
     Args:
         challenge_id: ID of the challenge being solved
         candidate_code: The code solution provided by the candidate
+        skill_level: Skill level of the candidate (beginner, intermediate, advanced)
         
     Returns:
-        A dictionary containing the evaluation results
+        A dictionary containing the detailed evaluation results
     """
     try:
         logger.info(f"Received code submission for challenge: {challenge_id}")
@@ -106,93 +109,80 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
                 }
             }
         
-        # Analyze code quality
-        quality_metrics = {}
+        # Check code safety before execution
+        is_safe = True
+        safety_message = ""
+        
         if challenge.language.lower() == "python":
-            quality_metrics = CodeQualityMetrics.analyze_python_code(candidate_code)
+            is_safe, safety_message = SafetyChecker.check_python_code_safety(candidate_code)
         
-        # Language-specific basic checks
-        if challenge.language.lower() == "python":
-            if "def " not in candidate_code:
-                return {
-                    "status": "submitted",
-                    "challenge_id": challenge_id,
-                    "evaluation": {
-                        "passed": False,
-                        "message": "Your solution doesn't appear to define any functions.",
-                        "quality_metrics": quality_metrics
-                    }
+        if not is_safe:
+            return {
+                "status": "security_error",
+                "challenge_id": challenge_id,
+                "evaluation": {
+                    "passed": False,
+                    "message": f"Security check failed: {safety_message}. Please remove unsafe operations."
                 }
-            
-        elif challenge.language.lower() == "javascript":
-            if "function " not in candidate_code and "=>" not in candidate_code:
-                return {
-                    "status": "submitted",
-                    "challenge_id": challenge_id,
-                    "evaluation": {
-                        "passed": False,
-                        "message": "Your solution doesn't appear to define any functions.",
-                        "quality_metrics": quality_metrics
-                    }
-                }
-        
-        # For MVP, we'll provide a detailed evaluation without actual execution
-        evaluation = {
-            "passed": True,
-            "test_results": [],
-            "quality_metrics": quality_metrics,
-            "feedback": []
-        }
-        
-        # Add quality-based feedback
-        if quality_metrics:
-            evaluation["feedback"].extend(quality_metrics.get("interpretations", []))
-            
-            # Add specific recommendations
-            if quality_metrics.get("complexity", {}).get("cyclomatic_complexity", 0) > 10:
-                evaluation["feedback"].append(
-                    "Consider breaking down complex functions into smaller, more manageable pieces."
-                )
-            
-            if quality_metrics.get("documentation", {}).get("doc_ratio", 0) < 0.5:
-                evaluation["feedback"].append(
-                    "Adding docstrings to functions and classes would improve code maintainability."
-                )
-            
-            if quality_metrics.get("style", {}).get("pylint_score", 0) < 7:
-                evaluation["feedback"].append(
-                    "Review PEP 8 style guidelines to improve code readability."
-                )
-        
-        # Add test case results (placeholder for MVP)
-        for test_case in challenge.test_cases:
-            test_result = {
-                "input": test_case.input,
-                "expected_output": test_case.expected_output,
-                "passed": True,  # Placeholder - would be actual test execution result
-                "explanation": test_case.explanation
             }
-            evaluation["test_results"].append(test_result)
         
-        # Get AI pair programming suggestions
-        from ai_interviewer.tools.pair_programming import suggest_code_improvements, review_code_section
-        suggestions = suggest_code_improvements.invoke({"code": candidate_code})
-        if suggestions["status"] == "success":
-            evaluation["ai_suggestions"] = suggestions["suggestions"]
+        # Execute the code against test cases
+        execution_results = {}
         
-        # Add code review
-        review = review_code_section.invoke({"code": candidate_code})
-        if review["status"] == "success":
-            evaluation["code_review"] = review["review"]
+        if challenge.language.lower() == "python":
+            # Extract all test cases (including hidden)
+            test_cases = [
+                {
+                    "input": tc.input,
+                    "expected_output": tc.expected_output,
+                    "explanation": tc.explanation,
+                    "is_hidden": tc.is_hidden
+                }
+                for tc in challenge.test_cases
+            ]
+            
+            # Execute the code
+            execution_results = CodeExecutor.execute_python_code(
+                code=candidate_code,
+                test_cases=test_cases,
+                timeout=challenge.time_limit_mins * 60  # Convert minutes to seconds
+            )
+        elif challenge.language.lower() == "javascript":
+            # JavaScript execution is a placeholder for now
+            execution_results = CodeExecutor.execute_javascript_code(
+                code=candidate_code,
+                test_cases=[tc.dict() for tc in challenge.test_cases]
+            )
         
+        # Generate detailed feedback
+        feedback = CodeFeedbackGenerator.generate_feedback(
+            code=candidate_code,
+            execution_results=execution_results,
+            language=challenge.language,
+            skill_level=skill_level
+        )
+        
+        # Return detailed evaluation
         return {
             "status": "submitted",
             "challenge_id": challenge_id,
-            "evaluation": evaluation
+            "execution_results": execution_results,
+            "feedback": feedback,
+            "evaluation": {
+                "passed": execution_results.get("all_passed", False),
+                "pass_rate": feedback["correctness"].get("pass_rate", 0),
+                "code_quality_score": feedback["code_quality"].get("overall_score", 0),
+                "summary": feedback["summary"],
+                "suggestions": feedback["suggestions"],
+                "strengths": feedback["strengths"],
+                "areas_for_improvement": feedback["areas_for_improvement"]
+            }
         }
         
     except Exception as e:
         logger.error(f"Error processing code submission: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "status": "error",
             "message": str(e)
@@ -215,6 +205,16 @@ def get_coding_hint(challenge_id: str, current_code: str, error_message: Optiona
     try:
         # Get the challenge details
         challenge = get_coding_challenge(challenge_id)
+        
+        # Check if there are predefined hints available
+        if challenge.hints:
+            # Return a predefined hint
+            hint_index = 0  # In a full implementation, this would track how many hints were already given
+            return {
+                "status": "success",
+                "challenge_id": challenge_id,
+                "hint": challenge.hints[hint_index % len(challenge.hints)]
+            }
         
         # Get code suggestions
         from ai_interviewer.tools.pair_programming import suggest_code_improvements, complete_code
@@ -249,14 +249,22 @@ def get_coding_hint(challenge_id: str, current_code: str, error_message: Optiona
             hints.append("Consider completing the implementation:")
             hints.append(completion["completion"])
         
+        # If still no hints, provide a generic hint
+        if not hints:
+            hints = [
+                "Break down the problem step by step.",
+                f"For this {challenge.difficulty} challenge, consider the edge cases carefully.",
+                "Try working through a simple example manually to understand the solution process."
+            ]
+        
         return {
             "status": "success",
-            "hints": hints,
-            "message": "\n".join(hints)
+            "challenge_id": challenge_id,
+            "hints": hints
         }
         
     except Exception as e:
-        logger.error(f"Error getting coding hint: {e}")
+        logger.error(f"Error generating hint: {e}")
         return {
             "status": "error",
             "message": str(e)

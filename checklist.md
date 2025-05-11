@@ -129,14 +129,14 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Sprint 6: Enhanced Features & Polish
 *   **Task 6.1: Asynchronous Interview Support**
-    *   [ ] Implement session management
-    *   [ ] Add state persistence between sessions
-    *   [ ] Handle interview resumption
+    *   [x] Implement session management
+    *   [x] Add state persistence between sessions
+    *   [x] Handle interview resumption
 
 *   **Task 6.2: Improved Coding Evaluation**
-    *   [ ] Add code quality metrics
-    *   [ ] Implement more detailed test cases
-    *   [ ] Enhanced feedback generation
+    *   [x] Add code quality metrics
+    *   [x] Implement more detailed test cases
+    *   [x] Enhanced feedback generation
 
 *   **Task 6.3: AI Pair Programming**
     *   [ ] Design hint generation system
