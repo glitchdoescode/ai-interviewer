@@ -27,6 +27,7 @@ class InterviewState(MessagesState):
         evaluation: Complete interview evaluation using rubric
         interview_stage: Current stage of the interview
         reports: Paths to generated reports
+        session_metadata: Metadata for asynchronous session management
     """
     # Required for identification
     interview_id: str
@@ -46,9 +47,22 @@ class InterviewState(MessagesState):
     # Evaluation using our rubric
     evaluation: InterviewEvaluation = InterviewEvaluation(trust_score=0.0)
     
-    # Report paths
-    reports: Dict[str, str] = {}  # Paths to generated reports (e.g., {"json_path": "...", "pdf_path": "..."})
+    # Interview progress
+    interview_stage: str = "greeting"  # One of: greeting, qa, coding, feedback, finished
+    current_topic: Optional[str] = None  # Current topic being discussed
     
-    # Workflow state
-    interview_stage: str = "greeting"  # greeting, qa, coding, feedback, finished
-    current_topic: Optional[str] = None 
+    # Report generation
+    reports: Optional[Dict[str, str]] = None  # Paths to generated reports
+    
+    # Session management for asynchronous support
+    session_metadata: Dict[str, Any] = {
+        "created_at": None,  # ISO format datetime string
+        "last_active": None,  # ISO format datetime string
+        "is_completed": False,
+        "timeout_minutes": 60,  # Default 1-hour timeout
+        "completed_at": None,  # ISO format datetime string when completed
+        "resume_context": None,  # Optional context for session resumption
+        "paused_at": None,  # ISO format datetime string when last paused
+        "total_duration": 0,  # Total session duration in seconds
+        "pause_count": 0,  # Number of times the session was paused
+    } 

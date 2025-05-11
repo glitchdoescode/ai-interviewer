@@ -4,175 +4,212 @@ Command-line interface for the AI Interviewer platform.
 This module provides a simple command-line interface for interacting with
 the AI Interviewer.
 """
-import argparse
 import logging
-import os
-import sys
-import uuid
-from typing import List, Optional, Dict, Any, Union
+import click
+from typing import Optional
+from datetime import datetime
 
 from langchain_core.messages import HumanMessage
-
-from ai_interviewer.core.workflow import create_interview_workflow, create_checkpointer
-
-# Create logs directory if needed
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+from ai_interviewer.core.workflow import build_interview_graph
+from ai_interviewer.core.session import SessionManager
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 
+# Initialize session manager
+session_manager = SessionManager()
 
-def run_interview(thread_id: Optional[str] = None, topic: str = "general", skill_level: str = "general") -> None:
+@click.group()
+def cli():
+    """AI Interviewer - Technical Interview Platform"""
+    pass
+
+@cli.command()
+@click.option('--session-id', help='Resume an existing interview session')
+@click.option('--topic', default="general", help='Interview topic focus')
+@click.option('--skill-level', default="general", help='Candidate skill level')
+@click.option('--candidate-id', help='Optional candidate identifier')
+def interview(session_id: Optional[str] = None, topic: str = "general", 
+             skill_level: str = "general", candidate_id: Optional[str] = None) -> None:
     """
-    Run the AI interviewer in an interactive command-line session.
-    
-    Args:
-        thread_id: Optional thread ID for persistent state (for resuming interviews)
-        topic: The topic of the interview (e.g., python, javascript)
-        skill_level: The skill level to target (e.g., junior, mid, senior)
+    Start or resume an AI-driven technical interview.
     """
-    # Create or use thread ID
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-    
-    logger.info(f"Interview session ID: {thread_id}")
-    
-    # Set up the interview workflow with a memory-based checkpointer
-    checkpointer = create_checkpointer()
-    logger.info(f"Created checkpointer: {id(checkpointer)}")
-    
-    workflow = create_interview_workflow(checkpointer)
-    logger.info(f"Created workflow graph with checkpointer")
-    
-    # Create config with thread_id for persistence
-    config: Dict[str, Any] = {
-        "configurable": {"topic": topic, "skill_level": skill_level},
-        "thread_id": thread_id
-    }
-    logger.info(f"Using config: thread_id={thread_id}, topic={topic}, skill_level={skill_level}")
-    
-    # Initial greeting to start the interview
-    initial_message = "Hello, I'm here for the interview."
-    
-    # Start the interview with an initial greeting
-    logger.info("Starting interview with initial greeting")
-    result = workflow.invoke(
-        {"messages": [HumanMessage(content=initial_message)]},
-        config=config
-    )
-    
-    # Print interview information
-    print("\n" + "=" * 50)
-    print("  AI INTERVIEWER - Interactive Technical Interview")
-    print("=" * 50)
-    print(f"* Session ID: {thread_id}")
-    print(f"* Topic: {topic}")
-    print(f"* Skill Level: {skill_level}")
-    print(f"* Type 'exit' or 'quit' to end the interview")
-    print("=" * 50 + "\n")
-    
-    # Process the first response
-    ai_response = result.get("messages", [])[-1].content
-    print("AI:", ai_response)
-    
-    # Store current state for context preservation
-    current_state = result
-    
-    # Main interview loop
-    while True:
-        # Get user input
-        user_input = input("\nYou: ")
+    try:
+        # Build the interview workflow
+        workflow = build_interview_graph()
         
-        # Check for exit command
-        if user_input.lower() in ["exit", "quit", "q"]:
-            print("\n\nInterview terminated by user.\n")
-            print("Thank you for using AI Interviewer!")
-            break
-        
-        # Process user input
-        try:
-            # Preserve important state information like candidate_id across invocations
-            if current_state and current_state.get("candidate_id"):
-                logger.info(f"Preserving candidate_id in next request: {current_state.get('candidate_id')}")
+        # Create or resume session
+        if session_id:
+            # Try to resume existing session
+            state = session_manager.get_session(session_id)
+            if not state:
+                logger.error(f"Session {session_id} not found or expired")
+                return
+            if not session_manager.is_session_active(session_id):
+                logger.error(f"Session {session_id} has expired")
+                return
                 
-            # Process user input
-            logger.info(f"Using thread_id: {thread_id} for state persistence")
-            logger.info(f"Sending new human message: {user_input[:50]}...")
+            # Update session metadata
+            if state.get("session_metadata"):
+                state["session_metadata"]["pause_count"] = state["session_metadata"].get("pause_count", 0) + 1
+                state["session_metadata"]["last_active"] = datetime.now().isoformat()
+                
+            print("\n" + "=" * 50)
+            print("  RESUMING INTERVIEW SESSION")
+            print("=" * 50)
+            print(f"* Session ID: {session_id}")
+            print(f"* Stage: {state.get('interview_stage', 'unknown')}")
+            print(f"* Questions asked: {len(state.get('question_history', []))}")
+            print("=" * 50 + "\n")
             
-            # Send only the new message - the checkpointer will handle state persistence
+            # Resume from last state
+            current_state = state
+            
+        else:
+            # Create new session
+            session_id = session_manager.create_session(candidate_id)
+            initial_message = "Hello! I'm here for my technical interview."
+            
+            # Initialize session
+            config = {
+                "thread_id": session_id,
+                "checkpoint_ns": "interview",
+                "checkpoint_id": session_id
+            }
+            
+            # Start the interview
+            logger.info("Starting new interview session")
             result = workflow.invoke(
-                {"messages": [HumanMessage(content=user_input)]},
+                {"messages": [HumanMessage(content=initial_message)]},
                 config=config
             )
             
-            # Update our current state
-            current_state = result
-            if "candidate_id" in result:
-                logger.info(f"Updated current_state with candidate_id: {result['candidate_id']}")
+            # Print session information
+            print("\n" + "=" * 50)
+            print("  NEW INTERVIEW SESSION")
+            print("=" * 50)
+            print(f"* Session ID: {session_id}")
+            print(f"* Topic: {topic}")
+            print(f"* Skill Level: {skill_level}")
+            print("=" * 50)
+            print("\nCommands:")
+            print("- Type 'exit' or 'quit' to end the interview")
+            print("- Type 'pause' to pause the interview")
+            print("- Type 'status' to see session status")
+            print("=" * 50 + "\n")
             
-            # Extract AI response and print it
-            messages = result.get("messages", [])
-            if messages:
-                # Print interview progress information
-                interview_stage = result.get("interview_stage", "unknown")
-                questions = len(result.get("question_history", []))
-                logger.info(f"Interview progress: stage={interview_stage}, questions={questions}")
+            # Process first response
+            ai_response = result.get("messages", [])[-1].content
+            print("AI:", ai_response)
+            
+            current_state = result
+        
+        # Main interview loop
+        while True:
+            # Get user input
+            user_input = input("\nYou: ").strip().lower()
+            
+            # Handle commands
+            if user_input in ["exit", "quit", "q"]:
+                # Complete the session
+                session_manager.complete_session(session_id)
+                print("\nInterview completed. Thank you for using AI Interviewer!")
+                break
                 
-                # Get the latest AI message
-                ai_response = messages[-1].content
-                print("\nAI:", ai_response)
+            elif user_input == "pause":
+                # Update session metadata
+                if isinstance(current_state, dict) and "session_metadata" in current_state:
+                    current_state["session_metadata"]["paused_at"] = datetime.now().isoformat()
+                    session_manager.update_session(session_id, current_state)
+                print(f"\nInterview paused. To resume, use: --session-id {session_id}")
+                break
+                
+            elif user_input == "status":
+                # Show session status
+                if isinstance(current_state, dict):
+                    print("\nSession Status:")
+                    print(f"* Stage: {current_state.get('interview_stage', 'unknown')}")
+                    print(f"* Questions asked: {len(current_state.get('question_history', []))}")
+                    if current_state.get("session_metadata"):
+                        created = datetime.fromisoformat(current_state["session_metadata"].get("created_at", ""))
+                        elapsed = datetime.now() - created
+                        print(f"* Session duration: {elapsed.total_seconds():.0f} seconds")
+                        print(f"* Pause count: {current_state['session_metadata'].get('pause_count', 0)}")
+                continue
+            
+            # Process user input
+            try:
+                config = {
+                    "thread_id": session_id,
+                    "checkpoint_ns": "interview",
+                    "checkpoint_id": session_id
+                }
+                
+                # Send only the new message - checkpointer handles state
+                result = workflow.invoke(
+                    {"messages": [HumanMessage(content=user_input)]},
+                    config=config
+                )
+                
+                # Update current state
+                current_state = result
+                
+                # Update session state
+                session_manager.update_session(session_id, current_state)
+                
+                # Extract and print AI response
+                messages = result.get("messages", [])
+                if messages:
+                    ai_response = messages[-1].content
+                    print("\nAI:", ai_response)
+                    
+            except Exception as e:
+                logger.error(f"Error processing input: {e}")
+                print("\nSorry, there was an error processing your input. Please try again.")
+                
+    except Exception as e:
+        logger.error(f"Interview session error: {e}")
+        print("\nAn error occurred during the interview. Please try again.")
+
+@cli.command()
+def list_sessions():
+    """List all active interview sessions."""
+    active_sessions = session_manager.list_active_sessions()
+    
+    if not active_sessions:
+        print("\nNo active sessions found.")
+        return
         
-        except KeyboardInterrupt:
-            print("\n\nInterview terminated by user.\n")
-            print("Thank you for using AI Interviewer!")
-            break
+    print("\nActive Interview Sessions:")
+    print("=" * 50)
+    for session_id, info in active_sessions.items():
+        print(f"\nSession ID: {session_id}")
+        print(f"Candidate ID: {info.get('candidate_id', 'Not provided')}")
+        print(f"Stage: {info.get('interview_stage', 'unknown')}")
         
-        except Exception as e:
-            logger.error(f"Error during interview: {e}", exc_info=True)
-            print(f"\nAn error occurred: {e}")
-            print("Let's continue the interview...")
+        metadata = info.get('metadata', {})
+        if metadata:
+            created = datetime.fromisoformat(metadata.get('created_at', ''))
+            last_active = datetime.fromisoformat(metadata.get('last_active', ''))
+            elapsed = datetime.now() - created
+            idle = datetime.now() - last_active
+            
+            print(f"Created: {created.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Last active: {last_active.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Total duration: {elapsed.total_seconds():.0f} seconds")
+            print(f"Idle time: {idle.total_seconds():.0f} seconds")
+            print(f"Pause count: {metadata.get('pause_count', 0)}")
+        print("-" * 30)
 
-
-def main() -> None:
-    """
-    Main entry point for the AI Interviewer CLI.
-    """
-    logger.info("Starting AI Interviewer CLI")
-    
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="AI Interviewer CLI")
-    parser.add_argument("--thread-id", type=str, help="Thread ID for resuming an interview")
-    parser.add_argument(
-        "--topic", 
-        type=str, 
-        choices=["general", "python", "javascript", "data_structures"],
-        default="general",
-        help="Topic for the interview"
-    )
-    parser.add_argument(
-        "--skill-level", 
-        type=str, 
-        choices=["junior", "mid", "senior", "general"],
-        default="general",
-        help="Target skill level for the interview"
-    )
-    
-    args = parser.parse_args()
-    
-    # Run the interview
-    run_interview(args.thread_id, args.topic, args.skill_level)
-
+@cli.command()
+def cleanup():
+    """Clean up expired interview sessions."""
+    count = session_manager.cleanup_expired_sessions()
+    print(f"\nCleaned up {count} expired sessions.")
 
 if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-    
-    # Enter main function
-    main() 
+    cli() 
