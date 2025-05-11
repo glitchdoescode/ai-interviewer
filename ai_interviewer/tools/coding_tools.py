@@ -12,6 +12,7 @@ from ai_interviewer.models.coding_challenge import get_coding_challenge, CodingC
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
 from ai_interviewer.tools.code_execution import CodeExecutor, SafetyChecker
 from ai_interviewer.tools.code_feedback import CodeFeedbackGenerator
+from ai_interviewer.tools.pair_programming import HintGenerator
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -63,7 +64,8 @@ def start_coding_challenge(challenge_id: Optional[str] = None) -> Dict:
             "pair_programming_features": {
                 "code_suggestions": "Get AI suggestions for code improvements",
                 "code_completion": "Get context-aware code completions",
-                "code_review": "Get focused code review and feedback"
+                "code_review": "Get focused code review and feedback",
+                "hints": "Get targeted hints when you're stuck"
             }
         }
     except Exception as e:
@@ -192,7 +194,7 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_leve
 @tool
 def get_coding_hint(challenge_id: str, current_code: str, error_message: Optional[str] = None) -> Dict:
     """
-    Get a hint for the current coding challenge.
+    Get a context-aware hint for the current coding challenge based on the candidate's code.
     
     Args:
         challenge_id: ID of the challenge
@@ -200,72 +202,62 @@ def get_coding_hint(challenge_id: str, current_code: str, error_message: Optiona
         error_message: Optional error message to get specific help
         
     Returns:
-        A dictionary containing the hint
+        A dictionary containing targeted hints
     """
     try:
         # Get the challenge details
         challenge = get_coding_challenge(challenge_id)
+        logger.info(f"Generating hint for challenge: {challenge.id} - {challenge.title}")
         
-        # Check if there are predefined hints available
-        if challenge.hints:
-            # Return a predefined hint
-            hint_index = 0  # In a full implementation, this would track how many hints were already given
-            return {
-                "status": "success",
-                "challenge_id": challenge_id,
-                "hint": challenge.hints[hint_index % len(challenge.hints)]
-            }
+        # Create context dictionary for the hint generator
+        challenge_info = {
+            "id": challenge.id,
+            "title": challenge.title,
+            "description": challenge.description,
+            "difficulty": challenge.difficulty,
+            "language": challenge.language,
+            "hints": challenge.hints,
+            "tags": challenge.tags
+        }
         
-        # Get code suggestions
-        from ai_interviewer.tools.pair_programming import suggest_code_improvements, complete_code
-        suggestions = suggest_code_improvements.invoke({
-            "code": current_code,
-            "context": {
-                "challenge": challenge.model_dump(),
-                "error_message": error_message
-            }
-        })
+        # Use the new HintGenerator to get context-aware hints
+        hints = HintGenerator.generate_hints(
+            code=current_code,
+            challenge_info=challenge_info,
+            error_message=error_message,
+            skill_level="intermediate"  # This could be passed as a parameter in the future
+        )
         
-        # Get code completion suggestions
-        completion = complete_code.invoke({
-            "code": current_code,
-            "context": "Add error handling and edge cases"
-        })
-        
-        # Compile hints
-        hints = []
-        
-        # Add error-specific hint if provided
-        if error_message:
-            hints.append(f"Regarding the error '{error_message}':")
-            hints.append("Consider adding error handling for this case.")
-        
-        # Add general improvement suggestions
-        if suggestions["status"] == "success":
-            hints.extend(suggestions["suggestions"])
-        
-        # Add completion suggestions
-        if completion["status"] == "success":
-            hints.append("Consider completing the implementation:")
-            hints.append(completion["completion"])
-        
-        # If still no hints, provide a generic hint
+        # If we couldn't generate any hints, fall back to predefined hints
+        if not hints and challenge.hints:
+            hints = [challenge.hints[0]]  # Just provide the first hint
+            
+        # If we still have no hints, provide a generic one
         if not hints:
             hints = [
-                "Break down the problem step by step.",
-                f"For this {challenge.difficulty} challenge, consider the edge cases carefully.",
-                "Try working through a simple example manually to understand the solution process."
+                "Try breaking the problem down into smaller steps.",
+                "Review the test cases carefully to understand all requirements.",
+                "Consider edge cases in your solution."
             ]
         
+        # Return the hints
         return {
             "status": "success",
-            "challenge_id": challenge_id,
-            "hints": hints
+            "challenge_id": challenge.id,
+            "hints": hints,
+            "related_concepts": challenge.tags  # Include relevant concepts/tags
         }
         
     except Exception as e:
-        logger.error(f"Error generating hint: {e}")
+        logger.error(f"Error generating coding hint: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "status": "error",
-            "message": str(e)
+            "message": f"Could not generate hint: {str(e)}",
+            "fallback_hints": [
+                "Review your algorithm logic step by step.",
+                "Check for edge cases in your solution.",
+                "Make sure your code handles all the test case scenarios."
+            ]
         } 

@@ -76,10 +76,17 @@ INTERACTION GUIDELINES:
 AVAILABLE TOOLS:
 - start_coding_challenge: Presents a coding challenge to the candidate
 - submit_code_for_challenge: Evaluates the candidate's solution
-- get_coding_hint: Provides hints if the candidate is stuck
-- suggest_code_improvements: Offers ways to improve code
-- complete_code: Helps complete partial code
-- review_code_section: Reviews specific parts of code
+- get_coding_hint: Provides context-aware hints if the candidate is stuck
+- suggest_code_improvements: Offers ways to improve code based on analysis
+- complete_code: Helps complete partial code with AI assistance
+- review_code_section: Reviews specific parts of code for improvement
+
+PAIR PROGRAMMING ASSISTANCE:
+During coding challenges, you can offer pair programming assistance to help the candidate learn and succeed:
+- If the candidate seems stuck, offer a hint using get_coding_hint
+- If they've completed part of a solution but aren't sure how to continue, offer to help complete it with complete_code
+- If their solution works but could be improved, use suggest_code_improvements to guide them
+- For specific code sections they're uncertain about, use review_code_section to provide focused feedback
 
 Current Context:
 Candidate name: {candidate_name}
@@ -103,9 +110,12 @@ class AIInterviewer:
         
         # Set up tools
         self.tools = [
+            # Coding challenge tools
             start_coding_challenge,
             submit_code_for_challenge,
             get_coding_hint,
+            
+            # Pair programming tools
             suggest_code_improvements,
             complete_code,
             review_code_section
@@ -378,7 +388,8 @@ class AIInterviewer:
                     # Check if any coding tools have been used
                     has_coding = any(
                         isinstance(m, AIMessage) and hasattr(m, "tool_calls") and 
-                        any(tc.get("name") in ["start_coding_challenge", "submit_code_for_challenge"] 
+                        any(tc.get("name") in ["start_coding_challenge", "submit_code_for_challenge", "get_coding_hint",
+                                              "suggest_code_improvements", "complete_code", "review_code_section"] 
                             for tc in (m.tool_calls or []))
                         for m in messages
                     )
