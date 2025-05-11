@@ -32,11 +32,27 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
     Returns:
         Updated state with results from tool execution
     """
-    # Most recent message should be the AI message with tool calls
+    # Normalize the state to work with either a dict or InterviewState
     if isinstance(state, dict):
-        messages = state.get("messages", [])
+        normalized_state = state
     else:
-        messages = state.messages
+        # Convert InterviewState to dict for easier handling
+        normalized_state = {
+            "messages": state.messages,
+            "interview_id": state.interview_id,
+            "candidate_id": state.candidate_id,
+            "interview_stage": state.interview_stage,
+            "current_question_id": state.current_question_id,
+            "current_question_text": state.current_question_text,
+            "question_history": state.question_history,
+            "candidate_responses": state.candidate_responses,
+            "current_topic": state.current_topic,
+            "coding_challenge_state": state.coding_challenge_state,
+            "evaluation_notes": state.evaluation_notes
+        }
+    
+    # Get messages from the normalized state
+    messages = normalized_state.get("messages", [])
     
     if not messages or len(messages) == 0:
         logger.warning("No messages in state, returning unmodified state")
@@ -65,20 +81,13 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 result = get_next_question(topic)
                 
                 # Update state with the new question
-                if isinstance(state, dict):
-                    state["current_question_id"] = result.get("question_id", "")
-                    state["current_question_text"] = result.get("question", "")
-                    
-                    # Add to question history
-                    if "question_history" not in state:
-                        state["question_history"] = []
-                    state["question_history"].append(result.get("question", ""))
-                else:
-                    state.current_question_id = result.get("question_id", "")
-                    state.current_question_text = result.get("question", "")
-                    
-                    # Add to question history
-                    state.question_history.append(result.get("question", ""))
+                normalized_state["current_question_id"] = result.get("question_id", "")
+                normalized_state["current_question_text"] = result.get("question_text", "")
+                
+                # Add to question history
+                if "question_history" not in normalized_state:
+                    normalized_state["question_history"] = []
+                normalized_state["question_history"].append(result.get("question_text", ""))
             
             # Handle submit_answer
             elif tool_name == "submit_answer":
@@ -87,26 +96,20 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 
                 # If no question ID provided, try to get it from state
                 if not question_id:
-                    if isinstance(state, dict):
-                        question_id = state.get("current_question_id", "unknown")
-                    else:
-                        question_id = state.current_question_id or "unknown"
+                    question_id = normalized_state.get("current_question_id", "unknown")
                 
                 result = submit_answer(question_id=question_id, answer=answer)
                 
-                # Store the response
+                # Store the response with the evaluation
                 response_data = {
                     "question_id": question_id,
                     "answer": answer,
                     "evaluation": result.get("evaluation", {})
                 }
                 
-                if isinstance(state, dict):
-                    if "candidate_responses" not in state:
-                        state["candidate_responses"] = []
-                    state["candidate_responses"].append(response_data)
-                else:
-                    state.candidate_responses.append(response_data)
+                if "candidate_responses" not in normalized_state:
+                    normalized_state["candidate_responses"] = []
+                normalized_state["candidate_responses"].append(response_data)
                     
             # Handle generate_interview_question
             elif tool_name == "generate_interview_question":
@@ -115,23 +118,13 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 candidate_skill_level = tool_args.get("candidate_skill_level", "general")
                 
                 # Get previous questions from state
-                previous_questions = []
-                previous_responses = []
+                previous_questions = normalized_state.get("question_history", [])
                 
-                if isinstance(state, dict):
-                    previous_questions = state.get("question_history", [])
-                    
-                    # Get previous responses text for context
-                    for response in state.get("candidate_responses", []):
-                        if "answer" in response:
-                            previous_responses.append(response["answer"])
-                else:
-                    previous_questions = state.question_history
-                    
-                    # Get previous responses text for context
-                    for response in state.candidate_responses:
-                        if "answer" in response:
-                            previous_responses.append(response["answer"])
+                # Get previous responses text for context
+                previous_responses = []
+                for response in normalized_state.get("candidate_responses", []):
+                    if "answer" in response:
+                        previous_responses.append(response["answer"])
                 
                 # Generate the question
                 result = generate_interview_question(
@@ -142,26 +135,16 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 )
                 
                 # Update state with the new question
-                if isinstance(state, dict):
-                    state["current_question_id"] = result.get("question_id", "")
-                    state["current_question_text"] = result.get("question_text", "")
-                    
-                    # Add to question history
-                    if "question_history" not in state:
-                        state["question_history"] = []
-                    state["question_history"].append(result.get("question_text", ""))
-                    
-                    # Store the topic
-                    state["current_topic"] = current_topic
-                else:
-                    state.current_question_id = result.get("question_id", "")
-                    state.current_question_text = result.get("question_text", "")
-                    
-                    # Add to question history
-                    state.question_history.append(result.get("question_text", ""))
-                    
-                    # Store the topic
-                    state.current_topic = current_topic
+                normalized_state["current_question_id"] = result.get("question_id", "")
+                normalized_state["current_question_text"] = result.get("question_text", "")
+                
+                # Add to question history
+                if "question_history" not in normalized_state:
+                    normalized_state["question_history"] = []
+                normalized_state["question_history"].append(result.get("question_text", ""))
+                
+                # Store the topic
+                normalized_state["current_topic"] = current_topic
             
             # Handle evaluate_candidate_response
             elif tool_name == "evaluate_candidate_response":
@@ -176,21 +159,14 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 )
                 
                 # Store the evaluation in the state
-                if isinstance(state, dict):
-                    if "evaluation_notes" not in state:
-                        state["evaluation_notes"] = []
-                    
-                    state["evaluation_notes"].append({
-                        "question": question,
-                        "answer": candidate_answer,
-                        "evaluation": result
-                    })
-                else:
-                    state.evaluation_notes.append({
-                        "question": question,
-                        "answer": candidate_answer, 
-                        "evaluation": result
-                    })
+                if "evaluation_notes" not in normalized_state:
+                    normalized_state["evaluation_notes"] = []
+                
+                normalized_state["evaluation_notes"].append({
+                    "question": question,
+                    "answer": candidate_answer,
+                    "evaluation": result
+                })
                     
             # Handle start_coding_challenge
             elif tool_name == "start_coding_challenge":
@@ -213,16 +189,10 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 }
                 
                 # Update state with coding challenge information
-                if isinstance(state, dict):
-                    state["coding_challenge_state"] = coding_challenge_state
-                    
-                    # Ensure we're in the coding stage
-                    state["interview_stage"] = "coding"
-                else:
-                    state.coding_challenge_state = coding_challenge_state
-                    
-                    # Ensure we're in the coding stage
-                    state.interview_stage = "coding"
+                normalized_state["coding_challenge_state"] = coding_challenge_state
+                
+                # Ensure we're in the coding stage
+                normalized_state["interview_stage"] = "coding"
                     
             # Handle submit_code_for_challenge
             elif tool_name == "submit_code_for_challenge":
@@ -231,10 +201,8 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 candidate_code = tool_args.get("candidate_code", "")
                 
                 # If no challenge ID provided, try to get it from state
-                if not challenge_id and isinstance(state, dict) and state.get("coding_challenge_state"):
-                    challenge_id = state["coding_challenge_state"].get("challenge_id", "")
-                elif not challenge_id and hasattr(state, "coding_challenge_state") and state.coding_challenge_state:
-                    challenge_id = state.coding_challenge_state.get("challenge_id", "")
+                if not challenge_id and normalized_state.get("coding_challenge_state"):
+                    challenge_id = normalized_state["coding_challenge_state"].get("challenge_id", "")
                 
                 # Submit the code
                 result = submit_code_for_challenge(
@@ -243,10 +211,7 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 )
                 
                 # Get the current coding challenge state
-                if isinstance(state, dict):
-                    coding_challenge_state = state.get("coding_challenge_state", {})
-                else:
-                    coding_challenge_state = state.coding_challenge_state or {}
+                coding_challenge_state = normalized_state.get("coding_challenge_state", {})
                 
                 # Add the submission to the code submissions history
                 code_submission = {
@@ -254,23 +219,19 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                     "evaluation": result.get("evaluation", {})
                 }
                 
-                if isinstance(coding_challenge_state, dict):
-                    if "code_submissions" not in coding_challenge_state:
-                        coding_challenge_state["code_submissions"] = []
-                    
-                    coding_challenge_state["code_submissions"].append(code_submission)
-                    
-                    # Update the status
-                    if result.get("evaluation", {}).get("passed", False):
-                        coding_challenge_state["status"] = "evaluated"
-                    else:
-                        coding_challenge_state["status"] = "submitted"
-                    
-                    # Update the coding challenge state in the main state
-                    if isinstance(state, dict):
-                        state["coding_challenge_state"] = coding_challenge_state
-                    else:
-                        state.coding_challenge_state = coding_challenge_state
+                if "code_submissions" not in coding_challenge_state:
+                    coding_challenge_state["code_submissions"] = []
+                
+                coding_challenge_state["code_submissions"].append(code_submission)
+                
+                # Update the status
+                if result.get("evaluation", {}).get("passed", False):
+                    coding_challenge_state["status"] = "evaluated"
+                else:
+                    coding_challenge_state["status"] = "submitted"
+                
+                # Update the coding challenge state in the main state
+                normalized_state["coding_challenge_state"] = coding_challenge_state
                 
             # Handle get_coding_hint
             elif tool_name == "get_coding_hint":
@@ -279,10 +240,8 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 current_code = tool_args.get("current_code", "")
                 
                 # If no challenge ID provided, try to get it from state
-                if not challenge_id and isinstance(state, dict) and state.get("coding_challenge_state"):
-                    challenge_id = state["coding_challenge_state"].get("challenge_id", "")
-                elif not challenge_id and hasattr(state, "coding_challenge_state") and state.coding_challenge_state:
-                    challenge_id = state.coding_challenge_state.get("challenge_id", "")
+                if not challenge_id and normalized_state.get("coding_challenge_state"):
+                    challenge_id = normalized_state["coding_challenge_state"].get("challenge_id", "")
                 
                 # Get the hint
                 result = get_coding_hint(
@@ -291,32 +250,33 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 )
                 
                 # Get the current coding challenge state
-                if isinstance(state, dict):
-                    coding_challenge_state = state.get("coding_challenge_state", {})
-                else:
-                    coding_challenge_state = state.coding_challenge_state or {}
+                coding_challenge_state = normalized_state.get("coding_challenge_state", {})
                 
                 # Record that a hint was provided
-                if isinstance(coding_challenge_state, dict):
-                    if "hints_provided" not in coding_challenge_state:
-                        coding_challenge_state["hints_provided"] = []
-                    
-                    coding_challenge_state["hints_provided"].append(result.get("message", ""))
-                    
-                    # Update the coding challenge state in the main state
-                    if isinstance(state, dict):
-                        state["coding_challenge_state"] = coding_challenge_state
-                    else:
-                        state.coding_challenge_state = coding_challenge_state
+                if "hints_provided" not in coding_challenge_state:
+                    coding_challenge_state["hints_provided"] = []
+                
+                coding_challenge_state["hints_provided"].append(result.get("message", ""))
+                
+                # Update the coding challenge state in the main state
+                normalized_state["coding_challenge_state"] = coding_challenge_state
                 
             else:
                 logger.warning(f"Unknown tool name: {tool_name}")
                 
         except Exception as e:
             logger.error(f"Error processing tool call {tool_name}: {e}")
-        
-    # Return the updated state
-    return state
+    
+    # Convert back to the original state type
+    if isinstance(state, InterviewState):
+        # Convert the normalized state dict back to InterviewState fields
+        for key, value in normalized_state.items():
+            if hasattr(state, key):
+                setattr(state, key, value)
+        return state
+    else:
+        # Return the dict state
+        return normalized_state
 
 
 def should_continue_or_end_interview(state: Union[Dict, InterviewState]) -> Literal["continue", "end"]:
@@ -331,17 +291,20 @@ def should_continue_or_end_interview(state: Union[Dict, InterviewState]) -> Lite
     """
     # Check if we're in the final stage
     if isinstance(state, dict):
-        # We're dealing with a dict
-        if state.get("interview_stage") == "finished":
-            logger.info("Interview stage is 'finished', ending interview")
-            return "end"
+        interview_stage = state.get("interview_stage")
+        messages_count = len(state.get("messages", []))
     else:
-        # We're dealing with an InterviewState object
-        if state.interview_stage == "finished":
-            logger.info("Interview stage is 'finished', ending interview")
-            return "end"
+        interview_stage = state.interview_stage
+        messages_count = len(state.messages)
+        
+    logger.info(f"Checking interview state continuation - current stage: {interview_stage}, messages: {messages_count}")
+    
+    if interview_stage == "finished":
+        logger.info("Interview stage is 'finished', ending interview")
+        return "end"
     
     # Otherwise, continue the interview
+    logger.info(f"Continuing interview in {interview_stage} stage")
     return "continue"
 
 
@@ -355,23 +318,28 @@ def should_continue_with_agent_or_tools(state: Union[Dict, InterviewState]) -> L
     Returns:
         'agent' to proceed with the agent, 'tools' to proceed with tools
     """
-    # If the most recent message in the state is from the AI and contains tool calls,
-    # we should execute the tools.
-    
     # Get messages from state
     if isinstance(state, dict):
         messages = state.get("messages", [])
+        interview_stage = state.get("interview_stage", "greeting")
     else:
         messages = state.messages
+        interview_stage = state.interview_stage
+    
+    logger.info(f"Checking for tool calls in {interview_stage} stage with {len(messages)} messages")
     
     # Check the most recent message
     if messages and len(messages) > 0:
         last_message = messages[-1]
         if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            logger.info("Last message contains tool calls, proceeding with tools")
+            tool_calls_count = len(last_message.tool_calls)
+            logger.info(f"Last message contains {tool_calls_count} tool calls")
+            for tool_call in last_message.tool_calls:
+                logger.info(f"Tool call detected: {tool_call.get('name', 'unknown')}")
             return "tools"
     
     # Default to continuing with the agent
+    logger.info("No tool calls detected, continuing with agent")
     return "agent"
 
 
@@ -385,8 +353,18 @@ def create_interview_workflow(checkpoint_saver: Any = None) -> StateGraph:
     Returns:
         A StateGraph representing the interview workflow
     """
-    # Create the workflow graph
+    # Set up checkpointing if provided
+    if checkpoint_saver:
+        logger.info(f"Setting up checkpoint with saver type: {type(checkpoint_saver).__name__}")
+    else:
+        logger.warning("No checkpoint_saver provided! State won't persist between calls.")
+    
+    # Create the workflow graph with the checkpointer
+    # In LangGraph 0.4.3, we need to pass the checkpointer directly
     builder = StateGraph(InterviewState)
+    
+    # For LangGraph 0.4.3, we need to create a checkpointer instance in a different way
+    # Let's try passing it during compilation
     
     # Add the nodes
     builder.add_node("agent", interview_agent)
@@ -416,12 +394,12 @@ def create_interview_workflow(checkpoint_saver: Any = None) -> StateGraph:
         }
     )
     
-    # Create the graph
-    graph = builder.compile()
-    
-    # Set up checkpointing if provided
+    # Create the graph with the checkpointer
+    # In LangGraph 0.4.3, we pass checkpointer to compile()
     if checkpoint_saver:
-        graph.set_checkpointer(checkpoint_saver)
+        graph = builder.compile(checkpointer=checkpoint_saver)
+    else:
+        graph = builder.compile()
     
     return graph
 
@@ -433,7 +411,10 @@ def create_checkpointer() -> MemorySaver:
     Returns:
         MemorySaver instance
     """
-    return MemorySaver()
+    from langgraph.checkpoint.memory import MemorySaver
+    saver = MemorySaver()
+    logger.info(f"Created new MemorySaver instance: {id(saver)}")
+    return saver
 
 
 def get_interview_app(thread_id: str = None) -> Any:

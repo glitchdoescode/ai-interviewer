@@ -179,6 +179,10 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [ ] Create GitHub/GitLab integration for code challenges.
 
 ## Cross-Cutting Concerns (To be addressed throughout all phases)
+*   **[x] API Compatibility:** Keep dependencies up to date and handle API changes:
+    *   Updated StateGraph initialization to use 'checkpoint' parameter for latest LangGraph API
+    *   Monitor and adapt to API changes in core dependencies
+    *   Document version compatibility requirements
 *   **[ ] Logging:** Implement structured logging (e.g., JSON) for easier analysis. Log key events, decisions, tool inputs/outputs, errors.
 *   **[ ] Error Handling:** Implement robust error handling in agent, tools, and API layers. Provide user-friendly error messages.
 *   **[ ] Security:**

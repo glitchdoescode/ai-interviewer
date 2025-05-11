@@ -3,6 +3,11 @@
 ## Current Status
 We have completed the initial implementation of the AI Interviewer platform's core components, including dynamic question generation, enhanced stage management, and interactive coding challenges. The system can now conduct a complete end-to-end technical interview with Q&A, coding challenges, and feedback.
 
+### Latest Updates
+- Fixed LangGraph API compatibility issue by updating StateGraph initialization parameter from 'checkpointer' to 'checkpoint' to match the latest API version
+- Enhanced error handling and logging around state management and checkpointing
+- Improved documentation around state persistence between conversation turns
+
 ### Completed Tasks
 
 #### Sprint 1: Foundation & Core LangGraph Setup
