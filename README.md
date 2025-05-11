@@ -14,6 +14,7 @@ The AI Interviewer platform is designed to simulate technical interviews for sof
 - **Code Quality Analysis**: Analyze code for complexity, maintainability, and style
 - **Session Management**: Persist and resume interview sessions
 - **Transcript Generation**: Save interview transcripts for review
+- **MongoDB Atlas Support**: Store session data in MongoDB Atlas cloud database
 
 ## Architecture
 
@@ -24,6 +25,7 @@ The platform is built around a unified `AIInterviewer` class that encapsulates t
 - Provides a set of specialized tools for coding tasks
 - Supports asynchronous interview sessions
 - Follows industry best practices for LLM application design
+- Integrates with MongoDB for persistent storage (local or Atlas)
 
 ## Installation
 
@@ -38,6 +40,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -e .
+
+# Set up configuration 
+cp config.env.example .env
+# Edit .env with your MongoDB Atlas URI or other settings
 ```
 
 ## Usage
@@ -96,6 +102,15 @@ The platform includes several specialized tools:
    - Checks maintainability index
    - Evaluates documentation coverage
    - Verifies style compliance
+
+## Database Configuration
+
+The platform supports both local MongoDB and MongoDB Atlas:
+
+- **Local MongoDB**: By default, connects to `mongodb://localhost:27017`
+- **MongoDB Atlas**: For cloud-based storage, update the `MONGODB_URI` in your `.env` file
+
+For detailed instructions on setting up MongoDB Atlas, see [MongoDB Atlas Setup Guide](docs/mongodb_atlas_setup.md).
 
 ## Contributing
 
