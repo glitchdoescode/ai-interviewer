@@ -33,7 +33,7 @@ from ai_interviewer.tools.pair_programming import (
 from ai_interviewer.utils.mongodb_checkpointer import MongoDBCheckpointer
 from ai_interviewer.utils.session_manager import SessionManager
 from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config
-from ai_interviewer.utils.transcript import extract_messages_from_transcript
+from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content, format_conversation_for_llm
 
 # Configure logging
 logging.basicConfig(
@@ -148,22 +148,31 @@ class AIInterviewer:
                 db_config = get_db_config()
                 mongodb_uri = connection_uri or db_config["uri"]
                 
+                # Define the checkpoint namespace
+                checkpoint_namespace = "ai_interviewer"
+                
                 # Initialize MongoDB checkpointer
-                logger.info(f"Initializing MongoDB checkpointer with database {db_config['database']}")
+                logger.info(f"Initializing MongoDB checkpointer with database {db_config['database']} and namespace {checkpoint_namespace}")
                 self.checkpointer = MongoDBCheckpointer(
                     connection_uri=mongodb_uri,
                     database_name=db_config["database"],
                     collection_name=db_config["sessions_collection"],
+                    checkpoint_namespace=checkpoint_namespace
                 )
                 
                 # Test MongoDB connection with a small write/read
                 test_config = {
                     "configurable": {
                         "thread_id": "test-connection",
+                        "checkpoint_ns": checkpoint_namespace,
+                        "metadata": {
+                            "step": 1,
+                            "source": "test"
+                        }
                     }
                 }
                 test_data = {"test": "connection"}
-                test_config = self.checkpointer.put(test_config, test_data, {"source": "test"}, {})
+                test_config = self.checkpointer.put(test_config, test_data, {"source": "test", "step": 1}, {})
                 result = self.checkpointer.get_tuple(test_config)
                 if result and result[1].get("test") == "connection":
                     logger.info("MongoDB connection successful!")
@@ -283,10 +292,33 @@ class AIInterviewer:
         
         # Check for tool calls
         try:
-            if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
-                tool_names = [tc.get('name') for tc in last_message.tool_calls]
-                logger.debug(f"Found tool calls: {tool_names}")
-                return "tools"
+            # Check for tool_calls in different potential formats
+            if isinstance(last_message, AIMessage):
+                if hasattr(last_message, "tool_calls"):
+                    tool_calls = last_message.tool_calls
+                    
+                    # Handle different tool_calls formats
+                    if tool_calls:
+                        if isinstance(tool_calls, list):
+                            # Check if any tool in the list has a 'name' attribute
+                            tool_names = []
+                            for tc in tool_calls:
+                                if isinstance(tc, dict) and "name" in tc:
+                                    tool_names.append(tc.get('name'))
+                            
+                            if tool_names:
+                                logger.debug(f"Found tool calls: {tool_names}")
+                                return "tools"
+                        elif isinstance(tool_calls, dict) and "name" in tool_calls:
+                            # Single tool as dict
+                            logger.debug(f"Found single tool call: {tool_calls.get('name')}")
+                            return "tools"
+                
+                # Alternative format: tool_call_id in additional_kwargs
+                elif hasattr(last_message, "additional_kwargs") and last_message.additional_kwargs:
+                    if "tool_call_id" in last_message.additional_kwargs:
+                        logger.debug(f"Found tool call in additional_kwargs")
+                        return "tools"
         except Exception as e:
             logger.error(f"Error checking for tool calls: {e}")
             
@@ -304,6 +336,9 @@ class AIInterviewer:
         Returns:
             Updated state with new AI message
         """
+        # Import the safe_extract_content utility
+        from ai_interviewer.utils.transcript import safe_extract_content
+        
         # Debug state type
         logger.debug(f"call_model received state of type: {type(state)}")
         
@@ -470,7 +505,7 @@ class AIInterviewer:
     
     def _determine_interview_stage(self, messages: List[BaseMessage], new_response: AIMessage, current_stage: str) -> str:
         """
-        Determine the current interview stage based on conversation context.
+        Determine the current interview stage based on conversation context using an LLM.
         
         Args:
             messages: List of messages in the conversation
@@ -480,81 +515,91 @@ class AIInterviewer:
         Returns:
             Updated interview stage
         """
-        # Default to current stage if we can't determine
-        if not messages:
+        # Import helper functions
+        from ai_interviewer.utils.transcript import format_conversation_for_llm
+        
+        # If there are no messages, return the current stage
+        if not messages or len(messages) < 2:
             return current_stage
             
-        # Extract the content from the latest response
-        response_content = new_response.content.lower() if hasattr(new_response, "content") else ""
-        
-        # Check if we just initiated a coding challenge
+        # Check for explicit tool call first (fast path for coding challenge initiation)
         if hasattr(new_response, "tool_calls") and new_response.tool_calls:
             for tool_call in new_response.tool_calls:
-                if tool_call.get("name") == "start_coding_challenge":
+                if isinstance(tool_call, dict) and tool_call.get("name") == "start_coding_challenge":
+                    logger.info("Detected coding challenge tool call, setting stage to CODING_CHALLENGE")
                     return InterviewStage.CODING_CHALLENGE.value
         
-        # Check for stage transitions based on content
-        if current_stage == InterviewStage.INTRODUCTION.value:
-            # Look for transitions to technical questions
-            technical_indicators = [
-                "first question",
-                "let's start with",
-                "let's begin with",
-                "technical question",
-                "experience with",
-                "tell me about your experience",
-                "how would you",
-                "let's move on to"
+        try:
+            # Create a focused prompt for stage determination
+            # Extract just the last few exchanges to keep the context manageable
+            recent_exchanges = messages[-min(len(messages), 8):] + [new_response]
+            
+            # Format the conversation for the LLM using our helper function
+            conversation_text = format_conversation_for_llm(recent_exchanges)
+            
+            # Create a system prompt explaining the interview stages
+            system_prompt = """You are an assistant helping to determine the current stage of a technical interview.
+The interview has the following stages:
+1. INTRODUCTION - Getting candidate's name and introductions
+2. TECHNICAL_QUESTIONS - Asking technical knowledge questions
+3. CODING_CHALLENGE - Presenting and discussing coding tasks
+4. FEEDBACK - Providing feedback on performance
+5. CONCLUSION - Wrapping up the interview
+
+Based only on the conversation provided, determine which stage the interview is currently in.
+Return ONLY the stage name, nothing else."""
+
+            # Create a prompt for the LLM
+            prompt = f"""
+Current stage: {current_stage}
+
+Recent conversation:
+{conversation_text}
+
+Based on this conversation, what stage is the interview in now? 
+Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, FEEDBACK, or CONCLUSION."""
+
+            # Use a lightweight model call with low temperature for deterministic results
+            llm_config = get_llm_config()
+            simple_model = ChatGoogleGenerativeAI(
+                model=llm_config["model"],
+                temperature=0.0
+            )
+            
+            # Create messages for the LLM
+            llm_messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=prompt)
             ]
             
-            if any(indicator in response_content for indicator in technical_indicators):
-                return InterviewStage.TECHNICAL_QUESTIONS.value
-        
-        elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-            # Check for transitions to coding challenge
-            coding_indicators = [
-                "coding challenge",
-                "programming task",
-                "implement a function",
-                "write a program",
-                "solve this problem",
-                "let's move to a practical exercise"
-            ]
+            # Get the response
+            response = simple_model.invoke(llm_messages)
+            response_text = response.content.strip().upper()
             
-            if any(indicator in response_content for indicator in coding_indicators):
-                return InterviewStage.CODING_CHALLENGE.value
-        
-        elif current_stage == InterviewStage.CODING_CHALLENGE.value:
-            # Check for transitions to feedback
-            feedback_indicators = [
-                "overall, your solution",
-                "your performance",
-                "you've done well",
-                "thank you for completing",
-                "your approach to the problem",
-                "based on your solution",
-                "to summarize your performance"
-            ]
+            logger.debug(f"LLM stage determination response: {response_text}")
             
-            if any(indicator in response_content for indicator in feedback_indicators):
-                return InterviewStage.FEEDBACK.value
-        
-        elif current_stage == InterviewStage.FEEDBACK.value:
-            # Check for transitions to conclusion
-            conclusion_indicators = [
-                "thank you for your time",
-                "that concludes",
-                "this concludes",
-                "wrap up",
-                "end of our interview",
-                "it was a pleasure",
-                "next steps in the process"
-            ]
+            # Map the response to our stage enum
+            stage_mapping = {
+                "INTRODUCTION": InterviewStage.INTRODUCTION.value,
+                "TECHNICAL_QUESTIONS": InterviewStage.TECHNICAL_QUESTIONS.value,
+                "CODING_CHALLENGE": InterviewStage.CODING_CHALLENGE.value,
+                "FEEDBACK": InterviewStage.FEEDBACK.value,
+                "CONCLUSION": InterviewStage.CONCLUSION.value
+            }
             
-            if any(indicator in response_content for indicator in conclusion_indicators):
-                return InterviewStage.CONCLUSION.value
-                
-        return current_stage
+            # Get the new stage, defaulting to current stage if not recognized
+            new_stage = stage_mapping.get(response_text, current_stage)
+            
+            # Only log if there's a change in stage
+            if new_stage != current_stage:
+                logger.info(f"Interview stage changed from {current_stage} to {new_stage} based on LLM determination")
+            
+            return new_stage
+            
+        except Exception as e:
+            logger.error(f"Error determining interview stage with LLM: {e}")
+            # Fallback to current stage if there's an error
+            return current_stage
     
     async def run_interview(self, user_id: str, query: str, session_id: Optional[str] = None) -> Tuple[str, str]:
         """
@@ -597,6 +642,10 @@ class AIInterviewer:
                 "configurable": {
                     "thread_id": session_id,
                     "checkpoint_ns": "ai_interviewer",
+                    "metadata": {
+                        "step": 1,  # Initialize metadata with step to prevent NoneType errors
+                        "source": "ai_interviewer"
+                    }
                 }
             }
             

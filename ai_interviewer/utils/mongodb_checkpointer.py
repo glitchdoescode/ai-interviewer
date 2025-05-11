@@ -80,6 +80,7 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         connection_uri: MongoDB connection URI
         database_name: Database name to use
         collection_name: Collection name to use for storing checkpoints
+        checkpoint_namespace: Namespace to use for checkpoints
     """
     
     def __init__(
@@ -87,6 +88,7 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         connection_uri: str,
         database_name: str,
         collection_name: str,
+        checkpoint_namespace: str = "ai_interviewer"
     ):
         """Initialize with MongoDB connection details."""
         super().__init__()
@@ -94,6 +96,9 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         self.client = MongoClient(connection_uri)
         self.db: Database = self.client[database_name]
         self.collection: Collection = self.db[collection_name]
+        
+        # Store the checkpoint namespace
+        self.checkpoint_namespace = checkpoint_namespace
         
         # Set up indexes for efficient retrieval
         self._setup_indexes()
@@ -119,10 +124,20 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         Returns:
             Updated config with checkpoint ID
         """
+        # Ensure configurable is set and properly initialized
+        if "configurable" not in config:
+            config["configurable"] = {}
+        
+        # Get thread ID or generate one
         thread_id = config["configurable"].get("thread_id")
         if not thread_id:
-            raise ValueError("Thread ID is required in config")
+            thread_id = str(uuid.uuid4())
+            logger.warning(f"No thread_id provided, generating new one: {thread_id}")
         
+        # Ensure checkpoint_ns is set
+        if "checkpoint_ns" not in config["configurable"]:
+            config["configurable"]["checkpoint_ns"] = self.checkpoint_namespace
+            
         # Check if we're updating an existing checkpoint
         checkpoint_id = config["configurable"].get("checkpoint_id")
         if not checkpoint_id:
@@ -134,6 +149,7 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             document = {
                 "thread_id": thread_id,
                 "checkpoint_id": checkpoint_id,
+                "checkpoint_ns": config["configurable"].get("checkpoint_ns", self.checkpoint_namespace),
                 "parent_id": config["configurable"].get("parent_id"),
                 "created_at": datetime.utcnow(),
                 "data": self.serializer.dumps(checkpoint_data),
@@ -151,11 +167,13 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             logger.error(f"Error storing checkpoint: {e}")
             raise
         
-        # Return updated config with checkpoint ID
+        # Return updated config with checkpoint ID and thread_id
         updated_config = config.copy()
         updated_config["configurable"] = {
             **config["configurable"],
-            "checkpoint_id": checkpoint_id
+            "checkpoint_id": checkpoint_id,
+            "thread_id": thread_id,
+            "checkpoint_ns": config["configurable"].get("checkpoint_ns", self.checkpoint_namespace)
         }
         
         return updated_config
@@ -169,24 +187,35 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         Returns:
             CheckpointTuple containing the checkpoint data or None if not found
         """
+        # Make sure configurable exists
+        if "configurable" not in config:
+            config["configurable"] = {"checkpoint_ns": self.checkpoint_namespace}
+        
         thread_id = config["configurable"].get("thread_id")
         if not thread_id:
-            logger.error("Thread ID is required in config for get_tuple")
-            raise ValueError("Thread ID is required in config")
+            logger.warning("No thread_id found in config for get_tuple, returning None")
+            return None
         
         # Get the specific checkpoint if ID is provided, otherwise get the latest
         checkpoint_id = config["configurable"].get("checkpoint_id")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", self.checkpoint_namespace)
         
         query = {"thread_id": thread_id}
         if checkpoint_id:
             query["checkpoint_id"] = checkpoint_id
             logger.debug(f"Looking for specific checkpoint with ID {checkpoint_id}")
+        
+        # Add namespace to the query if present
+        if checkpoint_ns:
+            query["checkpoint_ns"] = checkpoint_ns
+            
+        if checkpoint_id:
             document = self.collection.find_one(query)
         else:
             # Get the most recent checkpoint for this thread
             logger.debug(f"Looking for most recent checkpoint for thread {thread_id}")
             document = self.collection.find_one(
-                {"thread_id": thread_id},
+                query,
                 sort=[("created_at", -1)]
             )
         

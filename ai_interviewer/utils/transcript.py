@@ -297,4 +297,97 @@ def deserialize_message(data: Dict[str, Any]) -> BaseMessage:
         return SystemMessage(content=content, additional_kwargs=additional_kwargs)
     
     # Default to base message if type not recognized
-    return BaseMessage(content=content, additional_kwargs=additional_kwargs) 
+    return BaseMessage(content=content, additional_kwargs=additional_kwargs)
+
+def safe_extract_content(message) -> str:
+    """
+    Safely extract content from message objects of various types.
+    
+    Args:
+        message: A message object that could have content in different formats
+        
+    Returns:
+        Extracted content as a string
+    """
+    # If the message is None, return empty string
+    if message is None:
+        return ""
+    
+    try:
+        # If there's a content attribute
+        if hasattr(message, "content"):
+            content = message.content
+            
+            # Handle different content types
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                # Join list elements, handling non-string elements
+                return " ".join([str(item) if item is not None else "" for item in content])
+            elif content is None:
+                return ""
+            else:
+                # Try to convert other types to string
+                return str(content)
+                
+        # If there's no content attribute but the object is string-like
+        elif isinstance(message, (str, bytes)):
+            return str(message)
+            
+        # If it's a dict with a content key
+        elif isinstance(message, dict) and "content" in message:
+            content = message["content"]
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                return " ".join([str(item) if item is not None else "" for item in content])
+            elif content is None:
+                return ""
+            else:
+                return str(content)
+                
+        # If it's some other object, try to convert to string
+        else:
+            return str(message)
+            
+    except Exception as e:
+        # If anything goes wrong, log and return empty string
+        logging.error(f"Error extracting content from message: {e}")
+        return ""
+
+def format_conversation_for_llm(messages, max_messages=10):
+    """
+    Format a list of messages into a readable conversation format for an LLM.
+    
+    Args:
+        messages: List of messages (can be BaseMessage objects or dicts)
+        max_messages: Maximum number of recent messages to include
+        
+    Returns:
+        Formatted conversation string
+    """
+    if not messages:
+        return ""
+    
+    # Take only the most recent messages if we have too many
+    messages = messages[-min(len(messages), max_messages):]
+    
+    formatted_lines = []
+    for msg in messages:
+        # Extract content safely
+        content = safe_extract_content(msg)
+        
+        # Determine speaker
+        if isinstance(msg, HumanMessage) or (isinstance(msg, dict) and msg.get("type") == "human"):
+            speaker = "User"
+        elif isinstance(msg, AIMessage) or (isinstance(msg, dict) and msg.get("type") == "ai"):
+            speaker = "Interviewer"
+        elif isinstance(msg, SystemMessage) or (isinstance(msg, dict) and msg.get("type") == "system"):
+            speaker = "System"
+        else:
+            speaker = "Unknown"
+        
+        # Add to formatted lines
+        formatted_lines.append(f"{speaker}: {content}")
+    
+    return "\n".join(formatted_lines) 
