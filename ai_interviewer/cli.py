@@ -1,215 +1,132 @@
 """
-Command-line interface for the AI Interviewer platform.
+Command Line Interface for the AI Interviewer platform.
 
-This module provides a simple command-line interface for interacting with
-the AI Interviewer.
+This module provides a CLI for interacting with the AI Interviewer.
 """
+import os
+import sys
+import asyncio
 import logging
-import click
-from typing import Optional
+import argparse
+import uuid
 from datetime import datetime
+from typing import List, Optional, Dict, Any
 
-from langchain_core.messages import HumanMessage
-from ai_interviewer.core.workflow import build_interview_graph
-from ai_interviewer.core.session import SessionManager
-
-# Configure logging
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-# Initialize session manager
-session_manager = SessionManager()
+# Import the AIInterviewer class
+from ai_interviewer.core.ai_interviewer import AIInterviewer
 
-@click.group()
-def cli():
-    """AI Interviewer - Technical Interview Platform"""
-    pass
-
-@cli.command()
-@click.option('--session-id', help='Resume an existing interview session')
-@click.option('--topic', default="general", help='Interview topic focus')
-@click.option('--skill-level', default="general", help='Candidate skill level')
-@click.option('--candidate-id', help='Optional candidate identifier')
-def interview(session_id: Optional[str] = None, topic: str = "general", 
-             skill_level: str = "general", candidate_id: Optional[str] = None) -> None:
-    """
-    Start or resume an AI-driven technical interview.
-    """
-    try:
-        # Build the interview workflow
-        workflow = build_interview_graph()
+class InterviewCLI:
+    """Command Line Interface for interacting with the AI Interviewer."""
+    
+    def __init__(self):
+        """Initialize the CLI with an AIInterviewer instance."""
+        self.interviewer = AIInterviewer()
+        self.user_id = f"cli-user-{uuid.uuid4()}"
+        self.interview_history = []
+    
+    async def start_interview(self):
+        """Start an interactive interview session."""
+        print("\n🤖 AI Interviewer - Technical Interview Simulator 🤖\n")
+        print("Welcome to your technical interview simulation!")
+        print("Type your responses after each question. Type 'exit' to end the interview.\n")
         
-        # Create or resume session
-        if session_id:
-            # Try to resume existing session
-            state = session_manager.get_session(session_id)
-            if not state:
-                logger.error(f"Session {session_id} not found or expired")
-                return
-            if not session_manager.is_session_active(session_id):
-                logger.error(f"Session {session_id} has expired")
-                return
-                
-            # Update session metadata
-            if state.get("session_metadata"):
-                state["session_metadata"]["pause_count"] = state["session_metadata"].get("pause_count", 0) + 1
-                state["session_metadata"]["last_active"] = datetime.now().isoformat()
-                
-            print("\n" + "=" * 50)
-            print("  RESUMING INTERVIEW SESSION")
-            print("=" * 50)
-            print(f"* Session ID: {session_id}")
-            print(f"* Stage: {state.get('interview_stage', 'unknown')}")
-            print(f"* Questions asked: {len(state.get('question_history', []))}")
-            print("=" * 50 + "\n")
-            
-            # Resume from last state
-            current_state = state
-            
-        else:
-            # Create new session
-            session_id = session_manager.create_session(candidate_id)
-            initial_message = "Hello! I'm here for my technical interview."
-            
-            # Initialize session
-            config = {
-                "thread_id": session_id,
-                "checkpoint_ns": "interview",
-                "checkpoint_id": session_id
-            }
-            
-            # Start the interview
-            logger.info("Starting new interview session")
-            result = workflow.invoke(
-                {"messages": [HumanMessage(content=initial_message)]},
-                config=config
-            )
-            
-            # Print session information
-            print("\n" + "=" * 50)
-            print("  NEW INTERVIEW SESSION")
-            print("=" * 50)
-            print(f"* Session ID: {session_id}")
-            print(f"* Topic: {topic}")
-            print(f"* Skill Level: {skill_level}")
-            print("=" * 50)
-            print("\nCommands:")
-            print("- Type 'exit' or 'quit' to end the interview")
-            print("- Type 'pause' to pause the interview")
-            print("- Type 'status' to see session status")
-            print("=" * 50 + "\n")
-            
-            # Process first response
-            ai_response = result.get("messages", [])[-1].content
-            print("AI:", ai_response)
-            
-            current_state = result
-        
-        # Main interview loop
         while True:
             # Get user input
-            user_input = input("\nYou: ").strip().lower()
+            user_input = input("\n👤 You: ")
             
-            # Handle commands
-            if user_input in ["exit", "quit", "q"]:
-                # Complete the session
-                session_manager.complete_session(session_id)
-                print("\nInterview completed. Thank you for using AI Interviewer!")
+            # Check for exit command
+            if user_input.lower() in ["exit", "quit", "bye"]:
+                print("\nThank you for participating in this interview simulation. Goodbye!")
                 break
-                
-            elif user_input == "pause":
-                # Update session metadata
-                if isinstance(current_state, dict) and "session_metadata" in current_state:
-                    current_state["session_metadata"]["paused_at"] = datetime.now().isoformat()
-                    session_manager.update_session(session_id, current_state)
-                print(f"\nInterview paused. To resume, use: --session-id {session_id}")
-                break
-                
-            elif user_input == "status":
-                # Show session status
-                if isinstance(current_state, dict):
-                    print("\nSession Status:")
-                    print(f"* Stage: {current_state.get('interview_stage', 'unknown')}")
-                    print(f"* Questions asked: {len(current_state.get('question_history', []))}")
-                    if current_state.get("session_metadata"):
-                        created = datetime.fromisoformat(current_state["session_metadata"].get("created_at", ""))
-                        elapsed = datetime.now() - created
-                        print(f"* Session duration: {elapsed.total_seconds():.0f} seconds")
-                        print(f"* Pause count: {current_state['session_metadata'].get('pause_count', 0)}")
-                continue
             
-            # Process user input
-            try:
-                config = {
-                    "thread_id": session_id,
-                    "checkpoint_ns": "interview",
-                    "checkpoint_id": session_id
-                }
-                
-                # Send only the new message - checkpointer handles state
-                result = workflow.invoke(
-                    {"messages": [HumanMessage(content=user_input)]},
-                    config=config
-                )
-                
-                # Update current state
-                current_state = result
-                
-                # Update session state
-                session_manager.update_session(session_id, current_state)
-                
-                # Extract and print AI response
-                messages = result.get("messages", [])
-                if messages:
-                    ai_response = messages[-1].content
-                    print("\nAI:", ai_response)
-                    
-            except Exception as e:
-                logger.error(f"Error processing input: {e}")
-                print("\nSorry, there was an error processing your input. Please try again.")
-                
-    except Exception as e:
-        logger.error(f"Interview session error: {e}")
-        print("\nAn error occurred during the interview. Please try again.")
-
-@cli.command()
-def list_sessions():
-    """List all active interview sessions."""
-    active_sessions = session_manager.list_active_sessions()
+            # Process user input and get response
+            response = await self.interviewer.run_interview(self.user_id, user_input)
+            
+            # Display AI response
+            print(f"\n🤖 Interviewer: {response}")
+            
+            # Store in history
+            timestamp = datetime.now().isoformat()
+            self.interview_history.append({
+                "timestamp": timestamp,
+                "user": user_input,
+                "ai": response
+            })
     
-    if not active_sessions:
-        print("\nNo active sessions found.")
-        return
+    def save_interview_transcript(self, filename: Optional[str] = None):
+        """
+        Save the interview transcript to a file.
         
-    print("\nActive Interview Sessions:")
-    print("=" * 50)
-    for session_id, info in active_sessions.items():
-        print(f"\nSession ID: {session_id}")
-        print(f"Candidate ID: {info.get('candidate_id', 'Not provided')}")
-        print(f"Stage: {info.get('interview_stage', 'unknown')}")
-        
-        metadata = info.get('metadata', {})
-        if metadata:
-            created = datetime.fromisoformat(metadata.get('created_at', ''))
-            last_active = datetime.fromisoformat(metadata.get('last_active', ''))
-            elapsed = datetime.now() - created
-            idle = datetime.now() - last_active
+        Args:
+            filename: Optional filename to save to
+        """
+        if not self.interview_history:
+            print("No interview history to save.")
+            return
             
-            print(f"Created: {created.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"Last active: {last_active.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"Total duration: {elapsed.total_seconds():.0f} seconds")
-            print(f"Idle time: {idle.total_seconds():.0f} seconds")
-            print(f"Pause count: {metadata.get('pause_count', 0)}")
-        print("-" * 30)
+        # Generate default filename if none provided
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"interview_transcript_{timestamp}.txt"
+        
+        try:
+            with open(filename, "w") as f:
+                f.write("AI INTERVIEW TRANSCRIPT\n")
+                f.write("======================\n\n")
+                
+                for entry in self.interview_history:
+                    time_str = datetime.fromisoformat(entry["timestamp"]).strftime("%H:%M:%S")
+                    f.write(f"[{time_str}] You: {entry['user']}\n")
+                    f.write(f"[{time_str}] Interviewer: {entry['ai']}\n\n")
+                
+            print(f"\nInterview transcript saved to {filename}")
+        except Exception as e:
+            logger.error(f"Error saving transcript: {e}")
+            print(f"Failed to save transcript: {str(e)}")
 
-@cli.command()
-def cleanup():
-    """Clean up expired interview sessions."""
-    count = session_manager.cleanup_expired_sessions()
-    print(f"\nCleaned up {count} expired sessions.")
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="AI Technical Interviewer CLI")
+    parser.add_argument("--save", type=str, help="Save interview transcript to the specified file")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    return parser.parse_args()
+
+async def _main():
+    """Async main function."""
+    args = parse_args()
+    
+    # Set logging level
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Create and start CLI
+    cli = InterviewCLI()
+    try:
+        await cli.start_interview()
+    except KeyboardInterrupt:
+        print("\nInterview ended by user.")
+    
+    # Save transcript if requested
+    if args.save:
+        cli.save_interview_transcript(args.save)
+    else:
+        # Ask if user wants to save the transcript
+        save_response = input("\nDo you want to save the interview transcript? (y/n): ")
+        if save_response.lower() in ["y", "yes"]:
+            filename = input("Enter filename (leave blank for auto-generated name): ")
+            cli.save_interview_transcript(filename if filename else None)
+
+def main():
+    """Main entry point for the CLI, used by setup.py entry_points."""
+    asyncio.run(_main())
 
 if __name__ == "__main__":
-    cli() 
+    main() 

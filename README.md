@@ -1,26 +1,31 @@
 # AI Interviewer Platform
 
-An intelligent, voice-driven interview platform with adaptive Q&A, interactive coding challenges, and objective evaluation.
+An AI-powered technical interview platform built with LangGraph, featuring coding challenges, paired programming tools, and comprehensive interview assessments.
+
+## Overview
+
+The AI Interviewer platform is designed to simulate technical interviews for software engineering candidates. It leverages LLMs to conduct interviews, present coding challenges, provide real-time feedback, and evaluate candidate responses. The platform follows a modern architecture pattern based on LangGraph, making it easy to extend and maintain.
 
 ## Features
 
-- **Dynamic, Voice-Driven Interviews**: Real-time, adaptive question flows based on candidate responses
-- **Interactive Coding Challenges**: Code execution with AI pair programming assistance ("vibe coding")
-- **Rubric-Based Evaluation**: Detailed assessment of technical competency and soft skills
-- **LangGraph Orchestration**: State-managed interview workflow with checkpointing and persistence
-- **Adaptive Question Generation**: Context-aware questions based on candidate skill level and responses
-- **Multi-Stage Interview Process**: Structured flow from greeting through Q&A, coding, and feedback
-- **Comprehensive Logging**: Detailed logging of interview progress and state transitions
+- **Technical Interviews**: Conduct realistic technical interviews with natural conversational flow
+- **Coding Challenges**: Present coding challenges and evaluate solutions
+- **Pair Programming**: Provide code improvements, completions, and reviews
+- **Code Quality Analysis**: Analyze code for complexity, maintainability, and style
+- **Session Management**: Persist and resume interview sessions
+- **Transcript Generation**: Save interview transcripts for review
 
-## Getting Started
+## Architecture
 
-### Prerequisites
+The platform is built around a unified `AIInterviewer` class that encapsulates the entire interview workflow:
 
-- Python 3.9+
-- Git
-- Google API key (for Gemini model)
+- Uses LangGraph for orchestrating the interview process
+- Implements a MessagesState-based state management
+- Provides a set of specialized tools for coding tasks
+- Supports asynchronous interview sessions
+- Follows industry best practices for LLM application design
 
-### Installation
+## Installation
 
 ```bash
 # Clone the repository
@@ -32,53 +37,75 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
-
-# Create a .env file with your API keys
-cp .env.example .env
-# Edit .env with your API keys
+pip install -e .
 ```
 
-### Running the Application
+## Usage
+
+### Command Line Interface
 
 ```bash
-# Run the command-line test interface
-python -m ai_interviewer.cli --topic python --skill-level intermediate
+# Start a new interview
+ai-interviewer
+
+# Save the transcript to a file
+ai-interviewer --save interview_transcript.txt
+
+# Enable debug logging
+ai-interviewer --debug
 ```
 
-## Project Structure
+### Python API
 
-```
-ai-interviewer/
-├── ai_interviewer/           # Main package directory
-│   ├── core/                # Core LangGraph implementation
-│   │   ├── agent.py        # Interview agent implementation
-│   │   └── workflow.py     # LangGraph workflow definition
-│   ├── models/             # State and data models
-│   │   ├── state.py       # Interview state definitions
-│   │   └── coding_challenge.py  # Coding challenge models
-│   ├── tools/              # LangGraph tools
-│   │   ├── basic_tools.py     # Core interview tools
-│   │   ├── dynamic_tools.py   # Dynamic question generation
-│   │   └── coding_tools.py    # Coding challenge tools
-│   ├── utils/              # Utility functions
-│   │   └── logging_utils.py   # Logging configuration
-│   ├── tests/              # Test suite
-│   │   └── test_workflow.py   # Workflow tests
-│   └── cli.py             # Command-line interface
-├── logs/                   # Application logs
-├── requirements.txt        # Project dependencies
-├── setup.py               # Package setup
-├── README.md              # This file
-├── progress-report.md     # Development progress tracking
-└── checklist.md           # Development checklist and roadmap
+```python
+import asyncio
+from ai_interviewer.core.ai_interviewer import AIInterviewer
+
+async def main():
+    # Initialize the interviewer
+    interviewer = AIInterviewer()
+    
+    # Process a user message
+    response = await interviewer.run_interview("user123", "Hello, I'm here for my interview.")
+    print(response)
+    
+    # Continue the conversation
+    response = await interviewer.run_interview("user123", "I have experience with Python and JavaScript.")
+    print(response)
+
+# Run the interview
+asyncio.run(main())
 ```
 
-## Development Status
+## Tools
 
-This project is currently in active development. See:
-- `progress-report.md` for current implementation status
-- `checklist.md` for development roadmap and planned features
+The platform includes several specialized tools:
+
+1. **Coding Challenge Tools**
+   - `start_coding_challenge`: Presents a coding challenge to the candidate
+   - `submit_code_for_challenge`: Evaluates the candidate's solution
+   - `get_coding_hint`: Provides hints if the candidate is stuck
+
+2. **Pair Programming Tools**
+   - `suggest_code_improvements`: Offers ways to improve code
+   - `complete_code`: Helps complete partial code
+   - `review_code_section`: Reviews specific parts of code
+
+3. **Code Quality Tools**
+   - Analyzes cyclomatic complexity
+   - Checks maintainability index
+   - Evaluates documentation coverage
+   - Verifies style compliance
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 

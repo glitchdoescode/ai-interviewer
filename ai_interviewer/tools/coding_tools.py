@@ -57,13 +57,18 @@ def start_coding_challenge(challenge_id: Optional[str] = None) -> Dict:
                 "efficiency": "Code uses efficient algorithms and data structures",
                 "code_quality": "Code follows best practices and style guidelines",
                 "documentation": "Code is well-documented with comments and docstrings"
+            },
+            "pair_programming_features": {
+                "code_suggestions": "Get AI suggestions for code improvements",
+                "code_completion": "Get context-aware code completions",
+                "code_review": "Get focused code review and feedback"
             }
         }
     except Exception as e:
         logger.error(f"Error starting coding challenge: {e}")
         return {
             "status": "error",
-            "message": "Failed to start coding challenge. Please try again."
+            "message": str(e)
         }
 
 
@@ -144,17 +149,17 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
             evaluation["feedback"].extend(quality_metrics.get("interpretations", []))
             
             # Add specific recommendations
-            if quality_metrics["complexity"]["cyclomatic_complexity"] > 10:
+            if quality_metrics.get("complexity", {}).get("cyclomatic_complexity", 0) > 10:
                 evaluation["feedback"].append(
                     "Consider breaking down complex functions into smaller, more manageable pieces."
                 )
             
-            if quality_metrics["documentation"]["doc_ratio"] < 0.5:
+            if quality_metrics.get("documentation", {}).get("doc_ratio", 0) < 0.5:
                 evaluation["feedback"].append(
                     "Adding docstrings to functions and classes would improve code maintainability."
                 )
             
-            if quality_metrics["style"]["pylint_score"] < 7:
+            if quality_metrics.get("style", {}).get("pylint_score", 0) < 7:
                 evaluation["feedback"].append(
                     "Review PEP 8 style guidelines to improve code readability."
                 )
@@ -169,6 +174,17 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
             }
             evaluation["test_results"].append(test_result)
         
+        # Get AI pair programming suggestions
+        from ai_interviewer.tools.pair_programming import suggest_code_improvements, review_code_section
+        suggestions = suggest_code_improvements.invoke({"code": candidate_code})
+        if suggestions["status"] == "success":
+            evaluation["ai_suggestions"] = suggestions["suggestions"]
+        
+        # Add code review
+        review = review_code_section.invoke({"code": candidate_code})
+        if review["status"] == "success":
+            evaluation["code_review"] = review["review"]
+        
         return {
             "status": "submitted",
             "challenge_id": challenge_id,
@@ -179,7 +195,7 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str) -> Dict:
         logger.error(f"Error processing code submission: {e}")
         return {
             "status": "error",
-            "message": "Failed to process your code submission. Please try again."
+            "message": str(e)
         }
 
 
@@ -190,51 +206,58 @@ def get_coding_hint(challenge_id: str, current_code: str, error_message: Optiona
     
     Args:
         challenge_id: ID of the challenge
-        current_code: Current code state
-        error_message: Optional error message if the code is failing
+        current_code: Current code implementation
+        error_message: Optional error message to get specific help
         
     Returns:
-        Dictionary containing the hint and any additional guidance
+        A dictionary containing the hint
     """
     try:
+        # Get the challenge details
         challenge = get_coding_challenge(challenge_id)
         
-        # Get available hints
-        available_hints = challenge.hints
+        # Get code suggestions
+        from ai_interviewer.tools.pair_programming import suggest_code_improvements, complete_code
+        suggestions = suggest_code_improvements.invoke({
+            "code": current_code,
+            "context": {
+                "challenge": challenge.model_dump(),
+                "error_message": error_message
+            }
+        })
         
-        # Analyze current code state
-        code_state = {
-            "has_function_definition": "def " in current_code or "function" in current_code,
-            "has_return_statement": "return" in current_code,
-            "line_count": len(current_code.splitlines())
-        }
+        # Get code completion suggestions
+        completion = complete_code.invoke({
+            "code": current_code,
+            "context": "Add error handling and edge cases"
+        })
         
-        # Select appropriate hint based on code state
-        if not code_state["has_function_definition"]:
-            hint = "Start by defining a function with the correct name and parameters."
-        elif not code_state["has_return_statement"]:
-            hint = "Don't forget to return your result using a return statement."
-        elif error_message:
-            hint = f"Your code is raising an error: {error_message}. Check your logic and data types."
-        elif available_hints:
-            # Use the next available hint
-            hint = available_hints[0]  # In production, would track which hints were already given
-        else:
-            hint = "Try breaking down the problem into smaller steps and solve each part separately."
+        # Compile hints
+        hints = []
+        
+        # Add error-specific hint if provided
+        if error_message:
+            hints.append(f"Regarding the error '{error_message}':")
+            hints.append("Consider adding error handling for this case.")
+        
+        # Add general improvement suggestions
+        if suggestions["status"] == "success":
+            hints.extend(suggestions["suggestions"])
+        
+        # Add completion suggestions
+        if completion["status"] == "success":
+            hints.append("Consider completing the implementation:")
+            hints.append(completion["completion"])
         
         return {
             "status": "success",
-            "hint": hint,
-            "additional_resources": [
-                "Review the problem description carefully",
-                "Look at the test cases for examples",
-                "Consider edge cases in your solution"
-            ]
+            "hints": hints,
+            "message": "\n".join(hints)
         }
         
     except Exception as e:
         logger.error(f"Error getting coding hint: {e}")
         return {
             "status": "error",
-            "message": "Failed to generate hint. Please try again."
+            "message": str(e)
         } 

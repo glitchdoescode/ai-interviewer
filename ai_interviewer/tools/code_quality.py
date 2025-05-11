@@ -6,14 +6,14 @@ for complexity, style, and best practices.
 """
 import ast
 import logging
+import io
+import sys
 from typing import Dict, List, Optional, Any
 from radon.complexity import cc_visit
 from radon.metrics import h_visit, mi_visit
 from radon.raw import analyze
-from pylint.lint import Run
+import pylint.lint
 from pylint.reporters import JSONReporter
-import io
-import tokenize
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -42,57 +42,127 @@ class CodeQualityMetrics:
             Dict containing various code quality metrics
         """
         try:
-            # Basic code metrics
-            raw_metrics = analyze(code)
+            # Run pylint with custom reporter
+            pylint_score = 10.0  # Default score
+            try:
+                # Create a temporary file for pylint
+                file_path = io.StringIO()
+                file_path.write(code)
+                file_path.seek(0)
+                
+                # Set up a custom JSON reporter to capture output
+                json_reporter = JSONReporter()
+                
+                # Run pylint with the JSON reporter
+                # Newer versions of pylint use Run constructor differently
+                args = ['--output-format=json', '--disable=import-error', '--disable=no-name-in-module']
+                pylint.lint.Run([*args, ''], reporter=json_reporter, exit=False)
+                
+                # Process messages
+                messages = json_reporter.messages
+                
+                # Calculate score based on message types
+                if messages:
+                    error_count = sum(1 for msg in messages if msg.category in ('error', 'fatal'))
+                    warning_count = sum(1 for msg in messages if msg.category == 'warning')
+                    convention_count = sum(1 for msg in messages if msg.category == 'convention')
+                    
+                    # Deduct points based on message severity
+                    pylint_score -= error_count * 2.0
+                    pylint_score -= warning_count * 1.0
+                    pylint_score -= convention_count * 0.5
+                    
+                    # Ensure score is between 0 and 10
+                    pylint_score = max(0.0, min(10.0, pylint_score))
+            except Exception as e:
+                logger.error(f"Error running pylint: {e}")
+                pylint_score = 5.0  # Default score on error
             
-            # Cyclomatic complexity
-            cc_results = cc_visit(code)
-            avg_complexity = sum(cc.complexity for cc in cc_results) / len(cc_results) if cc_results else 0
+            # Calculate cyclomatic complexity
+            try:
+                complexity_results = cc_visit(code)
+                avg_complexity = sum(item.complexity for item in complexity_results) / len(complexity_results) if complexity_results else 0
+            except Exception as e:
+                logger.error(f"Error calculating cyclomatic complexity: {e}")
+                avg_complexity = 5.0  # Default value on error
             
-            # Maintainability index
-            mi_result = mi_visit(code, multi=True)
-            maintainability = mi_result.mi if mi_result else 0
+            # Calculate maintainability index
+            try:
+                mi_result = mi_visit(code, multi=True)
+                maintainability_index = sum(mi_result.values()) / len(mi_result) if mi_result else 100
+            except Exception as e:
+                logger.error(f"Error calculating maintainability index: {e}")
+                maintainability_index = 70.0  # Default value on error
             
-            # Halstead metrics
-            h_result = h_visit(code)
+            # Calculate Halstead metrics
+            try:
+                h_result = h_visit(code)
+            except Exception as e:
+                logger.error(f"Error calculating Halstead metrics: {e}")
+                h_result = None
             
-            # Run pylint for detailed analysis
-            pylint_output = io.StringIO()
-            reporter = JSONReporter(pylint_output)
-            Run(['--output-format=json', '--from-stdin'], reporter=reporter, do_exit=False)
-            pylint_score = float(reporter.messages[0].get('score', 0)) if reporter.messages else 0
+            # Calculate raw metrics
+            try:
+                raw_metrics = analyze(code)
+            except Exception as e:
+                logger.error(f"Error calculating raw metrics: {e}")
+                raw_metrics = None
             
-            # Documentation analysis
-            doc_ratio = CodeQualityMetrics._analyze_documentation(code)
+            # Analyze documentation
+            try:
+                doc_ratio = CodeQualityMetrics._analyze_documentation(code)
+            except Exception as e:
+                logger.error(f"Error analyzing documentation: {e}")
+                doc_ratio = 0.5  # Default value on error
             
-            # Collect all metrics
+            # Compile metrics
             metrics = {
                 "complexity": {
                     "cyclomatic_complexity": avg_complexity,
-                    "maintainability_index": maintainability,
-                    "halstead_difficulty": h_result.difficulty if h_result else 0,
-                    "halstead_effort": h_result.effort if h_result else 0
+                    "interpretation": "Low" if avg_complexity < 5 else "Medium" if avg_complexity < 10 else "High"
                 },
-                "size": {
+                "maintainability": {
+                    "maintainability_index": maintainability_index,
+                    "interpretation": "Good" if maintainability_index > 80 else "Medium" if maintainability_index > 60 else "Poor"
+                },
+                "style": {
+                    "pylint_score": pylint_score,
+                    "interpretation": "Good" if pylint_score >= 8 else "Medium" if pylint_score >= 6 else "Poor"
+                },
+                "documentation": {
+                    "doc_ratio": doc_ratio,
+                    "interpretation": "Good" if doc_ratio >= 0.8 else "Medium" if doc_ratio >= 0.5 else "Poor"
+                }
+            }
+            
+            # Add Halstead metrics if available
+            if h_result:
+                metrics["halstead"] = {
+                    "volume": h_result.volume,
+                    "difficulty": h_result.difficulty,
+                    "effort": h_result.effort,
+                    "time": h_result.time,
+                    "bugs": h_result.bugs
+                }
+            
+            # Add raw metrics if available
+            if raw_metrics:
+                metrics["size"] = {
                     "loc": raw_metrics.loc,
                     "lloc": raw_metrics.lloc,
                     "sloc": raw_metrics.sloc,
                     "comments": raw_metrics.comments,
                     "multi": raw_metrics.multi,
                     "blank": raw_metrics.blank
-                },
-                "documentation": {
-                    "doc_ratio": doc_ratio,
-                    "has_docstring": CodeQualityMetrics._has_module_docstring(code)
-                },
-                "style": {
-                    "pylint_score": pylint_score,
-                    "pep8_compliance": CodeQualityMetrics._check_pep8_compliance(code)
                 }
-            }
             
             # Add interpretations
-            metrics["interpretations"] = CodeQualityMetrics._interpret_metrics(metrics)
+            metrics["interpretations"] = [
+                f"Code complexity is {metrics['complexity']['interpretation'].lower()}",
+                f"Maintainability is {metrics['maintainability']['interpretation'].lower()}",
+                f"Code style compliance is {metrics['style']['interpretation'].lower()}",
+                f"Documentation coverage is {metrics['documentation']['interpretation'].lower()}"
+            ]
             
             return metrics
             
@@ -126,7 +196,8 @@ class CodeQualityMetrics:
                         documented_nodes += 1
             
             return documented_nodes / total_nodes if total_nodes > 0 else 0.0
-        except:
+        except Exception as e:
+            logger.error(f"Error analyzing documentation: {e}")
             return 0.0
     
     @staticmethod
@@ -143,7 +214,8 @@ class CodeQualityMetrics:
         try:
             tree = ast.parse(code)
             return bool(ast.get_docstring(tree))
-        except:
+        except Exception as e:
+            logger.error(f"Error checking module docstring: {e}")
             return False
     
     @staticmethod
