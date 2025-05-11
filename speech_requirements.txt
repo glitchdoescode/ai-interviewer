@@ -1,0 +1,10 @@
+# Speech-to-text and text-to-speech dependencies for AI Interviewer
+pyaudio>=0.2.13  # Audio recording and playback
+aiohttp>=3.8.4   # Async HTTP client for API requests
+numpy>=1.23.0    # Numeric processing for audio
+python-dotenv>=1.0.0  # Environment variable management
+wave>=0.0.2      # WAV file handling
+
+# If installing PyAudio is problematic, you may need the following system packages:
+# For Ubuntu/Debian: sudo apt-get install portaudio19-dev python3-pyaudio
+# For macOS: brew install portaudio 

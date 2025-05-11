@@ -7,3 +7,9 @@ typing-extensions>=4.8.0
 pytest>=7.4.3
 pymongo>=4.6.0
 dnspython>=2.4.0  # Required for MongoDB Atlas SRV connection strings
+
+# Speech-to-text and text-to-speech dependencies
+pyaudio>=0.2.13  # Audio recording and playback
+aiohttp>=3.8.4   # Async HTTP client for API requests
+numpy>=1.23.0    # Numeric processing for audio
+wave>=0.0.2      # WAV file handling

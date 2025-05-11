@@ -33,6 +33,12 @@ LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 SESSION_TIMEOUT_MINUTES = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "60"))
 MAX_SESSION_HISTORY = int(os.environ.get("MAX_SESSION_HISTORY", "50"))
 
+# Speech configuration
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
+SPEECH_RECORDING_DURATION = float(os.environ.get("SPEECH_RECORDING_DURATION", "10.0"))
+SPEECH_SAMPLE_RATE = int(os.environ.get("SPEECH_SAMPLE_RATE", "16000"))
+SPEECH_TTS_VOICE = os.environ.get("SPEECH_TTS_VOICE", "nova")
+
 def get_db_config() -> Dict[str, str]:
     """
     Get MongoDB configuration.
@@ -84,6 +90,20 @@ def get_config_value(key: str, default: Optional[Any] = None) -> Any:
     """
     return os.environ.get(key, default)
 
+def get_speech_config() -> Dict[str, Any]:
+    """
+    Get speech configuration.
+    
+    Returns:
+        Dictionary with speech configuration
+    """
+    return {
+        "api_key": DEEPGRAM_API_KEY,
+        "recording_duration": SPEECH_RECORDING_DURATION,
+        "sample_rate": SPEECH_SAMPLE_RATE,
+        "tts_voice": SPEECH_TTS_VOICE,
+    }
+
 def log_config():
     """Log current configuration values (excluding sensitive information)."""
     logger.info("Current configuration:")
@@ -93,4 +113,8 @@ def log_config():
     logger.info(f"- LLM Model: {LLM_MODEL}")
     logger.info(f"- LLM Temperature: {LLM_TEMPERATURE}")
     logger.info(f"- Session Timeout: {SESSION_TIMEOUT_MINUTES} minutes")
-    logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages") 
+    logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages")
+    logger.info(f"- Speech TTS Voice: {SPEECH_TTS_VOICE}")
+    logger.info(f"- Speech Recording Duration: {SPEECH_RECORDING_DURATION} seconds")
+    logger.info(f"- Speech Sample Rate: {SPEECH_SAMPLE_RATE} Hz")
+    logger.info(f"- Deepgram API Key: {'Configured' if DEEPGRAM_API_KEY else 'Not configured'}") 
