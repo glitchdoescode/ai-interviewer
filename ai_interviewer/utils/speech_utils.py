@@ -73,7 +73,7 @@ class DeepgramSTT:
             if isinstance(value, bool):
                 request_params[key] = "true" if value else "false"
         
-                    # Construct query parameters
+        # Construct query parameters
         query_params = "&".join([f"{k}={v}" for k, v in request_params.items()])
         url = f"{self.base_url}?{query_params}"
         
@@ -112,22 +112,22 @@ class DeepgramSTT:
                                 "error": f"API error: {response.status}",
                                 "details": error_text
                             }
+                        
+                        result = await response.json()
+                        
+                        # Extract transcript text
+                        transcript = result.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
+                        
+                        return {
+                            "success": True,
+                            "transcript": transcript,
+                            "raw_response": result
+                        }
                 except aiohttp.ClientError as e:
                     logger.error(f"STT API request failed: {e}")
                     return {
                         "success": False,
                         "error": f"API request failed: {str(e)}"
-                    }
-                    
-                    result = await response.json()
-                    
-                    # Extract transcript text
-                    transcript = result.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
-                    
-                    return {
-                        "success": True,
-                        "transcript": transcript,
-                        "raw_response": result
                     }
         
         except Exception as e:
@@ -390,10 +390,19 @@ class DeepgramTTS:
             if isinstance(value, bool):
                 request_params[key] = "true" if value else "false"
         
-        # Prepare request payload (must contain either 'text' or 'url', not both)
+        # Create base URL with query parameters instead of putting them in payload
+        # Exclude text from query params as it will be in the payload
+        query_params = []
+        for key, value in request_params.items():
+            if key != 'text':  # Don't include text in URL params
+                query_params.append(f"{key}={value}")
+        
+        url = f"{self.base_url}?{'&'.join(query_params)}"
+        
+        # Prepare request payload - ONLY include the text, nothing else
+        # This is what Deepgram API expects
         payload = {
-            "text": text,
-            **request_params
+            "text": text
         }
         
         headers = {
@@ -403,47 +412,48 @@ class DeepgramTTS:
         
         try:
             # Log API request details for debugging
-            logger.debug(f"TTS API request to: {self.base_url}")
+            logger.debug(f"TTS API request to: {url}")
             logger.debug(f"TTS API headers: {headers}")
             logger.debug(f"TTS API payload: {json.dumps(payload, indent=2)}")
             
             # Make API request
             async with aiohttp.ClientSession() as session:
                 try:
-                    async with session.post(self.base_url, headers=headers, json=payload) as response:
+                    async with session.post(url, headers=headers, json=payload) as response:
                         if response.status != 200:
                             error_text = await response.text()
                             logger.error(f"Deepgram TTS API error: {response.status} - {error_text}")
+                            logger.error(f"Request URL was: {url}")
                             logger.error(f"Request payload was: {json.dumps(payload)}")
                             return {
                                 "success": False,
                                 "error": f"API error: {response.status}",
                                 "details": error_text
                             }
+                        
+                        # Get binary audio data
+                        audio_data = await response.read()
+                        
+                        # Save to file if requested
+                        if output_file:
+                            with open(output_file, 'wb') as f:
+                                f.write(audio_data)
+                            logger.info(f"Saved audio to {output_file}")
+                        
+                        # Play audio if requested
+                        if play_audio:
+                            await self._play_audio(audio_data)
+                        
+                        return {
+                            "success": True,
+                            "audio_data": audio_data,
+                            "output_file": str(output_file) if output_file else None
+                        }
                 except aiohttp.ClientError as e:
                     logger.error(f"TTS API request failed: {e}")
                     return {
                         "success": False,
                         "error": f"API request failed: {str(e)}"
-                    }
-                    
-                    # Get binary audio data
-                    audio_data = await response.read()
-                    
-                    # Save to file if requested
-                    if output_file:
-                        with open(output_file, 'wb') as f:
-                            f.write(audio_data)
-                        logger.info(f"Saved audio to {output_file}")
-                    
-                    # Play audio if requested
-                    if play_audio:
-                        await self._play_audio(audio_data)
-                    
-                    return {
-                        "success": True,
-                        "audio_data": audio_data,
-                        "output_file": str(output_file) if output_file else None
                     }
         
         except Exception as e:
