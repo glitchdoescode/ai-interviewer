@@ -1,4 +1,3 @@
-\
 # AI Interviewer Platform Development Checklist
 
 This document outlines the tasks to build the AI Interviewer Platform, following an agile methodology with iterative development. The primary goal is to first deliver a Minimum Viable Product (MVP) focusing on the core interview logic using a LangGraph architecture similar to `gizomobot.py`, tested via a simple chat interface. Subsequent phases will add more features.
@@ -11,98 +10,65 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [x] Initialize Git repository.
     *   [x] Set up Python virtual environment.
     *   [x] Install basic dependencies: `langchain`, `langgraph`, `langchain-google-genai` (or chosen LLM SDK), `python-dotenv`.
-    *   [x] Create initial `requirements.txt`.
-    *   [x] Create a basic `README.md` with project overview and setup instructions.
-*   **Task 1.2: Define Core LangGraph State**
-    *   [x] Define `InterviewState` (e.g., subclassing `MessagesState` or custom TypedDict) to hold:
-        *   [x] `messages: List[BaseMessage]`
-        *   [x] `interview_id: str`
-        *   [x] `candidate_id: str` (optional for MVP)
-        *   [x] `current_question_id: Optional[str]`
-        *   [x] `current_question_text: Optional[str]`
-        *   [x] `candidate_responses: List[str]`
-        *   [x] `coding_challenge_state: Optional[Dict]` (e.g., problem_id, current_code, status)
-        *   [x] `evaluation_notes: List[str]`
-        *   [x] `interview_stage: str` (e.g., "greeting", "qa", "coding", "feedback", "finished")
-*   **Task 1.3: Implement Basic Agent Node (`interview_agent`)**
-    *   [x] Create an agent function `interview_agent(state: InterviewState) -> InterviewState`.
-    *   [x] Initial prompt engineering for a greeting and asking a first simple question.
-    *   [x] Connect to an LLM (e.g., Gemini via `ChatGoogleGenerativeAI`).
-    *   [x] Handle basic conversation flow: receive user message, generate LLM response.
-*   **Task 1.4: Implement Basic Tool Node & Placeholder Tools**
-    *   [x] Define a placeholder tool: `@tool async def get_next_question(topic: str) -> str: ...`
-    *   [x] Define a placeholder tool: `@tool async def submit_answer(answer: str) -> str: ...`
-    *   [x] Create `tools = [get_next_question, submit_answer]`.
-    *   [x] Create `tool_node = ToolNode(tools)`.
-*   **Task 1.5: Define Workflow Graph**
-    *   [x] `workflow = StateGraph(InterviewState)`
-    *   [x] `workflow.add_node("agent", interview_agent)`
-    *   [x] `workflow.add_node("tools", tool_node)`
-    *   [x] `workflow.add_edge(START, "agent")`
-    *   [x] `workflow.add_conditional_edges("agent", should_continue_or_end_interview, {"tools": "tools", END: END})`
-    *   [x] `workflow.add_edge("tools", "agent")`
-    *   [x] `app = workflow.compile()` (with MemorySaver for checkpointing)
-*   **Task 1.6: Implement `should_continue_or_end_interview` Logic**
-    *   [x] Function to check the last AI message for tool calls.
-    *   [x] Add logic to end the interview after a certain number of questions or a specific command.
-*   **Task 1.7: Create Command-Line Chat Interface**
-    *   [x] Simple Python script that takes user input in a loop.
-    *   [x] Invokes the compiled LangGraph app.
-    *   [x] Prints AI responses and tool outputs/errors.
-    *   [x] Manage a unique `thread_id` for each session.
-*   **Task 1.8: Basic Logging Setup**
-    *   [x] Configure Python's `logging` module for basic console and file logging.
+    *   [x] Create initial README.md and requirements.txt.
 
-### Sprint 2: Basic Interview Flow & Dynamic Question Generation
-*   **Task 2.1: Enhance `InterviewState`**
-    *   [x] Add fields like `current_topic: Optional[str]`, `question_history: List[Dict]`.
-    *   [x] Add candidate_responses more robust storage.
-    *   [x] Improve state persistence between conversation turns.
-    *   [x] Fix dict vs. InterviewState handling issues.
-*   **Task 2.2: Implement `DynamicQuestionGenerationTool`**
-    *   [x] Create LLM-based smart question generator.
-    *   [x] Add context-awareness from previous conversation.
-    *   [x] Add parameters for topic, skill level, previous questions.
-    *   [x] Make questions adapt to candidate's level.
-*   **Task 2.3: Integrate `DynamicQuestionGenerationTool`**
-    *   [x] Connect to LLM in workflow.
-    *   [x] Update the workflow to properly handle the tool.
-    *   [x] Improve question storage in state.
-*   **Task 2.4: Enhance Agent Node for Interview Management**
-    *   [x] Implement stage transitions (greeting → qa → feedback → finished).
-    *   [x] Create automatic stage progression.
-    *   [x] Improve system prompts for different stages.
-*   **Task 2.5: Basic In-Session Context Management**
-    *   [x] Track conversation history better.
-    *   [x] Track past questions and responses.
-    *   [x] Improve session persistence with thread_id.
-*   **Task 2.6: Test Adaptive Q&A Flow**
-    *   [x] Test dynamic question generation.
-    *   [x] Verify candidate name extraction.
-    *   [x] Test stage progression.
-    *   [x] Add CLI parameters for skill level.
+*   **Task 1.2: Core State Management**
+    *   [x] Define `InterviewState` class with essential fields.
+    *   [x] Implement state persistence with LangGraph checkpointing.
+    *   [x] Add proper state transitions between interview stages.
 
-### Sprint 3: Interactive Coding Challenge (Conceptual MVP)
-*   **Task 3.1: Define Coding Challenge Structure**
-    *   [x] Create data structure for coding problems.
-    *   [x] Implement sample hardcoded coding problems.
-    *   [x] Define test case structure.
-*   **Task 3.2: Implement `StartCodingChallengeTool`**
-    *   [x] Create tool for initiating coding challenges.
-    *   [x] Add support for challenge selection.
-    *   [x] Handle visibility of test cases.
+*   **Task 1.3: Basic Agent & Tools**
+    *   [x] Create initial interviewer agent with system prompt.
+    *   [x] Implement basic tools for question handling.
+    *   [x] Set up tool node for processing tool calls.
+
+*   **Task 1.4: Workflow Graph**
+    *   [x] Create StateGraph with proper nodes.
+    *   [x] Implement edge conditions for stage transitions.
+    *   [x] Add message handling and state updates.
+
+### Sprint 2: Dynamic Q&A Implementation
+*   **Task 2.1: Question Generation**
+    *   [x] Implement `generate_interview_question` tool.
+    *   [x] Add context awareness for follow-up questions.
+    *   [x] Handle previous questions to avoid repetition.
+
+*   **Task 2.2: Response Handling**
+    *   [x] Create `submit_answer` tool.
+    *   [x] Store responses in state.
+    *   [x] Track conversation context.
+
+*   **Task 2.3: Stage Management**
+    *   [x] Implement proper stage transitions.
+    *   [x] Add stage-specific behavior.
+    *   [x] Handle edge cases in transitions.
+
+### Sprint 3: Interactive Coding Challenges
+*   **Task 3.1: Challenge Infrastructure**
+    *   [x] Define coding challenge data structures.
+    *   [x] Create sample challenges.
+    *   [x] Implement challenge selection logic.
+
+*   **Task 3.2: Challenge Flow Integration**
+    *   [x] Add coding stage to interview flow.
+    *   [x] Implement `start_coding_challenge` tool.
+    *   [x] Handle challenge state in workflow.
+
 *   **Task 3.3: Implement `SubmitCodeTool` (Placeholder Execution)**
     *   [x] Create tool for submitting code answers.
     *   [x] Implement basic code validation.
     *   [x] Add proper state handling for submissions.
+
 *   **Task 3.4: Integrate Coding Challenge Tools into Workflow**
     *   [x] Update tool_node function to handle coding tools.
     *   [x] Add coding stage to the interview process.
     *   [x] Integrate coding challenge state management.
+
 *   **Task 3.5: Update Agent for Q&A and Coding Transitions**
     *   [x] Improve stage transition logic for coding challenges.
     *   [x] Update interviewer prompts for coding guidance.
     *   [x] Add coding-specific context in prompt.
+
 *   **Task 3.6: Add Coding Hint Support**
     *   [x] Implement hint mechanism for coding challenges.
     *   [x] Connect hints to specific challenges.
@@ -110,27 +76,40 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Sprint 4: Basic Evaluation & Reporting (Conceptual MVP)
 *   **Task 4.1: Define Simple Rubric (Conceptual)**
-    *   [ ] Categories: `answer_clarity`, `coding_attempt_quality` (very basic for MVP).
-    *   [ ] Simple scoring: e.g., 1-5 scale or descriptive notes.
+    *   [x] Create `rubric.py` with Pydantic models for evaluation criteria
+    *   [x] Implement QA and coding evaluation structures
+    *   [x] Add trust score calculation
+
 *   **Task 4.2: Implement `EvaluateCandidateResponseTool` (Basic)**
-    *   [ ] `@tool async def evaluate_candidate_response(question: str, candidate_answer: str, criteria: Optional[List[str]] = None) -> Dict:`
-        *   Uses an LLM call to provide a qualitative score/comment on the answer based on general clarity or predefined simple criteria.
-        *   Returns `{"score_notes": "...", "clarity_rating": "good/average/poor"}`.
-    *   [ ] Update `tools` list and `tool_node`.
+    *   [x] Enhanced evaluation tool with structured scoring
+    *   [x] Detailed justifications for each criterion
+    *   [x] Trust score calculation for evaluation confidence
+
 *   **Task 4.3: Integrate Evaluation into Workflow**
-    *   [ ] `interview_agent` calls `evaluate_candidate_response` after each Q&A or after the coding submission.
-    *   [ ] Store evaluation notes in `InterviewState.evaluation_notes`.
-*   **Task 4.4: Implement `GenerateSimpleReportTool`**
-    *   [ ] `@tool async def generate_simple_interview_report(interview_state: InterviewState) -> str:`
-        *   Compiles all `candidate_responses`, `evaluation_notes`, coding submission status into a single formatted string.
-    *   [ ] Update `tools` list and `tool_node`.
-*   **Task 4.5: Test Evaluation and Report Generation**
-    *   [ ] At the end of an interview flow in the chat interface, trigger report generation.
-    *   [ ] Verify the text report output.
-*   **Task 4.6: MVP End-to-End Test**
-    *   [ ] Run through a complete interview: greeting -> Q&A (2-3 questions with evaluation) -> Coding Challenge (start, submit, basic eval) -> Simple Report.
-    *   [ ] Refine prompts and agent logic based on test outcomes.
-    *   [ ] Ensure basic error handling (e.g., tool failure) is logged.
+    *   [x] Update state management for detailed evaluations
+    *   [x] Store both QA and coding evaluations
+    *   [x] Track evaluation history and trust scores
+
+*   **Task 4.4: Basic Report Generation**
+    *   [ ] Create report generation tool
+    *   [ ] Implement JSON and PDF export options
+    *   [ ] Add summary statistics and visualizations
+
+### Sprint 5: Enhanced Features & Polish
+*   **Task 5.1: Asynchronous Interview Support**
+    *   [ ] Implement session management
+    *   [ ] Add state persistence between sessions
+    *   [ ] Handle interview resumption
+
+*   **Task 5.2: Improved Coding Evaluation**
+    *   [ ] Add code quality metrics
+    *   [ ] Implement more detailed test cases
+    *   [ ] Enhanced feedback generation
+
+*   **Task 5.3: AI Pair Programming**
+    *   [ ] Design hint generation system
+    *   [ ] Implement context-aware suggestions
+    *   [ ] Add code completion support
 
 ## Phase 2: Enhancements & Feature Integration (Iterative)
 
