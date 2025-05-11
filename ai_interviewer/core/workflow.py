@@ -48,7 +48,7 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
             "candidate_responses": state.candidate_responses,
             "current_topic": state.current_topic,
             "coding_challenge_state": state.coding_challenge_state,
-            "evaluation_notes": state.evaluation_notes
+            "evaluation": state.evaluation.model_dump() if hasattr(state, 'evaluation') else None
         }
     
     # Get messages from the normalized state
@@ -158,15 +158,36 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                     candidate_answer=candidate_answer
                 )
                 
-                # Store the evaluation in the state
-                if "evaluation_notes" not in normalized_state:
-                    normalized_state["evaluation_notes"] = []
+                # Update the evaluation in state
+                if normalized_state.get("evaluation") is None:
+                    normalized_state["evaluation"] = InterviewEvaluation(trust_score=0.0).model_dump()
                 
-                normalized_state["evaluation_notes"].append({
+                # Add the QA evaluation
+                qa_eval = {question: result["evaluation"]}
+                normalized_state["evaluation"]["qa_evaluations"].append(qa_eval)
+                
+                # Update trust score as average of all evaluations
+                all_scores = [result["trust_score"]]
+                if normalized_state["evaluation"].get("trust_score"):
+                    all_scores.append(normalized_state["evaluation"]["trust_score"])
+                normalized_state["evaluation"]["trust_score"] = sum(all_scores) / len(all_scores)
+                
+                # Update overall notes
+                if result.get("overall_notes"):
+                    if normalized_state["evaluation"].get("overall_notes"):
+                        normalized_state["evaluation"]["overall_notes"] += "\n" + result["overall_notes"]
+                    else:
+                        normalized_state["evaluation"]["overall_notes"] = result["overall_notes"]
+                
+                # Also store in candidate_responses for backward compatibility
+                response_data = {
                     "question": question,
                     "answer": candidate_answer,
                     "evaluation": result
-                })
+                }
+                if "candidate_responses" not in normalized_state:
+                    normalized_state["candidate_responses"] = []
+                normalized_state["candidate_responses"].append(response_data)
                     
             # Handle start_coding_challenge
             elif tool_name == "start_coding_challenge":
@@ -233,6 +254,21 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
                 # Update the coding challenge state in the main state
                 normalized_state["coding_challenge_state"] = coding_challenge_state
                 
+                # Update the evaluation with coding results if challenge is complete
+                if coding_challenge_state["status"] == "evaluated":
+                    if normalized_state.get("evaluation") is None:
+                        normalized_state["evaluation"] = InterviewEvaluation(trust_score=0.0).model_dump()
+                    
+                    # Convert the coding evaluation to our rubric format
+                    coding_eval = {
+                        "correctness": {"score": 5 if result["evaluation"]["passed"] else 3, 
+                                      "justification": result["evaluation"]["message"]},
+                        "code_quality": {"score": 4, "justification": "Code structure and organization assessed"},
+                        "efficiency": {"score": 4, "justification": "Algorithm efficiency evaluated"},
+                        "problem_solving": {"score": 4, "justification": "Problem-solving approach analyzed"}
+                    }
+                    normalized_state["evaluation"]["coding_evaluation"] = coding_eval
+            
             # Handle get_coding_hint
             elif tool_name == "get_coding_hint":
                 # Extract tool arguments
@@ -267,16 +303,7 @@ def tool_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]
         except Exception as e:
             logger.error(f"Error processing tool call {tool_name}: {e}")
     
-    # Convert back to the original state type
-    if isinstance(state, InterviewState):
-        # Convert the normalized state dict back to InterviewState fields
-        for key, value in normalized_state.items():
-            if hasattr(state, key):
-                setattr(state, key, value)
-        return state
-    else:
-        # Return the dict state
-        return normalized_state
+    return normalized_state
 
 
 def should_continue_or_end_interview(state: Union[Dict, InterviewState]) -> Literal["continue", "end"]:

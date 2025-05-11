@@ -5,11 +5,14 @@ This module implements more advanced tools that use LLMs for dynamic content gen
 """
 import logging
 import uuid
+import json
 from typing import List, Dict, Optional
 
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
+
+from ai_interviewer.models.rubric import QACriteria, EvaluationCriteria
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -95,7 +98,6 @@ Generate a single appropriate interview question for this context:
         
         # Extract the JSON response
         # Note: In a production system, we would add more robust JSON parsing with error handling
-        import json
         result = json.loads(response.content)
         
         # Ensure all required fields are present
@@ -125,7 +127,7 @@ def evaluate_candidate_response(
     criteria: Optional[List[str]] = None
 ) -> Dict:
     """
-    Evaluate a candidate's response to a technical interview question.
+    Evaluate a candidate's response to a technical interview question using a rubric-based approach.
     
     Args:
         question: The question that was asked
@@ -133,7 +135,7 @@ def evaluate_candidate_response(
         criteria: Optional specific criteria to evaluate against
         
     Returns:
-        A dictionary containing evaluation scores and feedback
+        A dictionary containing evaluation scores and feedback based on the rubric
     """
     logger.info(f"Evaluating response for question: {question[:50]}...")
     
@@ -144,15 +146,43 @@ def evaluate_candidate_response(
     # Create a system prompt for evaluation
     system_prompt = """You are an expert technical evaluator for interview responses.
     
-Assess the candidate's answer objectively based on the question asked and provided evaluation criteria.
+Assess the candidate's answer objectively based on the question asked and the following criteria:
 
-For each criterion, provide:
-1. A score from 1-5 (where 1 is poor and 5 is excellent)
-2. A brief justification for the score (1-2 sentences)
+1. Clarity (1-5):
+   - How well-structured and clear is the response?
+   - Is the explanation easy to follow?
+   - Are key points well-articulated?
 
-Also provide overall feedback and suggested follow-up areas if applicable.
+2. Technical Accuracy (1-5):
+   - Is the information technically correct?
+   - Are technical terms used appropriately?
+   - Are there any misconceptions or errors?
 
-Format your response as a JSON object.
+3. Depth of Understanding (1-5):
+   - Does the answer show deep knowledge?
+   - Are concepts explained thoroughly?
+   - Are relationships between concepts understood?
+
+4. Communication (1-5):
+   - Is the response well-articulated?
+   - Is technical information explained at an appropriate level?
+   - Is the communication style professional?
+
+For each criterion:
+- Provide a score from 1-5 (where 1 is poor and 5 is excellent)
+- Include a brief justification (1-2 sentences)
+
+Also calculate a trust score (0.0-1.0) indicating your confidence in this evaluation.
+
+Format your response as a JSON object matching this structure:
+{
+    "clarity": {"score": 4, "justification": "Clear structure with good examples"},
+    "technical_accuracy": {"score": 5, "justification": "All technical details correct"},
+    "depth_of_understanding": {"score": 3, "justification": "Basic concepts covered"},
+    "communication": {"score": 4, "justification": "Well-articulated response"},
+    "trust_score": 0.85,
+    "overall_notes": "Brief overall assessment"
+}
 """
 
     # Create human prompt with context
@@ -184,18 +214,33 @@ Provide your evaluation:
         response = llm.invoke(messages)
         
         # Extract the JSON response
-        import json
         result = json.loads(response.content)
         
-        logger.info(f"Completed evaluation")
-        return result
+        # Validate against our QACriteria model
+        evaluation = QACriteria(
+            clarity=EvaluationCriteria(**result["clarity"]),
+            technical_accuracy=EvaluationCriteria(**result["technical_accuracy"]),
+            depth_of_understanding=EvaluationCriteria(**result["depth_of_understanding"]),
+            communication=EvaluationCriteria(**result["communication"])
+        )
+        
+        # Return the validated result
+        return {
+            "evaluation": evaluation.model_dump(),
+            "trust_score": result.get("trust_score", 0.5),
+            "overall_notes": result.get("overall_notes", "")
+        }
     
     except Exception as e:
         logger.error(f"Error evaluating response: {e}")
         # Fallback to a simple evaluation if generation fails
         return {
-            "overall_score": 3,
-            "overall_feedback": "The response was recorded but automatic evaluation failed.",
-            "scores": {criterion: 3 for criterion in criteria},
-            "justifications": {criterion: "Automatic evaluation unavailable" for criterion in criteria}
+            "evaluation": {
+                "clarity": {"score": 3, "justification": "Automatic evaluation unavailable"},
+                "technical_accuracy": {"score": 3, "justification": "Automatic evaluation unavailable"},
+                "depth_of_understanding": {"score": 3, "justification": "Automatic evaluation unavailable"},
+                "communication": {"score": 3, "justification": "Automatic evaluation unavailable"}
+            },
+            "trust_score": 0.0,
+            "overall_notes": "Automatic evaluation failed. Manual review recommended."
         } 

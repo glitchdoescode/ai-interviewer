@@ -258,11 +258,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   [ ] **Accessibility (WCAG compliance)**
 
 ## Cross-Cutting Concerns (To be addressed throughout all phases)
-*   **[x] API Compatibility:** Keep dependencies up to date and handle API changes:
-    *   Updated StateGraph initialization to use 'checkpoint' parameter for latest LangGraph API
-    *   Monitor and adapt to API changes in core dependencies
-    *   Document version compatibility requirements
-*   **[ ] Logging:** Implement structured logging (e.g., JSON) for key events, decisions, tool inputs/outputs, errors.
+*   **[ ] Logging:** Implement structured logging (e.g., JSON) for easier analysis. Log key events, decisions, tool inputs/outputs, errors.
 *   **[ ] Error Handling:** Implement robust error handling in agent, tools, and API layers. Provide user-friendly error messages.
 *   **[ ] Security:**
     *   Input validation for all user-provided data and tool arguments.
@@ -287,44 +283,3 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **[ ] Regular Refactoring:** Keep the codebase clean and maintainable.
 
 This checklist provides a roadmap. Tasks and priorities may be adjusted based on sprint reviews, feedback, and evolving requirements.
-
-## Phase 4: Evaluation & Reporting System
-
-### Sprint 4.1: Evaluation Logic
-*   **[x] Task 4.1.1: Define Simple Rubric**
-    *   [x] Create Pydantic models for evaluation structure
-    *   [x] Define rating levels and categories
-    *   [x] Add support for Q&A, technical, and soft skills evaluation
-    *   [x] Include trust score calculation
-*   **[x] Task 4.1.2: Implement Basic Evaluation Agent**
-    *   [x] Create LangGraph-based evaluation workflow
-    *   [x] Implement evaluation state management
-    *   [x] Add support for structured evaluation output
-    *   [x] Integrate with existing interview flow
-*   **[ ] Task 4.1.3: Advanced Scoring**
-    *   [ ] Implement weighted scoring algorithms
-    *   [ ] Add bias detection mechanisms
-    *   [ ] Create consistency checks
-    *   [ ] Add confidence scoring
-
-### Sprint 4.2: Report Generation
-*   **[ ] Task 4.2.1: Basic Report Structure**
-    *   [ ] Define report templates
-    *   [ ] Implement markdown/PDF generation
-    *   [ ] Add basic formatting and styling
-*   **[ ] Task 4.2.2: Enhanced Reporting**
-    *   [ ] Add detailed score breakdowns
-    *   [ ] Include interview highlights
-    *   [ ] Generate improvement suggestions
-    *   [ ] Create comparative analysis
-
-### Sprint 4.3: Integration & Testing
-*   **[ ] Task 4.3.1: System Integration**
-    *   [ ] Connect evaluation to main workflow
-    *   [ ] Implement real-time scoring
-    *   [ ] Add persistence layer for evaluations
-*   **[ ] Task 4.3.2: Testing Suite**
-    *   [ ] Create unit tests for evaluation
-    *   [ ] Add integration tests
-    *   [ ] Implement evaluation validation
-    *   [ ] Add performance benchmarks

@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Any
 from langchain_core.messages import BaseMessage
 from langgraph.graph import MessagesState
 
+from ai_interviewer.models.rubric import InterviewEvaluation
+
 class InterviewState(MessagesState):
     """
     State class for the interview process.
@@ -22,7 +24,7 @@ class InterviewState(MessagesState):
         current_question_text: Text of the current question
         candidate_responses: List of candidate's responses
         coding_challenge_state: State related to coding challenges
-        evaluation_notes: Notes/scores from evaluating the candidate
+        evaluation: Complete interview evaluation using rubric
         interview_stage: Current stage of the interview
     """
     # Required for identification
@@ -40,8 +42,8 @@ class InterviewState(MessagesState):
     # Coding challenge
     coding_challenge_state: Optional[Dict] = None
     
-    # Evaluation
-    evaluation_notes: List[Dict[str, Any]] = []  # Updated to match how it's used
+    # Evaluation using our rubric
+    evaluation: InterviewEvaluation = InterviewEvaluation(trust_score=0.0)
     
     # Workflow state
     interview_stage: str = "greeting"  # greeting, qa, coding, feedback, finished
