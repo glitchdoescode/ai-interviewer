@@ -14,12 +14,12 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
 
-from langgraph.checkpoint.base import checkpoint, CheckpointTuple, TConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, create_checkpoint
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 logger = logging.getLogger(__name__)
 
-class MongoDBCheckpointer:
+class MongoDBCheckpointer(BaseCheckpointSaver):
     """MongoDB-based implementation of checkpointer for LangGraph.
     
     This class provides persistence for LangGraph state using MongoDB.
@@ -37,6 +37,7 @@ class MongoDBCheckpointer:
         collection_name: str,
     ):
         """Initialize with MongoDB connection details."""
+        super().__init__()
         # Connect to MongoDB
         self.client = MongoClient(connection_uri)
         self.db: Database = self.client[database_name]
@@ -54,12 +55,13 @@ class MongoDBCheckpointer:
         self.collection.create_index([("thread_id", 1), ("created_at", -1)])
         self.collection.create_index([("thread_id", 1), ("checkpoint_id", 1)], unique=True)
     
-    def put(self, config: TConfig, checkpoint_data: Dict[str, Any]) -> TConfig:
+    def put(self, config: Dict, checkpoint_data: Dict[str, Any], metadata: Dict[str, Any]) -> Dict:
         """Store a checkpoint in MongoDB.
         
         Args:
             config: Configuration containing thread ID
             checkpoint_data: The checkpoint data to store
+            metadata: Additional metadata
             
         Returns:
             Updated config with checkpoint ID
@@ -80,7 +82,8 @@ class MongoDBCheckpointer:
             "checkpoint_id": checkpoint_id,
             "parent_id": config["configurable"].get("parent_id"),
             "created_at": datetime.utcnow(),
-            "data": self.serializer.dumps(checkpoint_data)
+            "data": self.serializer.dumps(checkpoint_data),
+            "metadata": metadata
         }
         
         # Insert or update checkpoint
@@ -99,7 +102,7 @@ class MongoDBCheckpointer:
         
         return updated_config
     
-    def get_tuple(self, config: TConfig) -> Optional[CheckpointTuple]:
+    def get_tuple(self, config: Dict) -> Optional[CheckpointTuple]:
         """Retrieve a checkpoint from MongoDB.
         
         Args:
@@ -156,7 +159,7 @@ class MongoDBCheckpointer:
             parent_config
         )
     
-    def list(self, config: TConfig) -> Iterator[CheckpointTuple]:
+    def list(self, config: Dict) -> Iterator[CheckpointTuple]:
         """List all checkpoints for a thread.
         
         Args:
@@ -203,6 +206,18 @@ class MongoDBCheckpointer:
                 parent_config
             )
     
+    def put_writes(self, config: Dict, writes: List[Dict], task_id: str) -> None:
+        """Store intermediate writes for a checkpoint.
+        
+        Args:
+            config: Configuration with thread ID
+            writes: List of intermediate writes
+            task_id: ID of the task
+        """
+        # This is a placeholder implementation
+        # In a production setting, you might want to store these in a separate collection
+        pass
+    
     def close(self):
         """Close MongoDB connection."""
         if hasattr(self, 'client') and self.client:
@@ -216,65 +231,4 @@ class MongoDBCheckpointer:
         """Context manager exit."""
         self.close()
 
-# Async version for async LangGraph workflows
-class AsyncMongoDBCheckpointer(MongoDBCheckpointer):
-    """Async MongoDB checkpointer implementation."""
-    
-    async def aput(self, config: TConfig, checkpoint: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """
-        Store a checkpoint asynchronously.
-        
-        Args:
-            config: Checkpoint configuration
-            checkpoint: Checkpoint data
-            metadata: Additional metadata
-        """
-        # For now, just use the synchronous version since pymongo doesn't have native async
-        # In a production setting, you might want to use motor for async MongoDB operations
-        self.put(config, checkpoint, metadata)
-    
-    async def aget(self, config: TConfig) -> Optional[CheckpointTuple]:
-        """
-        Retrieve a checkpoint asynchronously.
-        
-        Args:
-            config: Checkpoint configuration
-            
-        Returns:
-            CheckpointTuple if found, otherwise None
-        """
-        # For now, just use the synchronous version
-        return self.get(config)
-    
-    async def alist(self, config: TConfig) -> List[CheckpointTuple]:
-        """
-        List all checkpoints for a thread asynchronously.
-        
-        Args:
-            config: Checkpoint configuration
-            
-        Returns:
-            List of CheckpointTuple objects
-        """
-        # For now, just use the synchronous version
-        return self.list(config)
-    
-    async def adelete(self, config: TConfig) -> None:
-        """
-        Delete a checkpoint asynchronously.
-        
-        Args:
-            config: Checkpoint configuration
-        """
-        # For now, just use the synchronous version
-        self.delete(config)
-    
-    async def adelete_thread(self, thread_id: str) -> None:
-        """
-        Delete all checkpoints for a thread asynchronously.
-        
-        Args:
-            thread_id: Thread ID to delete
-        """
-        # For now, just use the synchronous version
-        self.delete_thread(thread_id) 
+# Remove the AsyncMongoDBCheckpointer for now until we properly implement it 
