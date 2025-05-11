@@ -8,7 +8,7 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Type
 
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -16,8 +16,60 @@ from pymongo.database import Database
 
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, create_checkpoint
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+
+class LangChainMongoSerializer(JsonPlusSerializer):
+    """Custom serializer that properly handles LangChain message objects."""
+
+    def _custom_encoder(self, obj: Any) -> Any:
+        """Custom encoder for LangChain message objects."""
+        # Handle LangChain message objects
+        if isinstance(obj, BaseMessage):
+            message_type = obj.__class__.__name__
+            result = {
+                "__type": "langchain_message",
+                "message_type": message_type,
+                "content": obj.content,
+                "additional_kwargs": obj.additional_kwargs,
+            }
+            
+            # Add special handling for tool calls
+            if hasattr(obj, "tool_calls") and obj.tool_calls:
+                result["tool_calls"] = obj.tool_calls
+                
+            return result
+            
+        # Use parent serializer for other types
+        return super()._custom_encoder(obj)
+    
+    def _custom_decoder(self, obj: Dict[str, Any]) -> Any:
+        """Custom decoder for LangChain message objects."""
+        if isinstance(obj, dict):
+            obj_type = obj.get("__type")
+            
+            if obj_type == "langchain_message":
+                message_type = obj.get("message_type")
+                content = obj.get("content", "")
+                additional_kwargs = obj.get("additional_kwargs", {})
+                
+                # Create the appropriate message type
+                if message_type == "HumanMessage":
+                    return HumanMessage(content=content, additional_kwargs=additional_kwargs)
+                elif message_type == "AIMessage":
+                    message = AIMessage(content=content, additional_kwargs=additional_kwargs)
+                    # Handle tool calls if present
+                    if "tool_calls" in obj:
+                        message.tool_calls = obj["tool_calls"]
+                    return message
+                elif message_type == "SystemMessage":
+                    return SystemMessage(content=content, additional_kwargs=additional_kwargs)
+                # Default to base message if type not recognized
+                return BaseMessage(content=content, additional_kwargs=additional_kwargs)
+                
+        # Use parent decoder for other types
+        return super()._custom_decoder(obj)
 
 class MongoDBCheckpointer(BaseCheckpointSaver):
     """MongoDB-based implementation of checkpointer for LangGraph.
@@ -46,8 +98,8 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         # Set up indexes for efficient retrieval
         self._setup_indexes()
         
-        # Serializer for converting Python objects to JSON and back
-        self.serializer = JsonPlusSerializer()
+        # Use custom serializer for LangChain messages
+        self.serializer = LangChainMongoSerializer()
     
     def _setup_indexes(self) -> None:
         """Set up MongoDB indexes for efficient querying."""
@@ -77,23 +129,27 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             # Generate a new checkpoint ID
             checkpoint_id = str(uuid.uuid4())
         
-        # Prepare document
-        document = {
-            "thread_id": thread_id,
-            "checkpoint_id": checkpoint_id,
-            "parent_id": config["configurable"].get("parent_id"),
-            "created_at": datetime.utcnow(),
-            "data": self.serializer.dumps(checkpoint_data),
-            "metadata": metadata,
-            "versions": new_versions if new_versions is not None else {}
-        }
-        
-        # Insert or update checkpoint
-        self.collection.replace_one(
-            {"thread_id": thread_id, "checkpoint_id": checkpoint_id},
-            document,
-            upsert=True
-        )
+        try:
+            # Prepare document
+            document = {
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint_id,
+                "parent_id": config["configurable"].get("parent_id"),
+                "created_at": datetime.utcnow(),
+                "data": self.serializer.dumps(checkpoint_data),
+                "metadata": self.serializer.dumps(metadata),  # Also serialize metadata
+                "versions": self.serializer.dumps(new_versions) if new_versions is not None else "{}"
+            }
+            
+            # Insert or update checkpoint
+            self.collection.replace_one(
+                {"thread_id": thread_id, "checkpoint_id": checkpoint_id},
+                document,
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Error storing checkpoint: {e}")
+            raise
         
         # Return updated config with checkpoint ID
         updated_config = config.copy()
@@ -115,6 +171,7 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         """
         thread_id = config["configurable"].get("thread_id")
         if not thread_id:
+            logger.error("Thread ID is required in config for get_tuple")
             raise ValueError("Thread ID is required in config")
         
         # Get the specific checkpoint if ID is provided, otherwise get the latest
@@ -123,16 +180,21 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         query = {"thread_id": thread_id}
         if checkpoint_id:
             query["checkpoint_id"] = checkpoint_id
+            logger.debug(f"Looking for specific checkpoint with ID {checkpoint_id}")
             document = self.collection.find_one(query)
         else:
             # Get the most recent checkpoint for this thread
+            logger.debug(f"Looking for most recent checkpoint for thread {thread_id}")
             document = self.collection.find_one(
                 {"thread_id": thread_id},
                 sort=[("created_at", -1)]
             )
         
         if not document:
+            logger.warning(f"No checkpoint found for thread_id={thread_id}, checkpoint_id={checkpoint_id}")
             return None
+        
+        logger.debug(f"Found checkpoint with ID {document.get('checkpoint_id')} for thread {thread_id}")
         
         # Get parent config if it exists
         parent_config = None
@@ -143,6 +205,7 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
                     "checkpoint_id": document["parent_id"]
                 }
             }
+            logger.debug(f"Found parent checkpoint with ID {document['parent_id']}")
         
         # Create checkpoint tuple
         result_config = {
@@ -152,14 +215,32 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
             }
         }
         
-        # Convert the stored data back to Python objects
-        checkpoint_data = self.serializer.loads(document["data"])
-        
-        return CheckpointTuple(
-            result_config,
-            checkpoint_data,
-            parent_config
-        )
+        try:
+            # Convert the stored data back to Python objects
+            logger.debug(f"Deserializing checkpoint data for checkpoint {document['checkpoint_id']}")
+            checkpoint_data = self.serializer.loads(document["data"])
+            
+            # Verify that checkpoint_data contains expected fields
+            if isinstance(checkpoint_data, dict):
+                logger.debug(f"Checkpoint data has keys: {list(checkpoint_data.keys())}")
+                # Check if messages field exists and is valid
+                if "messages" in checkpoint_data:
+                    messages = checkpoint_data["messages"]
+                    logger.debug(f"Checkpoint contains {len(messages)} messages")
+            else:
+                logger.warning(f"Unexpected checkpoint data type: {type(checkpoint_data)}")
+            
+            # Create and return the checkpoint tuple
+            checkpoint_tuple = CheckpointTuple(
+                result_config,
+                checkpoint_data,
+                parent_config
+            )
+            return checkpoint_tuple
+            
+        except Exception as e:
+            logger.error(f"Error deserializing checkpoint: {e}", exc_info=True)
+            return None
     
     def list(self, config: Dict) -> Iterator[CheckpointTuple]:
         """List all checkpoints for a thread.
@@ -181,32 +262,36 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
         )
         
         for document in documents:
-            # Get parent config if it exists
-            parent_config = None
-            if document.get("parent_id"):
-                parent_config = {
+            try:
+                # Get parent config if it exists
+                parent_config = None
+                if document.get("parent_id"):
+                    parent_config = {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_id": document["parent_id"]
+                        }
+                    }
+                
+                # Create checkpoint tuple
+                result_config = {
                     "configurable": {
                         "thread_id": thread_id,
-                        "checkpoint_id": document["parent_id"]
+                        "checkpoint_id": document["checkpoint_id"]
                     }
                 }
-            
-            # Create checkpoint tuple
-            result_config = {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_id": document["checkpoint_id"]
-                }
-            }
-            
-            # Convert the stored data back to Python objects
-            checkpoint_data = self.serializer.loads(document["data"])
-            
-            yield CheckpointTuple(
-                result_config,
-                checkpoint_data,
-                parent_config
-            )
+                
+                # Convert the stored data back to Python objects
+                checkpoint_data = self.serializer.loads(document["data"])
+                
+                yield CheckpointTuple(
+                    result_config,
+                    checkpoint_data,
+                    parent_config
+                )
+            except Exception as e:
+                logger.error(f"Error deserializing checkpoint: {e}")
+                continue
     
     def put_writes(self, config: Dict, writes: List[Dict], task_id: str) -> None:
         """Store intermediate writes for a checkpoint.
@@ -239,26 +324,30 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
                 ("task_id", 1)
             ], unique=True)
         
-        # Store each write
-        for write in writes:
-            document = {
-                "thread_id": thread_id,
-                "checkpoint_id": checkpoint_id,
-                "task_id": task_id,
-                "write": self.serializer.dumps(write),
-                "created_at": datetime.utcnow()
-            }
-            
-            # Insert or update the write
-            writes_collection.replace_one(
-                {
+        try:
+            # Store each write
+            for write in writes:
+                document = {
                     "thread_id": thread_id,
                     "checkpoint_id": checkpoint_id,
-                    "task_id": task_id
-                },
-                document,
-                upsert=True
-            )
+                    "task_id": task_id,
+                    "write": self.serializer.dumps(write),
+                    "created_at": datetime.utcnow()
+                }
+                
+                # Insert or update the write
+                writes_collection.replace_one(
+                    {
+                        "thread_id": thread_id,
+                        "checkpoint_id": checkpoint_id,
+                        "task_id": task_id
+                    },
+                    document,
+                    upsert=True
+                )
+        except Exception as e:
+            logger.error(f"Error storing writes: {e}")
+            # Continue execution even if writes fail
     
     def close(self):
         """Close MongoDB connection."""

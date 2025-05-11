@@ -129,11 +129,26 @@ class AIInterviewer:
                 mongodb_uri = connection_uri or db_config["uri"]
                 
                 # Initialize MongoDB checkpointer
+                logger.info(f"Initializing MongoDB checkpointer with database {db_config['database']}")
                 self.checkpointer = MongoDBCheckpointer(
                     connection_uri=mongodb_uri,
                     database_name=db_config["database"],
                     collection_name=db_config["sessions_collection"],
                 )
+                
+                # Test MongoDB connection with a small write/read
+                test_config = {
+                    "configurable": {
+                        "thread_id": "test-connection",
+                    }
+                }
+                test_data = {"test": "connection"}
+                test_config = self.checkpointer.put(test_config, test_data, {"source": "test"}, {})
+                result = self.checkpointer.get_tuple(test_config)
+                if result and result[1].get("test") == "connection":
+                    logger.info("MongoDB connection successful!")
+                else:
+                    raise ValueError("MongoDB connection test failed")
                 
                 # Initialize session manager
                 self.session_manager = SessionManager(
@@ -192,7 +207,9 @@ class AIInterviewer:
         workflow.set_entry_point("agent")
         
         # Compile with checkpointer
-        return workflow.compile(checkpointer=self.checkpointer)
+        compiled_graph = workflow.compile(checkpointer=self.checkpointer)
+        logger.info("Workflow compiled successfully with checkpointer")
+        return compiled_graph
     
     @staticmethod
     def should_continue(state: MessagesState) -> Literal["tools", "end"]:
@@ -206,31 +223,55 @@ class AIInterviewer:
             "tools" if tool calls are present, otherwise "end"
         """
         # Debug state type
-        logger.info(f"should_continue received state of type: {type(state)}")
+        logger.debug(f"should_continue received state of type: {type(state)}")
         
-        # Check if state has messages key
-        if isinstance(state, dict) and "messages" in state:
-            logger.info(f"State has messages key with {len(state['messages'])} messages")
-        else:
-            # If state doesn't have messages or is not a dict, log and end
-            logger.error(f"Invalid state format in should_continue: {state}")
+        # Extract messages from state, handling different state formats
+        messages = []
+        try:
+            # Handle different types of state objects
+            if hasattr(state, "messages"):
+                # MessagesState or object with messages attribute
+                messages = state.messages
+                logger.debug(f"Extracted messages from state.messages attribute, found {len(messages)} messages")
+            elif isinstance(state, dict) and "messages" in state:
+                # Dictionary with messages key
+                messages = state["messages"]
+                logger.debug(f"Extracted messages from state['messages'], found {len(messages)} messages")
+            elif hasattr(state, "__getitem__") and "messages" in state:
+                # Dict-like object with messages key
+                messages = state["messages"]
+                logger.debug(f"Extracted messages from state['messages'] using __getitem__, found {len(messages)} messages")
+            else:
+                logger.error(f"Unable to extract messages from state of type {type(state)}")
+                return "end"
+        except Exception as e:
+            logger.error(f"Error extracting messages from state: {e}")
+            return "end"
+            
+        # Check if we have any messages
+        if not messages:
+            logger.debug("No messages found in state, ending")
             return "end"
             
         # Get the last message
-        if not state["messages"]:
-            logger.info("No messages in state, ending")
+        try:
+            last_message = messages[-1]
+            logger.debug(f"Last message type: {type(last_message)}")
+        except (IndexError, TypeError) as e:
+            logger.error(f"Error accessing last message: {e}")
             return "end"
-            
-        last_message = state["messages"][-1]
-        logger.info(f"Last message type: {type(last_message)}")
         
         # Check for tool calls
-        if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            logger.info(f"Found tool calls: {[tc.get('name') for tc in last_message.tool_calls]}")
-            return "tools"
-        
+        try:
+            if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                tool_names = [tc.get('name') for tc in last_message.tool_calls]
+                logger.debug(f"Found tool calls: {tool_names}")
+                return "tools"
+        except Exception as e:
+            logger.error(f"Error checking for tool calls: {e}")
+            
         # End if no tool calls found
-        logger.info("No tool calls found, ending")
+        logger.debug("No tool calls found, ending")
         return "end"
     
     def call_model(self, state: MessagesState) -> Dict:
@@ -244,34 +285,61 @@ class AIInterviewer:
             Updated state with new AI message
         """
         # Debug state type
-        logger.info(f"call_model received state of type: {type(state)}")
+        logger.debug(f"call_model received state of type: {type(state)}")
         
-        # Safely access messages
-        if not isinstance(state, dict) or "messages" not in state:
-            logger.error(f"Invalid state format in call_model: {state}")
-            # Return a minimal valid state
+        # Extract messages from state, handling different state formats
+        messages = []
+        try:
+            # Handle different types of state objects
+            if hasattr(state, "messages"):
+                # MessagesState or object with messages attribute
+                messages = state.messages
+                logger.debug(f"Extracted messages from state.messages attribute, found {len(messages)} messages")
+            elif isinstance(state, dict) and "messages" in state:
+                # Dictionary with messages key
+                messages = state["messages"]
+                logger.debug(f"Extracted messages from state['messages'], found {len(messages)} messages")
+            elif hasattr(state, "__getitem__") and "messages" in state:
+                # Dict-like object with messages key
+                messages = state["messages"]
+                logger.debug(f"Extracted messages from state['messages'] using __getitem__, found {len(messages)} messages")
+            else:
+                logger.error(f"Unable to extract messages from state of type {type(state)}")
+                # Return a minimal valid state with error message
+                return {"messages": [AIMessage(content="I apologize, but I'm experiencing a technical issue.")]}
+        except Exception as e:
+            logger.error(f"Error extracting messages from state: {e}")
+            # Return a minimal valid state with error message
             return {"messages": [AIMessage(content="I apologize, but I'm experiencing a technical issue.")]}
             
-        messages = state["messages"]
-        logger.info(f"State has {len(messages)} messages")
+        logger.debug(f"State has {len(messages)} messages")
         
         # Get session info from thread_id
         config = {}
         thread_id = ""
         
         # Try to get config from different possible locations
-        if hasattr(state, "__config__"):
-            config = state.__config__
-            logger.info("Found __config__ as attribute")
-        elif isinstance(state, dict) and "__config__" in state:
-            config = state["__config__"]
-            logger.info("Found __config__ in dict")
+        try:
+            if hasattr(state, "__config__"):
+                config = state.__config__
+                logger.debug("Found __config__ as attribute")
+            elif isinstance(state, dict) and "__config__" in state:
+                config = state["__config__"]
+                logger.debug("Found __config__ in dict")
+            elif hasattr(state, "__getitem__") and "__config__" in state:
+                config = state["__config__"]
+                logger.debug("Found __config__ using __getitem__")
+        except Exception as e:
+            logger.error(f"Error retrieving config from state: {e}")
         
         # Get thread_id from config
-        if isinstance(config, dict) and "configurable" in config:
-            configurable = config["configurable"]
-            thread_id = configurable.get("thread_id", "")
-            logger.info(f"Using thread_id: {thread_id}")
+        try:
+            if isinstance(config, dict) and "configurable" in config:
+                configurable = config["configurable"]
+                thread_id = configurable.get("thread_id", "")
+                logger.debug(f"Using thread_id: {thread_id}")
+        except Exception as e:
+            logger.error(f"Error retrieving thread_id from config: {e}")
         
         # Fallback for missing thread_id
         if not thread_id:
@@ -279,15 +347,19 @@ class AIInterviewer:
             
         # Get session data from MongoDB if available
         session_data = {}
-        if thread_id and self.session_manager:
-            session = self.session_manager.get_session(thread_id)
-            if session:
-                session_data = session.get("metadata", {})
-                # Update last active timestamp
-                self.session_manager.update_session_activity(thread_id)
-        else:
-            # Fallback to in-memory storage
-            session_data = self.active_sessions.get(thread_id, {})
+        try:
+            if thread_id and self.session_manager:
+                session = self.session_manager.get_session(thread_id)
+                if session:
+                    session_data = session.get("metadata", {})
+                    # Update last active timestamp
+                    self.session_manager.update_session_activity(thread_id)
+            else:
+                # Fallback to in-memory storage
+                session_data = self.active_sessions.get(thread_id, {})
+        except Exception as e:
+            logger.error(f"Error retrieving session data: {e}")
+            # Continue with empty session data
         
         candidate_name = session_data.get("candidate_name", "")
         interview_id = thread_id or "New Interview"
@@ -329,28 +401,42 @@ class AIInterviewer:
         
         # Call the model
         try:
+            logger.debug(f"Calling model with {len(messages)} messages")
             response = self.model.invoke(messages)
+            logger.debug(f"Received response from model: {type(response)}")
             
             # Extract candidate name if not already known
-            if not candidate_name and self.session_manager:
+            if not candidate_name:
                 candidate_name = self._extract_candidate_name(messages)
-                if candidate_name and thread_id:
+                if candidate_name:
+                    logger.info(f"Extracted candidate name: {candidate_name}")
                     # Update session metadata with candidate name
-                    session_data["candidate_name"] = candidate_name
-                    session_data["interview_stage"] = current_stage
-                    self.session_manager.update_session_metadata(thread_id, session_data)
-                    logger.info(f"Updated candidate name to {candidate_name}")
+                    try:
+                        if thread_id and self.session_manager:
+                            session_data["candidate_name"] = candidate_name
+                            session_data["interview_stage"] = current_stage
+                            self.session_manager.update_session_metadata(thread_id, session_data)
+                        elif thread_id:
+                            # Use in-memory session storage
+                            if thread_id in self.active_sessions:
+                                self.active_sessions[thread_id]["candidate_name"] = candidate_name
+                                self.active_sessions[thread_id]["interview_stage"] = current_stage
+                    except Exception as e:
+                        logger.error(f"Error updating candidate name: {e}")
             
             # Update interview stage based on conversation content
             new_stage = self._determine_interview_stage(messages, response, current_stage)
             if new_stage != current_stage and thread_id:
                 logger.info(f"Updating interview stage from {current_stage} to {new_stage}")
-                if self.session_manager:
-                    session_data["interview_stage"] = new_stage
-                    self.session_manager.update_session_metadata(thread_id, session_data)
-                else:
-                    if thread_id in self.active_sessions:
-                        self.active_sessions[thread_id]["interview_stage"] = new_stage
+                try:
+                    if self.session_manager:
+                        session_data["interview_stage"] = new_stage
+                        self.session_manager.update_session_metadata(thread_id, session_data)
+                    else:
+                        if thread_id in self.active_sessions:
+                            self.active_sessions[thread_id]["interview_stage"] = new_stage
+                except Exception as e:
+                    logger.error(f"Error updating interview stage: {e}")
             
             # Return updated state
             return {"messages": messages + [response]}
@@ -466,9 +552,13 @@ class AIInterviewer:
             if session_id:
                 # Validate session exists and belongs to user
                 if self.session_manager:
-                    session = self.session_manager.get_session(session_id)
-                    if not session or session.get("user_id") != user_id:
-                        logger.warning(f"Invalid session ID {session_id} for user {user_id}")
+                    try:
+                        session = self.session_manager.get_session(session_id)
+                        if not session or session.get("user_id") != user_id:
+                            logger.warning(f"Invalid session ID {session_id} for user {user_id}")
+                            session_id = self._get_or_create_session(user_id)
+                    except Exception as e:
+                        logger.error(f"Error validating session: {e}")
                         session_id = self._get_or_create_session(user_id)
                 else:
                     # When using in-memory storage
@@ -481,113 +571,139 @@ class AIInterviewer:
                 
             logger.info(f"Using session {session_id} for user {user_id}")
             
-            # Create a fresh state with the user message
-            state = {"messages": [HumanMessage(content=query)]}
-            logger.info(f"Created fresh state with 1 message")
-            
-            # For a new session, initialize the interview stage
-            if self.session_manager:
-                session = self.session_manager.get_session(session_id)
-                if session and "metadata" in session:
-                    metadata = session["metadata"]
-                    if "interview_stage" not in metadata:
-                        metadata["interview_stage"] = InterviewStage.INTRODUCTION.value
-                        self.session_manager.update_session_metadata(session_id, metadata)
-            else:
-                # In-memory session initialization
-                if session_id in self.active_sessions and "interview_stage" not in self.active_sessions[session_id]:
-                    self.active_sessions[session_id]["interview_stage"] = InterviewStage.INTRODUCTION.value
-                        
-            # Run workflow with thread_id to maintain persistence
+            # Create config for retrieving existing state
             config = {
                 "configurable": {
                     "thread_id": session_id,
                     "checkpoint_ns": "ai_interviewer",
                 }
             }
-            logger.info(f"Invoking workflow with config: {config}")
+            
+            # For a new session, initialize the interview stage
+            try:
+                if self.session_manager:
+                    session = self.session_manager.get_session(session_id)
+                    if session and "metadata" in session:
+                        metadata = session["metadata"]
+                        if "interview_stage" not in metadata:
+                            metadata["interview_stage"] = InterviewStage.INTRODUCTION.value
+                            self.session_manager.update_session_metadata(session_id, metadata)
+                else:
+                    # In-memory session initialization
+                    if session_id in self.active_sessions and "interview_stage" not in self.active_sessions[session_id]:
+                        self.active_sessions[session_id]["interview_stage"] = InterviewStage.INTRODUCTION.value
+            except Exception as e:
+                logger.error(f"Error initializing interview stage: {e}")
+            
+            # Check for existing messages in the checkpoint
+            existing_messages = []
+            try:
+                # Try to get the existing checkpoint
+                checkpoint = self.checkpointer.get_tuple(config)
+                if checkpoint and checkpoint[1] and "messages" in checkpoint[1]:
+                    existing_messages = checkpoint[1]["messages"]
+                    logger.info(f"Retrieved {len(existing_messages)} existing messages from checkpoint")
+            except Exception as e:
+                logger.error(f"Error retrieving existing messages: {e}")
+                # Continue with empty messages list
+
+            # Create the state with existing messages plus new message
+            human_message = HumanMessage(content=query)
+            state = {"messages": existing_messages + [human_message]} if existing_messages else {"messages": [human_message]}
+            logger.info(f"Created state with {len(state['messages'])} messages")
             
             # Invoke workflow
-            result = self.workflow.invoke(state, config)
-            logger.info(f"Workflow result type: {type(result)}")
-            
-            if isinstance(result, dict):
-                logger.info(f"Result keys: {result.keys()}")
-                if "messages" in result:
-                    logger.info(f"Result has {len(result['messages'])} messages")
+            logger.info(f"Invoking workflow with config: {config}")
+            try:
+                # Use a timeout to prevent hanging if the invoke takes too long
+                import asyncio
+                if asyncio.iscoroutinefunction(self.workflow.invoke):
+                    # For async workflow
+                    result = await self.workflow.invoke(state, config)
+                else:
+                    # For sync workflow
+                    result = self.workflow.invoke(state, config)
+                
+                logger.info(f"Workflow result type: {type(result)}")
+                
+                if isinstance(result, dict):
+                    logger.debug(f"Result keys: {result.keys()}")
+                    if "messages" in result:
+                        logger.debug(f"Result has {len(result['messages'])} messages")
+                    else:
+                        logger.warning(f"Result missing 'messages' key. Keys present: {list(result.keys())}")
+                else:
+                    logger.warning(f"Result is not a dict, but {type(result)}")
+            except Exception as e:
+                logger.error(f"Error invoking workflow: {e}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                # Return error message
+                return "I apologize, but I'm experiencing a technical issue with the interview system. Please try again.", session_id
             
             # Update last active timestamp and store transcript
             timestamp = datetime.now().isoformat()
             
-            if self.session_manager:
-                # Update session activity
-                self.session_manager.update_session_activity(session_id)
-                
-                # Get and update session metadata
-                session = self.session_manager.get_session(session_id)
-                if session:
-                    metadata = session.get("metadata", {})
-                    
-                    # Initialize or append to transcript
-                    transcript = metadata.get("transcript", [])
-                    
-                    # Extract AI response
-                    ai_response = ""
-                    if isinstance(result, dict) and "messages" in result:
-                        messages = result["messages"]
-                        if messages and isinstance(messages[-1], AIMessage):
-                            ai_response = messages[-1].content
-                    
-                    # Add to transcript
-                    transcript.append({
-                        "timestamp": timestamp,
-                        "user": query,
-                        "ai": ai_response
-                    })
-                    
-                    # Update metadata
-                    metadata["transcript"] = transcript
-                    metadata["last_response"] = ai_response
-                    
-                    # Save updated metadata
-                    self.session_manager.update_session_metadata(session_id, metadata)
-            else:
-                # In-memory storage
-                if session_id in self.active_sessions:
-                    # Initialize transcript if needed
-                    if "transcript" not in self.active_sessions[session_id]:
-                        self.active_sessions[session_id]["transcript"] = []
-                    
-                    # Extract AI response
-                    ai_response = ""
-                    if isinstance(result, dict) and "messages" in result:
-                        messages = result["messages"]
-                        if messages and isinstance(messages[-1], AIMessage):
-                            ai_response = messages[-1].content
-                    
-                    # Update transcript
-                    self.active_sessions[session_id]["transcript"].append({
-                        "timestamp": timestamp,
-                        "user": query,
-                        "ai": ai_response
-                    })
-                    
-                    # Update last active timestamp
-                    self.active_sessions[session_id]["last_active"] = timestamp
-            
             # Extract AI response
+            ai_response = ""
             if isinstance(result, dict) and "messages" in result:
                 messages = result["messages"]
                 if messages and isinstance(messages[-1], AIMessage):
+                    ai_response = messages[-1].content
                     logger.info("Successfully extracted AI response")
-                    return messages[-1].content, session_id
-                else:
-                    logger.warning("No AI message found in result")
-            else:
-                logger.warning(f"Unexpected result format: {type(result)}")
             
-            # Fallback response
-            return "I apologize, but I couldn't generate a proper response. Let's continue our conversation.", session_id
+            # Update session data
+            try:
+                if self.session_manager:
+                    # Update session activity
+                    self.session_manager.update_session_activity(session_id)
+                    
+                    # Get and update session metadata
+                    session = self.session_manager.get_session(session_id)
+                    if session:
+                        metadata = session.get("metadata", {})
+                        
+                        # Initialize or append to transcript
+                        transcript = metadata.get("transcript", [])
+                        
+                        # Add to transcript
+                        transcript.append({
+                            "timestamp": timestamp,
+                            "user": query,
+                            "ai": ai_response
+                        })
+                        
+                        # Update metadata
+                        metadata["transcript"] = transcript
+                        metadata["last_response"] = ai_response
+                        
+                        # Save updated metadata
+                        self.session_manager.update_session_metadata(session_id, metadata)
+                else:
+                    # In-memory storage
+                    if session_id in self.active_sessions:
+                        # Initialize transcript if needed
+                        if "transcript" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["transcript"] = []
+                        
+                        # Update transcript
+                        self.active_sessions[session_id]["transcript"].append({
+                            "timestamp": timestamp,
+                            "user": query,
+                            "ai": ai_response
+                        })
+                        
+                        # Update last active timestamp
+                        self.active_sessions[session_id]["last_active"] = timestamp
+            except Exception as e:
+                logger.error(f"Error updating session data: {e}")
+            
+            # Return AI response if we have it, otherwise return a fallback message
+            if ai_response:
+                return ai_response, session_id
+            else:
+                logger.warning("No AI response found in result")
+                return "I apologize, but I couldn't generate a proper response. Let's continue our conversation.", session_id
                 
         except Exception as e:
             logger.error(f"Error processing interview for user {user_id}: {e}")
@@ -611,15 +727,18 @@ class AIInterviewer:
         # Get session data
         session_data = None
         
-        if self.session_manager:
-            # Get session from MongoDB
-            session = self.session_manager.get_session(session_id)
-            if session and session.get("user_id") == user_id:
-                session_data = session
-        else:
-            # Get session from in-memory storage
-            if session_id in self.active_sessions and self.active_sessions[session_id].get("user_id") == user_id:
-                session_data = self.active_sessions[session_id]
+        try:
+            if self.session_manager:
+                # Get session from MongoDB
+                session = self.session_manager.get_session(session_id)
+                if session and session.get("user_id") == user_id:
+                    session_data = session
+            else:
+                # Get session from in-memory storage
+                if session_id in self.active_sessions and self.active_sessions[session_id].get("user_id") == user_id:
+                    session_data = self.active_sessions[session_id]
+        except Exception as e:
+            logger.error(f"Error retrieving session for resume: {e}")
         
         if not session_data:
             return "Session not found or invalid. Starting a new interview session.", {}
@@ -630,13 +749,18 @@ class AIInterviewer:
             return response, session_data
         
         # Get session metadata
-        if self.session_manager:
-            metadata = session_data.get("metadata", {})
-            transcript = metadata.get("transcript", [])
-            current_stage = metadata.get("interview_stage", InterviewStage.INTRODUCTION.value)
-        else:
-            transcript = session_data.get("transcript", [])
-            current_stage = session_data.get("interview_stage", InterviewStage.INTRODUCTION.value)
+        try:
+            if self.session_manager:
+                metadata = session_data.get("metadata", {})
+                transcript = metadata.get("transcript", [])
+                current_stage = metadata.get("interview_stage", InterviewStage.INTRODUCTION.value)
+            else:
+                transcript = session_data.get("transcript", [])
+                current_stage = session_data.get("interview_stage", InterviewStage.INTRODUCTION.value)
+        except Exception as e:
+            logger.error(f"Error getting session metadata: {e}")
+            transcript = []
+            current_stage = InterviewStage.INTRODUCTION.value
         
         # Build summary message
         candidate_name = session_data.get("metadata", {}).get("candidate_name", "") if self.session_manager else session_data.get("candidate_name", "")
@@ -682,47 +806,61 @@ class AIInterviewer:
         Returns:
             Session ID
         """
-        if self.session_manager:
-            # Try to get most recent active session for user
-            session = self.session_manager.get_most_recent_session(user_id)
-            if session:
-                return session["session_id"]
-            
-            # Create new session with initial interview stage
-            session_id = self.session_manager.create_session(user_id)
-            
-            # Set initial interview stage
-            self.session_manager.update_session_metadata(
-                session_id, 
-                {"interview_stage": InterviewStage.INTRODUCTION.value}
-            )
-            
-            return session_id
-        else:
-            # In-memory session management
-            # Check for existing active session
-            for session_id, session_data in self.active_sessions.items():
-                if session_data.get("user_id") == user_id:
-                    # Check if session is still active (not expired)
-                    last_active = datetime.fromisoformat(session_data.get("last_active", ""))
-                    time_diff = (datetime.now() - last_active).total_seconds() / 60
-                    
-                    if time_diff < 60:  # 1 hour timeout
-                        logger.info(f"Using existing session {session_id} for user {user_id}")
-                        return session_id
-            
-            # Create new session
+        try:
+            if self.session_manager:
+                # Try to get most recent active session for user
+                session = self.session_manager.get_most_recent_session(user_id)
+                if session:
+                    return session["session_id"]
+                
+                # Create new session with initial interview stage
+                session_id = self.session_manager.create_session(user_id)
+                
+                # Set initial interview stage
+                self.session_manager.update_session_metadata(
+                    session_id, 
+                    {"interview_stage": InterviewStage.INTRODUCTION.value}
+                )
+                
+                return session_id
+            else:
+                # In-memory session management
+                # Check for existing active session
+                for session_id, session_data in self.active_sessions.items():
+                    if session_data.get("user_id") == user_id:
+                        # Check if session is still active (not expired)
+                        last_active = datetime.fromisoformat(session_data.get("last_active", ""))
+                        time_diff = (datetime.now() - last_active).total_seconds() / 60
+                        
+                        if time_diff < 60:  # 1 hour timeout
+                            logger.info(f"Using existing session {session_id} for user {user_id}")
+                            return session_id
+                
+                # Create new session
+                session_id = str(uuid.uuid4())
+                self.active_sessions[session_id] = {
+                    "user_id": user_id,
+                    "interview_id": session_id,
+                    "candidate_name": "",  # Will be populated during conversation
+                    "created_at": datetime.now().isoformat(),
+                    "last_active": datetime.now().isoformat(),
+                    "interview_stage": InterviewStage.INTRODUCTION.value
+                }
+                
+                logger.info(f"Created new session {session_id} for user {user_id}")
+                return session_id
+        except Exception as e:
+            logger.error(f"Error in get_or_create_session: {e}")
+            # Generate a fallback session ID
             session_id = str(uuid.uuid4())
             self.active_sessions[session_id] = {
                 "user_id": user_id,
                 "interview_id": session_id,
-                "candidate_name": "",  # Will be populated during conversation
                 "created_at": datetime.now().isoformat(),
                 "last_active": datetime.now().isoformat(),
                 "interview_stage": InterviewStage.INTRODUCTION.value
             }
-            
-            logger.info(f"Created new session {session_id} for user {user_id}")
+            logger.info(f"Created fallback session {session_id} for user {user_id}")
             return session_id
     
     def list_active_sessions(self) -> Dict[str, Dict[str, Any]]:
@@ -732,23 +870,27 @@ class AIInterviewer:
         Returns:
             Dictionary of active sessions
         """
-        if self.session_manager:
-            # Get sessions from MongoDB
-            sessions = self.session_manager.list_active_sessions()
-            return {s["session_id"]: s for s in sessions}
-        else:
-            # Filter out expired sessions from in-memory storage
-            now = datetime.now()
-            active_sessions = {}
-            
-            for session_id, session_data in self.active_sessions.items():
-                last_active = datetime.fromisoformat(session_data.get("last_active", ""))
-                time_diff = (now - last_active).total_seconds() / 60
+        try:
+            if self.session_manager:
+                # Get sessions from MongoDB
+                sessions = self.session_manager.list_active_sessions()
+                return {s["session_id"]: s for s in sessions}
+            else:
+                # Filter out expired sessions from in-memory storage
+                now = datetime.now()
+                active_sessions = {}
                 
-                if time_diff < 60:  # 1 hour timeout
-                    active_sessions[session_id] = session_data
-            
-            return active_sessions
+                for session_id, session_data in self.active_sessions.items():
+                    last_active = datetime.fromisoformat(session_data.get("last_active", ""))
+                    time_diff = (now - last_active).total_seconds() / 60
+                    
+                    if time_diff < 60:  # 1 hour timeout
+                        active_sessions[session_id] = session_data
+                
+                return active_sessions
+        except Exception as e:
+            logger.error(f"Error listing active sessions: {e}")
+            return {}
     
     def get_user_sessions(self, user_id: str, include_completed: bool = False) -> List[Dict[str, Any]]:
         """
@@ -761,26 +903,38 @@ class AIInterviewer:
         Returns:
             List of session details
         """
-        if self.session_manager:
-            # Get sessions from MongoDB
-            return self.session_manager.get_user_sessions(user_id, include_completed)
-        else:
-            # Get sessions from in-memory storage
-            sessions = []
-            
-            for session_id, session_data in self.active_sessions.items():
-                if session_data.get("user_id") == user_id:
-                    sessions.append(session_data)
-            
-            return sessions
+        try:
+            if self.session_manager:
+                # Get sessions from MongoDB
+                return self.session_manager.get_user_sessions(user_id, include_completed)
+            else:
+                # Get sessions from in-memory storage
+                sessions = []
+                
+                for session_id, session_data in self.active_sessions.items():
+                    if session_data.get("user_id") == user_id:
+                        sessions.append(session_data)
+                
+                return sessions
+        except Exception as e:
+            logger.error(f"Error getting user sessions: {e}")
+            return []
     
     def cleanup(self):
         """Clean up resources."""
         if hasattr(self, 'checkpointer') and hasattr(self.checkpointer, 'close'):
-            self.checkpointer.close()
+            try:
+                self.checkpointer.close()
+                logger.info("Checkpointer resources cleaned up")
+            except Exception as e:
+                logger.error(f"Error closing checkpointer: {e}")
         
         if hasattr(self, 'session_manager') and hasattr(self.session_manager, 'close'):
-            self.session_manager.close()
+            try:
+                self.session_manager.close()
+                logger.info("Session manager resources cleaned up")
+            except Exception as e:
+                logger.error(f"Error closing session manager: {e}")
     
     def _extract_candidate_name(self, messages: List[BaseMessage]) -> str:
         """

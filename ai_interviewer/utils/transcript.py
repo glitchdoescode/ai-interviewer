@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -167,25 +169,132 @@ def format_transcript_for_display(transcript: List[Dict[str, Any]]) -> str:
     
     return formatted
 
-def extract_messages_from_transcript(transcript: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def extract_messages_from_transcript(transcript: List[Dict[str, Any]], 
+                                    system_prompt: Optional[str] = None) -> List[BaseMessage]:
     """
-    Extract messages from a transcript for use with the LLM.
+    Convert a transcript (list of message exchanges) to LangChain message objects.
     
     Args:
-        transcript: List of transcript entries
+        transcript: List of message exchanges with 'user' and 'ai' keys
+        system_prompt: Optional system prompt to prepend to the messages
         
     Returns:
-        List of message dictionaries
+        List of LangChain message objects
     """
     messages = []
     
-    for entry in transcript:
-        # Add user message
-        if "user" in entry and entry["user"]:
-            messages.append({"role": "user", "content": entry["user"]})
-        
-        # Add AI message
-        if "ai" in entry and entry["ai"]:
-            messages.append({"role": "assistant", "content": entry["ai"]})
+    # Add system message if provided
+    if system_prompt:
+        messages.append(SystemMessage(content=system_prompt))
     
-    return messages 
+    # Convert transcript entries to messages
+    for entry in transcript:
+        try:
+            # Add user message
+            if "user" in entry and entry["user"]:
+                messages.append(HumanMessage(content=entry["user"]))
+            
+            # Add AI message
+            if "ai" in entry and entry["ai"]:
+                messages.append(AIMessage(content=entry["ai"]))
+        except Exception as e:
+            logger.error(f"Error converting transcript entry to messages: {e}")
+            # Continue with other entries
+    
+    return messages
+
+def messages_to_transcript(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+    """
+    Convert LangChain message objects to transcript format.
+    
+    Args:
+        messages: List of LangChain message objects
+        
+    Returns:
+        List of message exchanges in transcript format
+    """
+    transcript = []
+    timestamp = datetime.now().isoformat()
+    
+    # Skip system messages at the beginning
+    start_idx = 0
+    if messages and isinstance(messages[0], SystemMessage):
+        start_idx = 1
+    
+    # Process message pairs
+    for i in range(start_idx, len(messages) - 1, 2):
+        try:
+            # Check if we have a human-AI message pair
+            if i+1 < len(messages) and isinstance(messages[i], HumanMessage) and isinstance(messages[i+1], AIMessage):
+                entry = {
+                    "timestamp": timestamp,
+                    "user": messages[i].content,
+                    "ai": messages[i+1].content
+                }
+                transcript.append(entry)
+        except Exception as e:
+            logger.error(f"Error converting messages to transcript: {e}")
+            # Continue with other messages
+    
+    # Handle last message if it's unpaired
+    if len(messages) > start_idx and (len(messages) - start_idx) % 2 == 1:
+        if isinstance(messages[-1], HumanMessage):
+            transcript.append({
+                "timestamp": timestamp,
+                "user": messages[-1].content,
+                "ai": ""
+            })
+    
+    return transcript
+
+def serialize_message(message: BaseMessage) -> Dict[str, Any]:
+    """
+    Serialize a LangChain message object to a dictionary.
+    
+    Args:
+        message: LangChain message object
+        
+    Returns:
+        Dictionary representation of the message
+    """
+    message_type = message.__class__.__name__
+    result = {
+        "type": message_type,
+        "content": message.content,
+        "additional_kwargs": message.additional_kwargs,
+    }
+    
+    # Add special handling for tool calls
+    if hasattr(message, "tool_calls") and message.tool_calls:
+        result["tool_calls"] = message.tool_calls
+        
+    return result
+
+def deserialize_message(data: Dict[str, Any]) -> BaseMessage:
+    """
+    Deserialize a dictionary to a LangChain message object.
+    
+    Args:
+        data: Dictionary representation of a message
+        
+    Returns:
+        LangChain message object
+    """
+    message_type = data.get("type")
+    content = data.get("content", "")
+    additional_kwargs = data.get("additional_kwargs", {})
+    
+    # Create the appropriate message type
+    if message_type == "HumanMessage":
+        return HumanMessage(content=content, additional_kwargs=additional_kwargs)
+    elif message_type == "AIMessage":
+        message = AIMessage(content=content, additional_kwargs=additional_kwargs)
+        # Handle tool calls if present
+        if "tool_calls" in data:
+            message.tool_calls = data["tool_calls"]
+        return message
+    elif message_type == "SystemMessage":
+        return SystemMessage(content=content, additional_kwargs=additional_kwargs)
+    
+    # Default to base message if type not recognized
+    return BaseMessage(content=content, additional_kwargs=additional_kwargs) 
