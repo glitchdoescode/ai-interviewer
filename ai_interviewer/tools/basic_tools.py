@@ -94,15 +94,55 @@ def get_next_question(topic: str = "general") -> Dict:
 
 
 @tool
-def submit_answer(answer: str) -> str:
+def submit_answer(question_id: str, answer: str) -> Dict:
     """
     Submit an answer to the current question.
     
     Args:
+        question_id: The ID of the question being answered
         answer: The candidate's answer to the current question
         
     Returns:
-        A confirmation message
+        A dictionary with evaluation results
     """
-    logger.info(f"Answer submitted: {answer[:50]}...")
-    return "Answer received. Continuing with the interview." 
+    logger.info(f"Answer submitted for question {question_id}: {answer[:50]}...")
+    
+    # Find the question from the sample questions
+    question_data = None
+    for topic, questions in SAMPLE_QUESTIONS.items():
+        for question in questions:
+            if question["id"] == question_id:
+                question_data = question
+                break
+        if question_data:
+            break
+    
+    # Simple evaluation based on keyword presence
+    evaluation = {
+        "score": 0,
+        "feedback": "Answer recorded."
+    }
+    
+    if question_data:
+        # Count how many expected keywords are in the answer
+        keywords_found = []
+        for keyword in question_data["expected_keywords"]:
+            if keyword.lower() in answer.lower():
+                keywords_found.append(keyword)
+        
+        # Calculate score based on keyword matches
+        keyword_ratio = len(keywords_found) / len(question_data["expected_keywords"])
+        score = min(5, int(keyword_ratio * 5) + 1)  # 1-5 score
+        
+        evaluation = {
+            "score": score,
+            "keywords_found": keywords_found,
+            "keywords_missing": [kw for kw in question_data["expected_keywords"] if kw not in keywords_found],
+            "feedback": f"Answer evaluated with score {score}/5."
+        }
+    
+    return {
+        "status": "success",
+        "question_id": question_id,
+        "evaluation": evaluation
+    } 

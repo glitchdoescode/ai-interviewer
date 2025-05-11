@@ -1,193 +1,178 @@
 """
 Command-line interface for the AI Interviewer platform.
 
-This module provides a command-line interface for testing the interview process.
+This module provides a simple command-line interface for interacting with
+the AI Interviewer.
 """
+import argparse
+import logging
 import os
 import sys
-import logging
-import argparse
 import uuid
-from typing import Dict, Any, Optional
-from dotenv import load_dotenv
+from typing import List, Optional, Dict, Any, Union
 
 from langchain_core.messages import HumanMessage
 
-from ai_interviewer.core.workflow import create_interview_workflow
-from ai_interviewer.models.state import InterviewState
-from ai_interviewer.utils.logging_utils import setup_logging
+from ai_interviewer.core.workflow import create_interview_workflow, create_checkpointer
 
-# Load environment variables
-load_dotenv()
+# Create logs directory if needed
+if not os.path.exists("logs"):
+    os.makedirs("logs")
 
 # Configure logging
-setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
 logger = logging.getLogger(__name__)
 
 
-def parse_args():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="AI Interviewer CLI")
-    parser.add_argument(
-        "--thread-id", 
-        type=str, 
-        help="Thread ID for continuing an existing interview"
-    )
-    parser.add_argument(
-        "--topic", 
-        type=str, 
-        default="general",
-        choices=["general", "python", "javascript", "data_structures"],
-        help="Topic for the interview questions"
-    )
-    parser.add_argument(
-        "--skill-level",
-        type=str,
-        default="general",
-        choices=["junior", "mid", "senior", "general"],
-        help="Skill level for the interview"
-    )
-    return parser.parse_args()
-
-
-def run_interview_cli():
+def run_interview(thread_id: Optional[str] = None, topic: str = "general", skill_level: str = "general") -> None:
     """
-    Run the AI Interviewer in an interactive CLI loop.
+    Run the AI interviewer in an interactive command-line session.
+    
+    Args:
+        thread_id: Optional thread ID for persistent state (for resuming interviews)
+        topic: The topic of the interview (e.g., python, javascript)
+        skill_level: The skill level to target (e.g., junior, mid, senior)
     """
-    args = parse_args()
-    logger.info("Starting AI Interviewer CLI")
+    # Create or use thread ID
+    if not thread_id:
+        thread_id = str(uuid.uuid4())
     
-    # Get the interview app
-    interview_app = create_interview_workflow()
-    
-    # Generate or use thread ID
-    thread_id = args.thread_id or str(uuid.uuid4())
     logger.info(f"Interview session ID: {thread_id}")
     
-    # Create a properly initialized InterviewState with all required fields
-    state = {
-        "messages": [],
-        "interview_id": thread_id,
-        "candidate_id": None,
-        "current_question_id": None,
-        "current_question_text": None,
-        "candidate_responses": [],
-        "coding_challenge_state": None,
-        "evaluation_notes": [],
-        "interview_stage": "greeting",
-        "current_topic": args.topic,
-        "question_history": []
-    }
+    # Set up the interview workflow with a memory-based checkpointer
+    checkpointer = create_checkpointer()
+    logger.info(f"Created checkpointer: {id(checkpointer)}")
     
-    # Config with thread_id for continuity
-    config = {
-        "configurable": {
-            "topic": args.topic,
-            "skill_level": args.skill_level
-        },
-        "thread_id": thread_id,
-        "checkpoint_id": thread_id
-    }
+    workflow = create_interview_workflow(checkpointer)
+    logger.info(f"Created workflow graph with checkpointer")
     
+    # Create config with thread_id for persistence
+    config: Dict[str, Any] = {
+        "configurable": {"topic": topic, "skill_level": skill_level},
+        "thread_id": thread_id
+    }
+    logger.info(f"Using config: thread_id={thread_id}, topic={topic}, skill_level={skill_level}")
+    
+    # Initial greeting to start the interview
+    initial_message = "Hello, I'm here for the interview."
+    
+    # Start the interview with an initial greeting
+    logger.info("Starting interview with initial greeting")
+    result = workflow.invoke(
+        {"messages": [HumanMessage(content=initial_message)]},
+        config=config
+    )
+    
+    # Print interview information
     print("\n" + "=" * 50)
     print("  AI INTERVIEWER - Interactive Technical Interview")
     print("=" * 50)
     print(f"* Session ID: {thread_id}")
-    print(f"* Topic: {args.topic}")
-    print(f"* Skill Level: {args.skill_level}")
-    print("* Type 'exit' or 'quit' to end the interview")
+    print(f"* Topic: {topic}")
+    print(f"* Skill Level: {skill_level}")
+    print(f"* Type 'exit' or 'quit' to end the interview")
     print("=" * 50 + "\n")
     
-    # Send an empty message to start the interview
-    # Add a system message first to ensure we have a valid message
-    greeting_state = {
-        "messages": [HumanMessage(content="Hello, I'm here for the interview.")],
-        "interview_id": thread_id,
-        "candidate_id": None,
-        "current_question_id": None,
-        "current_question_text": None,
-        "candidate_responses": [],
-        "coding_challenge_state": None,
-        "evaluation_notes": [],
-        "interview_stage": "greeting",
-        "current_topic": args.topic,
-        "question_history": []
-    }
+    # Process the first response
+    ai_response = result.get("messages", [])[-1].content
+    print("AI:", ai_response)
     
-    result = interview_app.invoke(greeting_state, config)
-    
-    # Display the AI's first message
-    if result and result.get("messages"):
-        first_message = result["messages"][-1]
-        print(f"AI: {first_message.content}\n")
+    # Store current state for context preservation
+    current_state = result
     
     # Main interview loop
-    try:
-        # Keep track of the latest complete state
-        current_state = result if result else greeting_state
+    while True:
+        # Get user input
+        user_input = input("\nYou: ")
         
-        while True:
-            # Get user input
-            user_input = input("You: ").strip()
-            
-            # Check for exit command
-            if user_input.lower() in ["exit", "quit", "bye"]:
-                print("\nAI: Thank you for participating in this interview. Goodbye!\n")
-                break
-            
-            # Add user message to the state
-            user_message = HumanMessage(content=user_input)
-            
-            # Create next state with the new message but preserve all critical state
-            next_state = {
-                "messages": [user_message],
-            }
-            
-            # Preserve critical state fields
-            preserve_fields = [
-                "candidate_id", "interview_stage", "current_topic", 
-                "question_history", "candidate_responses", "evaluation_notes",
-                "current_question_id", "current_question_text"
-            ]
-            
-            for field in preserve_fields:
-                if field in current_state and current_state[field] is not None:
-                    next_state[field] = current_state[field]
-                    
-            # Always provide the interview_id
-            next_state["interview_id"] = thread_id
-            
-            # Invoke the interview app
-            try:
-                result = interview_app.invoke(next_state, config)
+        # Check for exit command
+        if user_input.lower() in ["exit", "quit", "q"]:
+            print("\n\nInterview terminated by user.\n")
+            print("Thank you for using AI Interviewer!")
+            break
+        
+        # Process user input
+        try:
+            # Preserve important state information like candidate_id across invocations
+            if current_state and current_state.get("candidate_id"):
+                logger.info(f"Preserving candidate_id in next request: {current_state.get('candidate_id')}")
                 
-                # Update our tracking of the complete state
-                if result:
-                    # Update the current state with all fields from result
-                    for key, value in result.items():
-                        current_state[key] = value
-                    
-                    # Log the current stage and question count
-                    stage = current_state.get("interview_stage", "unknown")
-                    questions = len(current_state.get("question_history", []))
-                    logger.info(f"Interview progress: stage={stage}, questions={questions}")
+            # Process user input
+            logger.info(f"Using thread_id: {thread_id} for state persistence")
+            logger.info(f"Sending new human message: {user_input[:50]}...")
+            
+            # Send only the new message - the checkpointer will handle state persistence
+            result = workflow.invoke(
+                {"messages": [HumanMessage(content=user_input)]},
+                config=config
+            )
+            
+            # Update our current state
+            current_state = result
+            if "candidate_id" in result:
+                logger.info(f"Updated current_state with candidate_id: {result['candidate_id']}")
+            
+            # Extract AI response and print it
+            messages = result.get("messages", [])
+            if messages:
+                # Print interview progress information
+                interview_stage = result.get("interview_stage", "unknown")
+                questions = len(result.get("question_history", []))
+                logger.info(f"Interview progress: stage={interview_stage}, questions={questions}")
                 
-                # Display the AI's response
-                if result and result.get("messages"):
-                    ai_response = result["messages"][-1]
-                    print(f"\nAI: {ai_response.content}\n")
-            except Exception as e:
-                logger.error(f"Error during interview: {e}")
-                print(f"\nAI: I apologize, but I encountered an error. Let's continue.\n")
+                # Get the latest AI message
+                ai_response = messages[-1].content
+                print("\nAI:", ai_response)
+        
+        except KeyboardInterrupt:
+            print("\n\nInterview terminated by user.\n")
+            print("Thank you for using AI Interviewer!")
+            break
+        
+        except Exception as e:
+            logger.error(f"Error during interview: {e}", exc_info=True)
+            print(f"\nAn error occurred: {e}")
+            print("Let's continue the interview...")
+
+
+def main() -> None:
+    """
+    Main entry point for the AI Interviewer CLI.
+    """
+    logger.info("Starting AI Interviewer CLI")
     
-    except KeyboardInterrupt:
-        print("\n\nInterview terminated by user.")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        print(f"\nUnexpected error: {e}")
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="AI Interviewer CLI")
+    parser.add_argument("--thread-id", type=str, help="Thread ID for resuming an interview")
+    parser.add_argument(
+        "--topic", 
+        type=str, 
+        choices=["general", "python", "javascript", "data_structures"],
+        default="general",
+        help="Topic for the interview"
+    )
+    parser.add_argument(
+        "--skill-level", 
+        type=str, 
+        choices=["junior", "mid", "senior", "general"],
+        default="general",
+        help="Target skill level for the interview"
+    )
     
-    print("\nThank you for using AI Interviewer!\n")
+    args = parser.parse_args()
+    
+    # Run the interview
+    run_interview(args.thread_id, args.topic, args.skill_level)
 
 
 if __name__ == "__main__":
-    run_interview_cli() 
+    # Configure logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    
+    # Enter main function
+    main() 

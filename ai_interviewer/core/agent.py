@@ -30,6 +30,9 @@ During this interview, you should:
 6. Be respectful, professional, and unbiased at all times.
 7. Do not provide the answers to questions even if the candidate struggles.
 8. Keep your responses concise and clear.
+9. Never repeat questions that have already been asked.
+10. Remember previous responses from the candidate and build on them.
+11. DO NOT ask for the candidate's background more than once.
 
 The interview progresses through several stages:
 - greeting: Initial welcome and introduction
@@ -39,6 +42,13 @@ The interview progresses through several stages:
 - finished: End of interview
 
 Your current stage in the interview is: {interview_stage}
+
+STAGE-SPECIFIC INSTRUCTIONS:
+- If in greeting stage: Introduce yourself and ask ONCE about the candidate's background.
+- If in qa stage: Use the generate_interview_question tool to create relevant technical questions. DO NOT repeat your introduction.
+- If in coding stage: Use start_coding_challenge to present a coding challenge.
+- If in feedback stage: Summarize the candidate's performance.
+- If in finished stage: Thank the candidate for their time and end the interview.
 
 TOOLS:
 You have access to several tools to help guide the interview:
@@ -50,22 +60,7 @@ You have access to several tools to help guide the interview:
 - submit_code_for_challenge: Use this to submit and evaluate the candidate's coding solution
 - get_coding_hint: Use this to provide a hint for the current coding challenge
 
-STAGE TRANSITIONS:
-- When starting, use the greeting stage to introduce yourself and understand the candidate's background
-- After greeting, transition to qa stage for technical assessment by asking questions on relevant topics
-- After several questions in the qa stage, transition to coding stage and use start_coding_challenge
-- When concluding, transition to feedback stage to summarize the interview
-- Finally, transition to finished stage when the interview is complete
-
-CODING CHALLENGE GUIDANCE:
-When in the coding stage:
-1. Explain to the candidate that you'll be presenting a coding challenge
-2. Use the start_coding_challenge tool to retrieve a challenge
-3. Clearly present the problem, requirements, and starter code to the candidate
-4. Encourage the candidate to think aloud as they work on the solution
-5. When they provide code, use submit_code_for_challenge to evaluate it
-6. If they get stuck, offer encouragement and the option to use get_coding_hint
-7. After evaluating their solution, provide constructive feedback
+IMPORTANT: When in the qa stage, ALWAYS use generate_interview_question tool to create relevant technical questions.
 """
 
 
@@ -162,21 +157,40 @@ def should_transition_stage(current_stage: str, messages: List, question_count: 
     Returns:
         The suggested next stage, or current stage if no transition needed
     """
-    # Simple transition logic based on stages and question count
-    if current_stage == "greeting" and len(messages) >= 4:
-        # After initial greeting exchange (2 turns), move to Q&A
+    # Count all human messages in the conversation history
+    human_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
+    ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
+    exchange_count = len(human_messages)
+    
+    logger.info(f"Stage transition check: current_stage={current_stage}, exchanges={exchange_count}, questions={question_count}")
+    logger.info(f"Total messages: {len(messages)}, Human messages: {len(human_messages)}, AI messages: {len(ai_messages)}")
+    
+    # Dump message content for debugging
+    for i, msg in enumerate(messages):
+        msg_type = type(msg).__name__
+        content_preview = msg.content[:30] + "..." if len(msg.content) > 30 else msg.content
+        logger.info(f"Message {i}: {msg_type} - {content_preview}")
+
+    # Stage transition logic with more reliable triggers
+    if current_stage == "greeting" and exchange_count >= 2:
+        # After 2 human messages, transition to Q&A
+        logger.info(f"TRANSITIONING from greeting to qa after {exchange_count} human messages")
         return "qa"
     elif current_stage == "qa" and question_count >= 3:
-        # After 3 questions, move to coding challenge
+        # After at least 3 questions, move to coding
+        logger.info(f"TRANSITIONING from qa to coding after {question_count} questions")
         return "coding" 
     elif current_stage == "coding" and has_completed_coding:
         # After coding challenge is completed, move to feedback
+        logger.info("TRANSITIONING from coding to feedback after challenge completion")
         return "feedback"
-    elif current_stage == "feedback" and len(messages) >= question_count + 4:
-        # After feedback exchange, conclude the interview
+    elif current_stage == "feedback" and exchange_count >= question_count + 2:
+        # After feedback exchange, conclude
+        logger.info("TRANSITIONING from feedback to finished")
         return "finished"
     
     # Default: remain in the current stage
+    logger.info(f"Remaining in {current_stage} stage")
     return current_stage
 
 
@@ -192,118 +206,163 @@ def interview_agent(state: Union[Dict, InterviewState], config: Optional[Dict[st
     Returns:
         Updated state information
     """
-    # Get the existing state from the checkpointer if this isn't the initial call
-    existing_state = None
+    # Log the entire input state for debugging
+    logger.info(f"RECEIVED STATE: {type(state)}")
+    
+    # Normalize the state to work with either a dict or InterviewState
+    if isinstance(state, dict):
+        # Convert dict to a normalized working format
+        normalized_state = {
+            "messages": state.get("messages", []),
+            "interview_id": state.get("interview_id"),
+            "candidate_id": state.get("candidate_id"),
+            "interview_stage": state.get("interview_stage", "greeting"),
+            "question_history": state.get("question_history", []),
+            "candidate_responses": state.get("candidate_responses", []),
+            "current_topic": state.get("current_topic", "general"),
+            "coding_challenge_state": state.get("coding_challenge_state")
+        }
+        
+        # Log the message count in incoming state
+        logger.info(f"Input state messages count: {len(normalized_state['messages'])}")
+        if normalized_state['messages']:
+            logger.info(f"First message type: {type(normalized_state['messages'][0]).__name__}")
+            logger.info(f"Last message type: {type(normalized_state['messages'][-1]).__name__}")
+    else:
+        # Convert InterviewState to a normalized working format
+        normalized_state = {
+            "messages": state.messages,
+            "interview_id": state.interview_id,
+            "candidate_id": state.candidate_id,
+            "interview_stage": state.interview_stage,
+            "question_history": state.question_history,
+            "candidate_responses": state.candidate_responses,
+            "current_topic": state.current_topic or "general",
+            "coding_challenge_state": state.coding_challenge_state
+        }
+        
+        # Log the message count in incoming state
+        logger.info(f"Input state messages count: {len(normalized_state['messages'])}")
+        if normalized_state['messages']:
+            logger.info(f"First message type: {type(normalized_state['messages'][0]).__name__}")
+            logger.info(f"Last message type: {type(normalized_state['messages'][-1]).__name__}")
+    
+    # Debug checkpoint retrieval - this is critical for message persistence
     if config and "thread_id" in config:
-        thread_id = config["thread_id"]
-        if hasattr(config, "get") and config.get("checkpoint_id"):
+        try:
             from langgraph.checkpoint import get_checkpointer
             checkpointer = get_checkpointer()
-            try:
-                existing_state = checkpointer.get(config["checkpoint_id"], thread_id)
-                logger.debug(f"Retrieved existing state with checkpoint_id={config['checkpoint_id']}, thread_id={thread_id}")
-            except Exception as e:
-                logger.error(f"Error retrieving state: {e}")
+            
+            # For newer versions of LangGraph, the config is passed directly
+            # Check if the thread_id is already in the right format
+            thread_id = config["thread_id"]
+            
+            # Try to retrieve any existing state for this thread
+            existing_state = checkpointer.get(thread_id)
+            
+            if existing_state:
+                # Log the checkpointed state information
+                logger.info(f"Retrieved checkpointed state for thread: {thread_id}")
+                if "messages" in existing_state:
+                    logger.info(f"Checkpointed messages count: {len(existing_state['messages'])}")
+                
+                # CRITICAL FIX: Make sure we accumulate messages from checkpointed state
+                # Update normalized state with checkpointed values if they exist
+                for key in normalized_state:
+                    if key in existing_state and existing_state[key]:
+                        # Special handling for messages to ensure they accumulate correctly
+                        if key == "messages" and normalized_state[key]:
+                            # If the latest human message is not yet in the checkpointed messages
+                            # Only add the new human message, otherwise use checkpointed messages as is
+                            last_human_msg = normalized_state[key][-1] if normalized_state[key] else None
+                            checkpoint_msg_contents = [msg.content for msg in existing_state[key]] if existing_state[key] else []
+                            
+                            if last_human_msg and isinstance(last_human_msg, HumanMessage) and last_human_msg.content not in checkpoint_msg_contents:
+                                # We have a new human message that's not in the checkpoint
+                                logger.info("Adding new human message to checkpointed messages")
+                                normalized_state[key] = existing_state[key] + [last_human_msg]
+                            else:
+                                # Use checkpointed messages as is
+                                normalized_state[key] = existing_state[key]
+                        else:
+                            # For other state fields, just use the checkpointed values
+                            normalized_state[key] = existing_state[key]
+                
+                logger.info(f"After merging with checkpoint, messages count: {len(normalized_state['messages'])}")
+        except Exception as e:
+            logger.error(f"Error retrieving state: {e}")
     
-    # Handle case where state is a dict instead of an InterviewState object
-    interview_stage = "greeting"
-    candidate_id = None
-    question_history = []
-    candidate_responses = []
-    current_topic = "general"
-    coding_challenge_state = None
-    
-    # Use existing state values if available
-    if existing_state:
-        interview_stage = existing_state.get("interview_stage", "greeting") 
-        candidate_id = existing_state.get("candidate_id")
-        question_history = existing_state.get("question_history", [])
-        candidate_responses = existing_state.get("candidate_responses", [])
-        current_topic = existing_state.get("current_topic", "general")
-        coding_challenge_state = existing_state.get("coding_challenge_state")
-        logger.info(f"Retrieved existing state: stage={interview_stage}, candidate={candidate_id}, questions={len(question_history)}")
-    
-    if isinstance(state, dict):
-        # We're dealing with a dict, so access attributes as dictionary keys
-        # If 'interview_stage' is not in the dict, use existing or default to 'greeting'
-        if "interview_stage" in state:
-            interview_stage = state["interview_stage"]
-        if "candidate_id" in state and state["candidate_id"]:
-            candidate_id = state["candidate_id"]
-        if "question_history" in state:
-            question_history = state["question_history"]
-        if "candidate_responses" in state:
-            candidate_responses = state["candidate_responses"]
-        if "current_topic" in state:
-            current_topic = state["current_topic"]
-        if "coding_challenge_state" in state:
-            coding_challenge_state = state["coding_challenge_state"]
-        # Get messages from dict
-        messages = state.get("messages", [])
-    else:
-        # We're dealing with an InterviewState object
-        interview_stage = state.interview_stage
-        if state.candidate_id:
-            candidate_id = state.candidate_id
-        question_history = state.question_history
-        candidate_responses = state.candidate_responses
-        if state.current_topic:
-            current_topic = state.current_topic
-        coding_challenge_state = state.coding_challenge_state
-        messages = state.messages
-    
-    logger.info(f"Processing interview in stage: {interview_stage}")
+    logger.info(f"Processing interview in stage: {normalized_state['interview_stage']}")
     
     # Get user's message (if any)
     user_message = None
-    if messages and len(messages) > 0 and isinstance(messages[-1], HumanMessage):
-        user_message = messages[-1].content
+    if normalized_state["messages"] and isinstance(normalized_state["messages"][-1], HumanMessage):
+        user_message = normalized_state["messages"][-1].content
         logger.info(f"Received user message: {user_message[:50]}...")
         
         # Try to extract candidate name from introduction messages in greeting stage
-        if interview_stage == "greeting" and not candidate_id and user_message:
-            # Use LLM to extract name instead of regex patterns
-            candidate_id = extract_name_with_llm(user_message)
+        if normalized_state["interview_stage"] == "greeting" and not normalized_state["candidate_id"] and user_message:
+            normalized_state["candidate_id"] = extract_name_with_llm(user_message)
     
     # Determine if coding challenge has been completed (if in coding stage)
     has_completed_coding = False
-    if interview_stage == "coding" and coding_challenge_state and coding_challenge_state.get("status") == "evaluated":
+    if (normalized_state["interview_stage"] == "coding" and
+        normalized_state["coding_challenge_state"] and
+        normalized_state["coding_challenge_state"].get("status") == "evaluated"):
         has_completed_coding = True
     
     # Check if we should advance to the next stage based on the conversation flow
     next_stage = should_transition_stage(
-        interview_stage, 
-        messages, 
-        len(question_history),
+        normalized_state["interview_stage"], 
+        normalized_state["messages"], 
+        len(normalized_state["question_history"]),
         has_completed_coding
     )
     
-    if next_stage != interview_stage:
-        logger.info(f"Transitioning interview stage: {interview_stage} -> {next_stage}")
-        interview_stage = next_stage
+    # Important! Make sure stage transitions are applied to the state
+    if next_stage != normalized_state["interview_stage"]:
+        logger.info(f"Updating interview stage: {normalized_state['interview_stage']} -> {next_stage}")
+        normalized_state["interview_stage"] = next_stage
     
     # Prepare system message with current context
     system_prompt = INTERVIEWER_SYSTEM_PROMPT.format(
-        interview_stage=interview_stage
+        interview_stage=normalized_state["interview_stage"]
     )
     
     # Add candidate name to the system prompt if available
-    if candidate_id:
-        # Replace all instances of [Candidate Name] with the actual name
-        system_prompt = system_prompt.replace("[Candidate Name]", candidate_id)
+    if normalized_state["candidate_id"]:
+        # Add it explicitly in the beginning of the prompt
+        system_prompt = f"Candidate name: {normalized_state['candidate_id']}\n\n" + system_prompt
         
-        # Also add it explicitly in the beginning
-        system_prompt = f"Candidate name: {candidate_id}\n\n" + system_prompt
+        # For clarity in transitions, explicitly tell the model about the current stage
+        stage_message = ""
+        if normalized_state["interview_stage"] == "qa":
+            stage_message = "\n\nWe are now in the technical Q&A stage. Ask technical questions without repeating the introduction."
+        elif normalized_state["interview_stage"] == "coding":
+            stage_message = "\n\nWe are now in the coding challenge stage. Present a coding challenge."
+        elif normalized_state["interview_stage"] == "feedback":
+            stage_message = "\n\nWe are now in the feedback stage. Provide feedback on the interview."
+        elif normalized_state["interview_stage"] == "finished":
+            stage_message = "\n\nWe are now in the final stage. Conclude the interview."
+            
+        system_prompt += stage_message
     
     # Add context about previous questions and topics
-    if question_history:
-        system_prompt += f"\n\nPrevious questions asked: {len(question_history)}"
-        system_prompt += f"\nCurrent topic focus: {current_topic}"
+    if normalized_state["question_history"]:
+        system_prompt += f"\n\nPrevious questions asked: {normalized_state['question_history']}"
+        system_prompt += f"\nCurrent topic focus: {normalized_state['current_topic']}"
+    
+    # Add previous responses context
+    if normalized_state["candidate_responses"]:
+        system_prompt += "\n\nPrevious candidate responses:"
+        for i, response in enumerate(normalized_state["candidate_responses"][-3:]):  # Last 3 responses
+            if "answer" in response:
+                system_prompt += f"\nResponse {i+1}: {response['answer'][:100]}..."
     
     # Add coding challenge context if we have it
-    if coding_challenge_state:
-        challenge_id = coding_challenge_state.get("challenge_id")
-        submission_status = coding_challenge_state.get("status", "not_started")
+    if normalized_state["coding_challenge_state"]:
+        challenge_id = normalized_state["coding_challenge_state"].get("challenge_id")
+        submission_status = normalized_state["coding_challenge_state"].get("status", "not_started")
         
         system_prompt += f"\n\nActive coding challenge: {challenge_id}"
         system_prompt += f"\nChallenge status: {submission_status}"
@@ -314,21 +373,8 @@ def interview_agent(state: Union[Dict, InterviewState], config: Optional[Dict[st
     
     system_message = SystemMessage(content=system_prompt)
     
-    # Create the message history for the LLM
-    # Include saved messages from the existing state if available
-    all_messages = []
-    if existing_state and "messages" in existing_state:
-        saved_messages = existing_state.get("messages", [])
-        if saved_messages:
-            all_messages.extend(saved_messages)
-            
-    # Add the new message from the current state
-    if messages:
-        all_messages.extend(messages)
-    
-    # If we don't have messages yet, create a default history
-    if not all_messages:
-        all_messages = messages
+    # Create the complete message history for the LLM
+    all_messages = normalized_state["messages"]
     
     # Include the system message at the beginning
     llm_messages = [system_message] + all_messages
@@ -341,52 +387,23 @@ def interview_agent(state: Union[Dict, InterviewState], config: Optional[Dict[st
         ai_message = llm.invoke(llm_messages)
         logger.info(f"Generated AI response: {ai_message.content[:50]}...")
         
-        # If this is the first message in greeting stage, assign an interview ID
-        if interview_stage == "greeting" and (isinstance(state, dict) and not state.get("interview_id")):
-            interview_id = str(uuid.uuid4())
-            return {
-                "messages": all_messages + [ai_message],
-                "interview_id": interview_id,
-                "candidate_id": candidate_id,
-                "interview_stage": interview_stage
-            }
+        # If this is the first message in greeting stage, assign an interview ID if needed
+        if normalized_state["interview_stage"] == "greeting" and not normalized_state["interview_id"]:
+            normalized_state["interview_id"] = str(uuid.uuid4())
         
-        # Build the result with all the updated state information
-        result = {
-            "messages": all_messages + [ai_message],
-            "interview_stage": interview_stage
-        }
+        # Update the messages in the normalized state - IMPORTANT: we don't add stage marker to the actual message
+        normalized_state["messages"] = all_messages + [ai_message]
         
-        # Include other state fields that we're tracking
-        if candidate_id:
-            result["candidate_id"] = candidate_id
+        # Log the message count in the output state
+        logger.info(f"Output state messages count: {len(normalized_state['messages'])}")
         
-        result["question_history"] = question_history
-        result["candidate_responses"] = candidate_responses
-        result["current_topic"] = current_topic
+        # Log the current stage for debugging but don't modify the AI response
+        logger.info(f"Current interview stage after response: {normalized_state['interview_stage']}")
         
-        if coding_challenge_state:
-            result["coding_challenge_state"] = coding_challenge_state
-            
-        return result
+        # Return the updated state
+        return normalized_state
     
     except Exception as e:
         logger.error(f"Error generating AI response: {e}")
-        # Return original state on error to prevent data loss
-        if isinstance(state, dict):
-            return state
-        else:
-            # Convert InterviewState to dict
-            return {
-                "messages": state.messages,
-                "interview_id": state.interview_id,
-                "candidate_id": state.candidate_id,
-                "interview_stage": state.interview_stage,
-                "current_question_id": state.current_question_id,
-                "current_question_text": state.current_question_text,
-                "question_history": state.question_history,
-                "candidate_responses": state.candidate_responses,
-                "coding_challenge_state": state.coding_challenge_state,
-                "evaluation_notes": state.evaluation_notes,
-                "current_topic": state.current_topic
-            } 
+        # Return original normalized state on error to prevent data loss
+        return normalized_state 

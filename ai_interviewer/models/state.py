@@ -4,7 +4,7 @@ State definitions for the AI Interviewer platform.
 This module contains the InterviewState class which defines the structure
 of the state that is shared across the LangGraph nodes in the interview workflow.
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from langchain_core.messages import BaseMessage
 from langgraph.graph import MessagesState
 
@@ -34,14 +34,14 @@ class InterviewState(MessagesState):
     # Question tracking
     current_question_id: Optional[str] = None
     current_question_text: Optional[str] = None
-    question_history: List[Dict] = []
-    candidate_responses: List[str] = []
+    question_history: List[str] = []  # List of question texts
+    candidate_responses: List[Dict[str, Any]] = []  # List of response objects with question_id, answer, evaluation
     
     # Coding challenge
     coding_challenge_state: Optional[Dict] = None
     
     # Evaluation
-    evaluation_notes: List[str] = []
+    evaluation_notes: List[Dict[str, Any]] = []  # Updated to match how it's used
     
     # Workflow state
     interview_stage: str = "greeting"  # greeting, qa, coding, feedback, finished
