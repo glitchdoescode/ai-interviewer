@@ -549,6 +549,40 @@ class VoiceHandler:
         
         logger.info("Initialized VoiceHandler")
     
+    async def transcribe_audio_bytes(self, audio_bytes: bytes) -> Dict[str, Any]:
+        """
+        Transcribe audio from bytes using Deepgram's API.
+        
+        Args:
+            audio_bytes: Audio data as bytes
+            
+        Returns:
+            Dictionary with transcription results
+        """
+        try:
+            # Create a temporary file to store the audio bytes
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(audio_bytes)
+            
+            try:
+                # Transcribe the temporary file
+                result = await self.stt.transcribe_file(temp_path)
+                return result
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error transcribing audio bytes: {e}")
+            return {
+                "success": False,
+                "error": f"Error transcribing audio bytes: {str(e)}"
+            }
+    
     async def listen(self, 
                   duration_seconds: float = 30.0,
                   sample_rate: int = 16000,

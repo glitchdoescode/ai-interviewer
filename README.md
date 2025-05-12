@@ -1,123 +1,115 @@
-# AI Interviewer Platform
+# AI Interviewer
 
-An AI-powered technical interview platform built with LangGraph, featuring coding challenges, paired programming tools, and comprehensive interview assessments.
-
-## Overview
-
-The AI Interviewer platform is designed to simulate technical interviews for software engineering candidates. It leverages LLMs to conduct interviews, present coding challenges, provide real-time feedback, and evaluate candidate responses. The platform follows a modern architecture pattern based on LangGraph, making it easy to extend and maintain.
+A LangGraph-based application for conducting technical interviews with AI. This system helps candidates practice for technical interviews by simulating a real interview experience with voice capabilities.
 
 ## Features
 
-- **Technical Interviews**: Conduct realistic technical interviews with natural conversational flow
-- **Coding Challenges**: Present coding challenges and evaluate solutions
-- **Pair Programming**: Provide code improvements, completions, and reviews
-- **Code Quality Analysis**: Analyze code for complexity, maintainability, and style
-- **Session Management**: Persist and resume interview sessions
-- **Transcript Generation**: Save interview transcripts for review
-- **MongoDB Atlas Support**: Store session data in MongoDB Atlas cloud database
+- AI-powered technical interviewer 
+- Voice interface (speech-to-text and text-to-speech)
+- Chat-based interface
+- Session persistence with MongoDB
+- Coding challenges with real-time feedback
+- Interview progress tracking and history
 
 ## Architecture
 
-The platform is built around a unified `AIInterviewer` class that encapsulates the entire interview workflow:
-
-- Uses LangGraph for orchestrating the interview process
-- Implements a MessagesState-based state management
-- Provides a set of specialized tools for coding tasks
-- Supports asynchronous interview sessions
-- Follows industry best practices for LLM application design
-- Integrates with MongoDB for persistent storage (local or Atlas)
+The application consists of:
+1. A backend built with LangGraph, FastAPI, and MongoDB
+2. A frontend built with React, Chakra UI, and React Router
 
 ## Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/ai-interviewer.git
-cd ai-interviewer
+### Prerequisites
 
-# Create a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+- Python 3.9+
+- Node.js 14+
+- MongoDB (optional, can be configured to use memory storage)
 
-# Install dependencies
-pip install -e .
+### Backend Setup
 
-# Set up configuration 
-cp config.env.example .env
-# Edit .env with your MongoDB Atlas URI or other settings
+1. Clone the repository
+   ```
+   git clone https://github.com/yourusername/ai-interviewer.git
+   cd ai-interviewer
+   ```
+
+2. Create and activate a virtual environment
+   ```
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install dependencies
+   ```
+   pip install -r requirements.txt
+   ```
+
+4. Set up environment variables
+   - Create a `.env` file in the root directory
+   - Add the following variables:
+     ```
+     OPENAI_API_KEY=your_openai_api_key
+     MONGODB_URI=your_mongodb_uri  # Optional
+     ```
+
+### Frontend Setup
+
+1. Install dependencies
+   ```
+   cd frontend
+   npm install
+   ```
+
+2. Build the frontend
+   ```
+   npm run build
+   ```
+
+## Running the Application
+
+Once you've set up the backend and built the frontend, you can run the full application:
+
 ```
+python -m ai_interviewer.server
+```
+
+The application will be available at:
+- Web interface: http://localhost:8000
+- API documentation: http://localhost:8000/docs
+
+## Development
+
+### Backend Development
+
+To run only the backend API server during development:
+
+```
+python -m ai_interviewer.server
+```
+
+### Frontend Development
+
+To run the frontend in development mode with hot reloading:
+
+```
+cd frontend
+npm start
+```
+
+This will start the React development server at http://localhost:3000. API requests will be proxied to the backend at http://localhost:8000.
 
 ## Usage
 
-### Command Line Interface
-
-```bash
-# Start a new interview
-ai-interviewer
-
-# Save the transcript to a file
-ai-interviewer --save interview_transcript.txt
-
-# Enable debug logging
-ai-interviewer --debug
-```
-
-### Python API
-
-```python
-import asyncio
-from ai_interviewer.core.ai_interviewer import AIInterviewer
-
-async def main():
-    # Initialize the interviewer
-    interviewer = AIInterviewer()
-    
-    # Process a user message
-    response = await interviewer.run_interview("user123", "Hello, I'm here for my interview.")
-    print(response)
-    
-    # Continue the conversation
-    response = await interviewer.run_interview("user123", "I have experience with Python and JavaScript.")
-    print(response)
-
-# Run the interview
-asyncio.run(main())
-```
-
-## Tools
-
-The platform includes several specialized tools:
-
-1. **Coding Challenge Tools**
-   - `start_coding_challenge`: Presents a coding challenge to the candidate
-   - `submit_code_for_challenge`: Evaluates the candidate's solution
-   - `get_coding_hint`: Provides hints if the candidate is stuck
-
-2. **Pair Programming Tools**
-   - `suggest_code_improvements`: Offers ways to improve code
-   - `complete_code`: Helps complete partial code
-   - `review_code_section`: Reviews specific parts of code
-
-3. **Code Quality Tools**
-   - Analyzes cyclomatic complexity
-   - Checks maintainability index
-   - Evaluates documentation coverage
-   - Verifies style compliance
-
-## Database Configuration
-
-The platform supports both local MongoDB and MongoDB Atlas:
-
-- **Local MongoDB**: By default, connects to `mongodb://localhost:27017`
-- **MongoDB Atlas**: For cloud-based storage, update the `MONGODB_URI` in your `.env` file
-
-For detailed instructions on setting up MongoDB Atlas, see [MongoDB Atlas Setup Guide](docs/mongodb_atlas_setup.md).
+1. Open the application in your browser
+2. Start a new interview or continue a previous session
+3. Respond to the AI interviewer's questions via text or voice
+4. Complete the interview process including coding challenges
+5. Review your performance and feedback
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request

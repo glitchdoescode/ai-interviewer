@@ -13,9 +13,10 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -597,6 +598,29 @@ async def health_check():
             status_code=500,
             detail=f"Service is unhealthy: {str(e)}"
         )
+
+# Mount the React frontend static files
+frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend/build")
+if os.path.exists(frontend_build_path):
+    app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="frontend")
+    logger.info(f"Frontend mounted from {frontend_build_path}")
+else:
+    logger.warning(f"Frontend build directory not found at {frontend_build_path}. Frontend will not be served.")
+
+    # Fallback route to handle React Router's client-side routing
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """
+        Serve the React SPA for any non-API routes to handle client-side routing.
+        """
+        # Only intercept non-API and non-static routes
+        if not full_path.startswith("api/") and not full_path.startswith("static/"):
+            index_path = os.path.join(frontend_build_path, "index.html")
+            if os.path.exists(index_path):
+                return FileResponse(index_path)
+        
+        # If we get here, the path wasn't found
+        raise HTTPException(status_code=404, detail="Not found")
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
