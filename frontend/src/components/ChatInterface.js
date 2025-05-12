@@ -192,6 +192,9 @@ const ChatInterface = () => {
       boxShadow="md"
       p={4}
     >
+      {/* Hidden div for audio recorder reference */}
+      <div id="recorder-instance" style={{ display: 'none' }}></div>
+      
       {/* Chat Header */}
       <Flex
         alignItems="center"
