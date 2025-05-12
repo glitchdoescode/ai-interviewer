@@ -1,22 +1,24 @@
 import React from 'react';
-import { Box, Flex, Text, Avatar, useColorModeValue } from '@chakra-ui/react';
+import { Box, Flex, Text, Avatar, useColorModeValue, Badge } from '@chakra-ui/react';
 
 /**
  * Component for displaying a single chat message
  * @param {Object} props - Component props
  * @param {string} props.message - Message content
- * @param {string} props.sender - Message sender ('user' or 'ai')
+ * @param {string} props.sender - Message sender ('user' or 'assistant')
  * @param {boolean} props.isLoading - Whether the message is in loading state
+ * @param {string} props.audioUrl - Optional URL for audio message
+ * @param {boolean} props.isHint - Whether this message is a hint
  */
-const ChatMessage = ({ message, sender, isLoading = false }) => {
+const ChatMessage = ({ message, sender, isLoading = false, audioUrl, isHint = false }) => {
   const isUser = sender === 'user';
   const bgColor = useColorModeValue(
-    isUser ? 'blue.50' : 'gray.50',
-    isUser ? 'blue.900' : 'gray.700'
+    isUser ? 'blue.50' : isHint ? 'purple.50' : 'gray.50',
+    isUser ? 'blue.900' : isHint ? 'purple.900' : 'gray.700'
   );
   const textColor = useColorModeValue(
-    isUser ? 'blue.800' : 'gray.800',
-    isUser ? 'blue.100' : 'gray.100'
+    isUser ? 'blue.800' : isHint ? 'purple.800' : 'gray.800',
+    isUser ? 'blue.100' : isHint ? 'purple.100' : 'gray.100'
   );
 
   // Loading animation styles
@@ -52,10 +54,9 @@ const ChatMessage = ({ message, sender, isLoading = false }) => {
         <Avatar 
           size="sm" 
           name="AI Interviewer" 
-          bg="brand.500" 
+          bg={isHint ? "purple.500" : "brand.500"} 
           color="white" 
           mr={2} 
-          icon={<></>}
         />
       )}
       
@@ -68,7 +69,19 @@ const ChatMessage = ({ message, sender, isLoading = false }) => {
         boxShadow="sm"
         sx={loadingStyle}
       >
-        <Text>{message}</Text>
+        {isHint && (
+          <Badge colorScheme="purple" mb={2}>Hint</Badge>
+        )}
+        
+        <Text whiteSpace="pre-wrap">{message}</Text>
+        
+        {audioUrl && (
+          <Box mt={2}>
+            <audio controls src={audioUrl} style={{ width: '100%' }}>
+              Your browser does not support the audio element.
+            </audio>
+          </Box>
+        )}
       </Box>
       
       {isUser && (

@@ -43,13 +43,13 @@ export const startInterview = async (message, userId = null, jobRoleData = null)
 
 /**
  * Continue an existing interview session
- * @param {string} sessionId - Interview session ID
  * @param {string} message - User message
+ * @param {string} sessionId - Interview session ID
  * @param {string} userId - User ID
  * @param {Object} jobRoleData - Optional job role configuration for new sessions
  * @returns {Promise} Promise with response data
  */
-export const continueInterview = async (sessionId, message, userId, jobRoleData = null) => {
+export const continueInterview = async (message, sessionId, userId, jobRoleData = null) => {
   try {
     const requestBody = {
       message,
@@ -101,7 +101,7 @@ export const getUserSessions = async (userId, includeCompleted = false) => {
 export const transcribeAndRespond = async (audioBase64, userId, sessionId = null, jobRoleData = null) => {
   try {
     const requestBody = {
-      audio_base64: audioBase64,
+      audio_data: audioBase64,
       user_id: userId,
       session_id: sessionId
     };
@@ -114,25 +114,101 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
       requestBody.job_description = jobRoleData.description;
     }
     
-    const response = await api.post('/audio/transcribe', requestBody);
+    const response = await api.post('/voice', requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error transcribing audio:', error);
+    console.error('Error processing voice:', error);
     throw error;
   }
 };
 
 /**
- * Check if voice processing is available
- * @returns {Promise<boolean>} Promise with boolean indicating if voice is available
+ * Check if voice processing is available on the server
+ * @returns {Promise<boolean>} Promise resolving to true if voice processing is available, false otherwise
  */
 export const checkVoiceAvailability = async () => {
   try {
-    const response = await api.get('/health');
-    return response.data.voice_processing === 'available';
+    const response = await api.get('/voice/availability');
+    return response.data.available;
   } catch (error) {
     console.error('Error checking voice availability:', error);
     return false;
+  }
+};
+
+/**
+ * Submit code for a coding challenge
+ * @param {string} challengeId - Challenge ID
+ * @param {string} code - Candidate's code
+ * @param {string} userId - User ID
+ * @param {string} sessionId - Session ID
+ * @returns {Promise} Promise with evaluation results
+ */
+export const submitChallengeCode = async (challengeId, code, userId = null, sessionId = null) => {
+  try {
+    const requestBody = {
+      challenge_id: challengeId,
+      code: code,
+      user_id: userId,
+      session_id: sessionId
+    };
+    
+    const response = await api.post('/coding/submit', requestBody);
+    return response.data;
+  } catch (error) {
+    console.error('Error submitting code:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get a hint for the current coding challenge
+ * @param {string} challengeId - Challenge ID
+ * @param {string} code - Current code implementation
+ * @param {string} userId - User ID
+ * @param {string} sessionId - Session ID
+ * @param {string} errorMessage - Optional error message to get specific help
+ * @returns {Promise} Promise with hints
+ */
+export const getChallengeHint = async (challengeId, code, userId = null, sessionId = null, errorMessage = null) => {
+  try {
+    const requestBody = {
+      challenge_id: challengeId,
+      code: code,
+      user_id: userId,
+      session_id: sessionId,
+      error_message: errorMessage
+    };
+    
+    const response = await api.post('/coding/hint', requestBody);
+    return response.data;
+  } catch (error) {
+    console.error('Error getting hint:', error);
+    throw error;
+  }
+};
+
+/**
+ * Continue after completing a coding challenge
+ * @param {string} message - User message (typically about the completed challenge)
+ * @param {string} sessionId - Session ID
+ * @param {string} userId - User ID
+ * @param {boolean} completed - Whether the challenge was completed successfully
+ * @returns {Promise} Promise with response data
+ */
+export const continueAfterCodingChallenge = async (message, sessionId, userId, completed = true) => {
+  try {
+    const requestBody = {
+      message,
+      user_id: userId,
+      challenge_completed: completed
+    };
+    
+    const response = await api.post(`/interview/${sessionId}/challenge-complete`, requestBody);
+    return response.data;
+  } catch (error) {
+    console.error('Error continuing after challenge:', error);
+    throw error;
   }
 };
 
@@ -157,6 +233,9 @@ const interviewService = {
   getUserSessions,
   transcribeAndRespond,
   checkVoiceAvailability,
+  submitChallengeCode,
+  getChallengeHint,
+  continueAfterCodingChallenge,
   getJobRoles
 };
 
