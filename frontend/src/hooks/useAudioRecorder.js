@@ -11,30 +11,44 @@ const useAudioRecorder = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [audioData, setAudioData] = useState(null);
   const [error, setError] = useState(null);
+  const [audioContext, setAudioContext] = useState(null);
 
-  // Initialize the recorder when the component mounts
+  // Clean up audio resources when the component unmounts
   useEffect(() => {
-    // Clean up function for when the component unmounts
     return () => {
       if (stream) {
         // Stop all audio tracks
         stream.getTracks().forEach(track => track.stop());
       }
+      
+      // Close audio context if it exists
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+      }
     };
-  }, [stream]);
+  }, [stream, audioContext]);
 
   // Initialize audio recording
   const initRecording = useCallback(async () => {
     try {
       setError(null);
+      
       // Request user permission to access the microphone
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setStream(audioStream);
       
       // Create an audio context
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      let context;
+      try {
+        context = new (window.AudioContext || window.webkitAudioContext)();
+        setAudioContext(context);
+      } catch (contextError) {
+        console.error('Error creating AudioContext:', contextError);
+        throw new Error(`Could not create audio context: ${contextError.message}`);
+      }
       
       // Create a new recorder with the audio context
-      const newRecorder = new Recorder(audioContext, {
+      const newRecorder = new Recorder(context, {
         onAnalysed: data => {
           // You can use this callback to visualize the audio data
           // console.log('Audio data:', data);
@@ -42,11 +56,10 @@ const useAudioRecorder = () => {
       });
 
       // Connect the recorder to the stream
-      newRecorder.init(audioStream);
+      await newRecorder.init(audioStream);
       
-      // Save the recorder and stream in state
+      // Save the recorder in state
       setRecorder(newRecorder);
-      setStream(audioStream);
       return true;
     } catch (err) {
       console.error('Error initializing audio recording:', err);
@@ -57,12 +70,35 @@ const useAudioRecorder = () => {
 
   // Start recording
   const startRecording = useCallback(async () => {
-    if (!recorder) {
-      const initialized = await initRecording();
-      if (!initialized) return false;
-    }
-
     try {
+      // If recorder doesn't exist, initialize it first
+      if (!recorder) {
+        const initialized = await initRecording();
+        if (!initialized) return false;
+        
+        // We need to wait for the next render cycle since setRecorder is async
+        // This prevents trying to use the recorder before it's set in state
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            try {
+              // By now the recorder should be set in state
+              if (!recorder) {
+                throw new Error('Recorder not initialized properly');
+              }
+              recorder.start();
+              setIsRecording(true);
+              setAudioData(null);
+              resolve(true);
+            } catch (startErr) {
+              console.error('Error starting recorder after init:', startErr);
+              setError(`Error starting recording: ${startErr.message}`);
+              resolve(false);
+            }
+          }, 100); // Small delay to ensure state update has completed
+        });
+      }
+
+      // If recorder already exists, start it directly
       recorder.start();
       setIsRecording(true);
       setAudioData(null);
