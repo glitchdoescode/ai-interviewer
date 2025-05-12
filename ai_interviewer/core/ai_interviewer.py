@@ -16,6 +16,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END, MessagesState
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.mongodb import MongoDBSaver
 
 # Import tools
 from ai_interviewer.tools.coding_tools import (
@@ -30,7 +31,6 @@ from ai_interviewer.tools.pair_programming import (
 )
 
 # Import custom modules
-from ai_interviewer.utils.mongodb_checkpointer import MongoDBCheckpointer
 from ai_interviewer.utils.session_manager import SessionManager
 from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content, format_conversation_for_llm
@@ -151,40 +151,31 @@ class AIInterviewer:
                 # Define the checkpoint namespace
                 checkpoint_namespace = "ai_interviewer"
                 
-                # Initialize MongoDB checkpointer
-                logger.info(f"Initializing MongoDB checkpointer with database {db_config['database']} and namespace {checkpoint_namespace}")
-                self.checkpointer = MongoDBCheckpointer(
-                    connection_uri=mongodb_uri,
-                    database_name=db_config["database"],
-                    collection_name=db_config["sessions_collection"],
-                    checkpoint_namespace=checkpoint_namespace
+                # Initialize MongoDB checkpointer using the official LangGraph implementation
+                logger.info(f"Initializing MongoDB checkpointer with URI {mongodb_uri}")
+                from pymongo import MongoClient
+                
+                # Create a MongoDB client
+                client = MongoClient(mongodb_uri)
+                
+                # Create the checkpointer instance directly
+                self.checkpointer = MongoDBSaver(
+                    client=client,
+                    db_name=db_config["database"], 
+                    collection_name=db_config["sessions_collection"]
                 )
                 
-                # Test MongoDB connection with a small write/read
-                test_config = {
-                    "configurable": {
-                        "thread_id": "test-connection",
-                        "checkpoint_ns": checkpoint_namespace,
-                        "metadata": {
-                            "step": 1,
-                            "source": "test"
-                        }
-                    }
-                }
-                test_data = {"test": "connection"}
-                test_config = self.checkpointer.put(test_config, test_data, {"source": "test", "step": 1}, {})
-                result = self.checkpointer.get_tuple(test_config)
-                if result and result[1].get("test") == "connection":
+                # Test MongoDB connection
+                try:
+                    # Simple connection test using the session manager
+                    self.session_manager = SessionManager(
+                        connection_uri=mongodb_uri,
+                        database_name=db_config["database"],
+                        collection_name=db_config["metadata_collection"],
+                    )
                     logger.info("MongoDB connection successful!")
-                else:
-                    raise ValueError("MongoDB connection test failed")
-                
-                # Initialize session manager
-                self.session_manager = SessionManager(
-                    connection_uri=mongodb_uri,
-                    database_name=db_config["database"],
-                    collection_name=db_config["metadata_collection"],
-                )
+                except Exception as e:
+                    raise ValueError(f"MongoDB connection test failed: {e}")
                 
                 logger.info("Using MongoDB for persistence")
             except Exception as e:
@@ -637,15 +628,12 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                 
             logger.info(f"Using session {session_id} for user {user_id}")
             
-            # Create config for retrieving existing state
+            # Create config for LangGraph checkpointer
+            # The format expected by LangGraph MongoDBSaver
             config = {
                 "configurable": {
                     "thread_id": session_id,
-                    "checkpoint_ns": "ai_interviewer",
-                    "metadata": {
-                        "step": 1,  # Initialize metadata with step to prevent NoneType errors
-                        "source": "ai_interviewer"
-                    }
+                    # Don't need to set checkpoint_ns or metadata
                 }
             }
             
@@ -665,22 +653,25 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
             except Exception as e:
                 logger.error(f"Error initializing interview stage: {e}")
             
-            # Check for existing messages in the checkpoint
-            existing_messages = []
+            # Create human message from the query
+            human_message = HumanMessage(content=query)
+            
+            # Create a state with or without previous messages
+            state = None
+            
             try:
-                # Try to get the existing checkpoint
-                checkpoint = self.checkpointer.get_tuple(config)
-                if checkpoint and checkpoint[1] and "messages" in checkpoint[1]:
-                    existing_messages = checkpoint[1]["messages"]
-                    logger.info(f"Retrieved {len(existing_messages)} existing messages from checkpoint")
+                # Try to get the existing state from the checkpoint
+                # MongoDBSaver needs a different approach to retrieve the checkpoint
+                existing_state = None
+                
+                # The workflow will automatically load the previous state based on thread_id
+                # Just initialize with the new message
+                state = {"messages": [human_message]}
+                
             except Exception as e:
                 logger.error(f"Error retrieving existing messages: {e}")
-                # Continue with empty messages list
-
-            # Create the state with existing messages plus new message
-            human_message = HumanMessage(content=query)
-            state = {"messages": existing_messages + [human_message]} if existing_messages else {"messages": [human_message]}
-            logger.info(f"Created state with {len(state['messages'])} messages")
+                # Start with just the new message
+                state = {"messages": [human_message]}
             
             # Invoke workflow
             logger.info(f"Invoking workflow with config: {config}")
@@ -992,9 +983,22 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
     
     def cleanup(self):
         """Clean up resources."""
-        if hasattr(self, 'checkpointer') and hasattr(self.checkpointer, 'close'):
+        if hasattr(self, 'checkpointer'):
             try:
-                self.checkpointer.close()
+                # Store a reference to the client before we potentially lose it
+                mongo_client = None
+                if hasattr(self.checkpointer, 'client'):
+                    mongo_client = self.checkpointer.client
+                
+                # Close the checkpointer if it has a close method
+                if hasattr(self.checkpointer, 'close'):
+                    self.checkpointer.close()
+                
+                # Close the MongoDB client if we have it
+                if mongo_client and hasattr(mongo_client, 'close'):
+                    mongo_client.close()
+                    logger.info("MongoDB client closed")
+                    
                 logger.info("Checkpointer resources cleaned up")
             except Exception as e:
                 logger.error(f"Error closing checkpointer: {e}")
@@ -1048,7 +1052,7 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
         except Exception as e:
             logger.error(f"Error extracting candidate name: {e}")
             return ""
-            
+                
     def __enter__(self):
         """Context manager entry."""
         return self
