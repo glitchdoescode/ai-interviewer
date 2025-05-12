@@ -143,6 +143,30 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [x] Implement context-aware suggestions
     *   [x] Add code completion support
 
+### Sprint 7: MongoDB Persistence & FastAPI Integration
+*   **Task 7.1: Fix MongoDB Persistence Issues**
+    *   [x] Replace custom MongoDB checkpointer with official LangGraph MongoDBSaver
+    *   [x] Implement proper connection handling and cleanup
+    *   [x] Fix thread_id handling in session management
+
+*   **Task 7.2: FastAPI Backend Implementation**
+    *   [x] Create server.py with FastAPI app implementation
+    *   [x] Define REST API endpoints for interview interactions
+    *   [x] Add proper request/response models with Pydantic
+    *   [x] Implement session management endpoints
+
+*   **Task 7.3: API Documentation & Testing**
+    *   [ ] Add Swagger/OpenAPI documentation
+    *   [ ] Create API testing scripts
+    *   [ ] Implement error handling and rate limiting
+    *   [ ] Add proper logging and monitoring
+
+*   **Task 7.4: Deployment Configuration**
+    *   [ ] Create Docker container for FastAPI application
+    *   [ ] Set up environment variables for configuration
+    *   [ ] Add support for HTTPS with certificates
+    *   [ ] Implement database connection pooling
+
 ## Phase 2: Enhancements & Feature Integration (Iterative)
 
 ### Iteration 1: Real-time Conversational Interaction (STT/TTS) - *Post MVP Core Logic*
@@ -162,111 +186,114 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.1.5: Test Voice-Enabled Chat Interface**
     *   [x] Conduct E2E tests using voice input and receiving voice output.
 
-### Iteration 2: Advanced AI Interviewer & Adaptive Q&A
-*   **Task P2.2.1: Enhance `DynamicQuestionGenerationTool`**
+### Iteration 2: Web Frontend Development
+*   **Task P2.2.1: Choose Frontend Framework**
+    *   [ ] Research and select a suitable frontend framework (React, Vue, etc.)
+    *   [ ] Set up project structure for frontend application
+    *   [ ] Implement build system and deployment pipeline
+*   **Task P2.2.2: Develop Chat Interface**
+    *   [ ] Create responsive chat UI for text interactions
+    *   [ ] Implement real-time message streaming
+    *   [ ] Add support for code display and editing
+*   **Task P2.2.3: API Integration**
+    *   [ ] Connect frontend to FastAPI backend
+    *   [ ] Implement authentication and session management
+    *   [ ] Add error handling and retry mechanisms
+*   **Task P2.2.4: User Experience Improvements**
+    *   [ ] Add animations and transitions
+    *   [ ] Implement dark/light mode
+    *   [ ] Design responsive layout for mobile and desktop
+
+### Iteration 3: Advanced AI Interviewer & Adaptive Q&A
+*   **Task P2.3.1: Enhance `DynamicQuestionGenerationTool`**
     *   [ ] Incorporate candidate's previous responses to make follow-up questions more adaptive.
     *   [ ] Allow specifying difficulty level or skill areas (from User Story/PRD, e.g., "Python", "Data Structures").
     *   [ ] Prompt LLM to ensure questions align with job role profiles (if available).
-*   **Task P2.2.2: Deeper Response Analysis**
+*   **Task P2.3.2: Deeper Response Analysis**
     *   [ ] Enhance `EvaluateCandidateResponseTool` to extract key concepts or assess depth of understanding, not just clarity.
-*   **Task P2.2.3: Natural Conversation Flow**
+*   **Task P2.3.3: Natural Conversation Flow**
     *   [ ] Refine `interview_agent` system prompts for more natural transitions, empathetic responses, and ability to handle digressions or clarifications.
-*   **Task P2.2.4: (Optional Long-Term) LLM Fine-tuning Study**
+*   **Task P2.3.4: (Optional Long-Term) LLM Fine-tuning Study**
     *   [ ] Research feasibility and requirements for fine-tuning an LLM for interview question generation or evaluation.
 
-### Iteration 3: Interactive Coding Challenge - Execution & AI Assistance
-*   **Task P2.3.1: Secure Code Execution Sandbox**
+### Iteration 4: Interactive Coding Challenge - Execution & AI Assistance
+*   **Task P2.4.1: Secure Code Execution Sandbox**
     *   [ ] Research and select a code execution sandbox solution (e.g., Docker containers with resource limits, a service like `judge0`, or `RestrictedPython`).
     *   [ ] Implement `ExecuteCodeTool`:
         *   `@tool async def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:`
         *   Takes code and test cases, runs it in the sandbox.
         *   Returns results: `{"pass_count": N, "total_tests": M, "outputs": [...], "errors": "..."}`.
-*   **Task P2.3.2: Enhance `SubmitCodeTool`**
+*   **Task P2.4.2: Enhance `SubmitCodeTool`**
     *   [ ] Replace placeholder logic with a call to `ExecuteCodeTool`.
-*   **Task P2.3.3: AI Pair Programming Assistant (Basic)**
+*   **Task P2.4.3: AI Pair Programming Assistant (Basic)**
     *   [ ] Design `AIPairProgrammingHintTool`:
         *   `@tool async def get_coding_hint(problem_description: str, current_code: str, error_message: Optional[str]) -> str:`
         *   Uses an LLM to provide a contextual hint without giving away the solution.
     *   [ ] Integrate this tool into the coding challenge flow (e.g., candidate can request a hint).
-*   **Task P2.3.4: Capture Code Evolution**
+*   **Task P2.4.4: Capture Code Evolution**
     *   [ ] Modify `InterviewState` or logging to store snapshots of candidate's code at submission or hint requests.
 
-### Iteration 4: Automated Problem Generation ("Magic Import")
-*   **Task P2.4.1: Design `ProblemGenerationFromJDTool`**
+### Iteration 5: Automated Problem Generation ("Magic Import")
+*   **Task P2.5.1: Design `ProblemGenerationFromJDTool`**
     *   `@tool async def generate_coding_challenge_from_jd(job_description: str, skills_required: List[str]) -> Dict:`
     *   Uses an LLM to generate a problem statement, test cases, and reference solution based on input.
-*   **Task P2.4.2: Implement Tool Logic**
+*   **Task P2.5.2: Implement Tool Logic**
     *   [ ] Develop robust prompts for the LLM to create relevant and solvable problems.
-*   **Task P2.4.3: Testing Interface for Problem Generation**
+*   **Task P2.5.3: Testing Interface for Problem Generation**
     *   [ ] Create a simple script or admin interface to test this tool.
 
-### Iteration 5: Rubric-Based Scoring & Detailed Reporting
-*   **Task P2.5.1: Detailed Rubric Implementation**
+### Iteration 6: Rubric-Based Scoring & Detailed Reporting
+*   **Task P2.6.1: Detailed Rubric Implementation**
     *   [ ] Formalize rubric based on PRD (code correctness, efficiency, quality, communication, problem-solving).
-*   **Task P2.5.2: Enhance Evaluation Tools**
+*   **Task P2.6.2: Enhance Evaluation Tools**
     *   [ ] Update `EvaluateCandidateResponseTool` and create `EvaluateCodingSubmissionTool` to use the detailed rubric.
     *   [ ] LLM prompts to score against each rubric dimension and provide rationale.
-*   **Task P2.5.3: `GenerateDetailedReportTool`**
+*   **Task P2.6.3: `GenerateDetailedReportTool`**
     *   [ ] Output structured data (JSON or PDF) including scores per dimension, AI rationale, trust score (conceptual for now), transcripts, coding logs.
-*   **Task P2.5.4: "Trust Score" Logic (Initial)**
+*   **Task P2.6.4: "Trust Score" Logic (Initial)**
     *   [ ] Develop a simple heuristic or LLM-based assessment for an overall "trust score" based on consistency, clarity, and problem-solving.
 
-### Iteration 6: Supervisor Agent (Quality Control - Optional, based on `gizomobot.py`)
-*   **Task P2.6.1: Design Supervisor Agent Logic**
+### Iteration 7: Supervisor Agent (Quality Control - Optional, based on `gizomobot.py`)
+*   **Task P2.7.1: Design Supervisor Agent Logic**
     *   [ ] Define criteria for the supervisor (e.g., is the agent's question relevant? Is the evaluation fair? Is the agent stuck?).
     *   [ ] Create `supervisor_agent(main_agent_state: InterviewState) -> str:` function that calls a separate LLM.
-*   **Task P2.6.2: Integrate Supervisor into LangGraph**
+*   **Task P2.7.2: Integrate Supervisor into LangGraph**
     *   [ ] Potentially add a node after the main agent that calls the supervisor.
     *   [ ] Implement re-work loop: if supervisor flags an issue, modify state and re-invoke main agent.
 
-### Iteration 7: Persistent Context Management & History
-*   **Task P2.7.1: Select and Setup Database**
-    *   [ ] Choose a database (e.g., MongoDB, PostgreSQL, Firestore) for storing interview sessions, user data.
-    *   [ ] Define schemas for interview state, user profiles, etc.
-*   **Task P2.7.2: Implement Persistence Logic**
-    *   [ ] Create functions `load_interview_context(interview_id: str) -> InterviewState` and `save_interview_context(state: InterviewState)`.
-    *   [ ] Replace `MemorySaver` with a custom checkpointer or integrate database calls within agent/tool nodes to persist state at key points.
-*   **Task P2.7.3: Link Sessions to Users**
-    *   [ ] (Prerequisite for auth) Associate interview sessions with user IDs.
+## Phase 3: Full System Integration & Production Readiness
 
-## Phase 3: Frontend, Auth, and Full System Integration - *Post Core Logic & Key AI Features*
+### Iteration 1: Authentication & User Management
+*   **Task P3.1.1: Implement User Auth**
+    *   [ ] Basic email/password registration and login
+    *   [ ] OAuth integration (Google, GitHub, etc.)
+    *   [ ] Password reset and account management
+*   **Task P3.1.2: Role-Based Access Control**
+    *   [ ] Define user roles (candidate, interviewer, admin)
+    *   [ ] Implement permission checks on API endpoints
+    *   [ ] Set up secure session management
 
-### Iteration 1: Basic Web Frontend
-*   **Task P3.1.1: Choose Frontend Framework**
-    *   [ ] Decide on React, Vue, Angular, or other suitable framework.
-*   **Task P3.1.2: Develop Candidate Chat UI**
-    *   [ ] Interface for text chat (and later voice) with AI interviewer.
-    *   [ ] Display for coding problems, editor for code input.
-*   **Task P3.1.3: API Endpoints for Frontend-Backend Communication**
-    *   [ ] Use FastAPI, Flask, or similar to expose LangGraph app.
-    *   [ ] Endpoints for: starting interview, sending message/code, getting updates.
-    *   [ ] Consider WebSockets for real-time communication.
-
-### Iteration 2: Candidate Authentication & Session Management
-*   **Task P3.2.1: Implement User Auth**
-    *   [ ] Basic email/password registration and login.
-    *   [ ] (Later) SSO options like OAuth (Google, LinkedIn).
-*   **Task P3.2.2: Secure Session Management**
-    *   [ ] JWTs or server-side sessions.
-*   **Task P3.2.3: Link LangGraph Sessions to Authenticated Users**
-    *   [ ] Pass user context to the backend.
-
-### Iteration 3: Recruiter Dashboard - Report Viewing
-*   **Task P3.3.1: Design Recruiter UI**
+### Iteration 2: Recruiter Dashboard
+*   **Task P3.2.1: Design Recruiter UI**
     *   [ ] View list of completed interviews.
     *   [ ] Detailed view for individual reports (scores, transcripts, code playback if possible).
-*   **Task P3.3.2: API Endpoints for Recruiter Data**
+*   **Task P3.2.2: API Endpoints for Recruiter Data**
     *   [ ] Secure endpoints to fetch interview data and reports.
+    *   [ ] Implement filtering and searching capabilities
 
-### Subsequent Iterations (High-Level)
-*   [ ] **Interview Scheduling Interface (Candidate & Recruiter)**
-*   [ ] **ATS/HRIS Integration (APIs, Webhooks)**
-*   [ ] **System Admin Features (Configuration, Monitoring, User Management)**
-*   [ ] **Advanced Analytics & Candidate Comparison Dashboard**
-*   [ ] **Multi-tenancy and Role-Based Access Control (RBAC)**
-*   [ ] **Full Compliance Features (GDPR, SOC2 Logging/Auditing)**
-*   [ ] **Scalability Enhancements (Load Balancing, K8s deployment)**
-*   [ ] **Accessibility (WCAG compliance)**
+### Iteration 3: Production Deployment
+*   **Task P3.3.1: Containerization**
+    *   [ ] Create Docker Compose setup for all components
+    *   [ ] Implement environment-specific configurations
+    *   [ ] Set up CI/CD pipeline for automated deployment
+*   **Task P3.3.2: Monitoring & Logging**
+    *   [ ] Implement comprehensive logging system
+    *   [ ] Set up monitoring for performance and errors
+    *   [ ] Create alerting for critical issues
+*   **Task P3.3.3: Security Audit**
+    *   [ ] Perform security assessment
+    *   [ ] Implement GDPR-compliant data handling
+    *   [ ] Set up regular backup procedures
 
 ## Cross-Cutting Concerns (To be addressed throughout all phases)
 *   **[ ] Logging:** Implement structured logging (e.g., JSON) for easier analysis. Log key events, decisions, tool inputs/outputs, errors.

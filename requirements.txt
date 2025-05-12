@@ -1,15 +1,33 @@
+# Core Langchain and LangGraph dependencies
 langchain>=0.1.0
-langgraph>=0.0.27
-langchain-google-genai>=0.0.5
-pydantic>=2.5.2
-python-dotenv>=1.0.0
-typing-extensions>=4.8.0
-pytest>=7.4.3
-pymongo>=4.6.0
-dnspython>=2.4.0  # Required for MongoDB Atlas SRV connection strings
+langchain-core>=0.1.0
+langchain-community>=0.1.0
+langgraph>=0.1.5
+langgraph-checkpoint-mongodb>=0.0.5
 
-# Speech-to-text and text-to-speech dependencies
-pyaudio>=0.2.13  # Audio recording and playback
-aiohttp>=3.8.4   # Async HTTP client for API requests
-numpy>=1.23.0    # Numeric processing for audio
-wave>=0.0.2      # WAV file handling
+# Language model integrations
+langchain-google-genai>=0.0.5
+langchain-openai>=0.0.5
+langchain-anthropic>=0.1.0
+
+# Persistence and database
+pymongo>=4.6.0
+motor>=3.3.0
+
+# Web Framework and API
+fastapi>=0.105.0
+uvicorn>=0.24.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+
+# Audio processing and speech recognition
+deepgram-sdk>=2.11.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.3
+scipy>=1.11.3
+
+# Utilities
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+tqdm>=4.66.1
