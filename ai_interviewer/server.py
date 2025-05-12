@@ -510,10 +510,15 @@ async def upload_audio_file(
         
         # Generate speech response
         audio_filename = f"response_{uuid.uuid4()}.wav"
-        audio_path = os.path.join("temp_audio", audio_filename)
+        
+        # Use a path relative to the application directory
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_audio_dir = os.path.join(app_dir, "temp_audio")
         
         # Create temp directory if it doesn't exist
-        os.makedirs("temp_audio", exist_ok=True)
+        os.makedirs(temp_audio_dir, exist_ok=True)
+        
+        audio_path = os.path.join(temp_audio_dir, audio_filename)
         
         # Generate speech
         await voice_handler.speak(
@@ -548,7 +553,10 @@ async def get_audio_response(filename: str):
     Returns:
         Audio file as streaming response
     """
-    file_path = os.path.join("temp_audio", filename)
+    # Use a path relative to the application directory
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    temp_audio_dir = os.path.join(app_dir, "temp_audio")
+    file_path = os.path.join(temp_audio_dir, filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Audio file not found")
@@ -632,8 +640,14 @@ def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
     import uvicorn
     
-    # Create audio responses directory if it doesn't exist
-    os.makedirs("audio_responses", exist_ok=True)
+    # Create audio responses directory if it doesn't exist (use app directory)
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    audio_responses_dir = os.path.join(app_dir, "audio_responses")
+    temp_audio_dir = os.path.join(app_dir, "temp_audio")
+    
+    # Create necessary directories
+    os.makedirs(audio_responses_dir, exist_ok=True)
+    os.makedirs(temp_audio_dir, exist_ok=True)
     
     # Configure Uvicorn logging
     log_config = uvicorn.config.LOGGING_CONFIG
