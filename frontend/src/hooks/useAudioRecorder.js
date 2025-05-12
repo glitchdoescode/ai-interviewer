@@ -94,103 +94,98 @@ const useAudioRecorder = () => {
 
   // Start recording
   const startRecording = useCallback(async () => {
+    setIsInitializing(true); // Indicate initialization/start process
+    setError(null);
+    initializationAttempts.current = 0;
+
     try {
-      // Reset any previous errors
-      setError(null);
-      
-      // If recorder doesn't exist, initialize it first
-      if (!recorder) {
-        console.log('No recorder found, initializing first...');
-        const initialized = await initRecording();
-        if (!initialized) {
-          console.log('Failed to initialize recording');
-          return false;
-        }
-        
-        // After initialization, wait until next tick to start recording
-        return new Promise(resolve => {
-          setTimeout(async () => {
-            try {
-              // Get the current recorder from state
-              const currentRecorder = recorder;
-              const currentContext = audioContext;
-              
-              // Double-check we have what we need
-              if (!currentRecorder) {
-                if (initializationAttempts.current < 3) {
-                  console.log('Recorder not ready yet, trying again...');
-                  initializationAttempts.current += 1;
-                  const success = await startRecording();
-                  resolve(success);
-                  return;
-                } else {
-                  throw new Error('Recorder initialization failed after multiple attempts');
-                }
-              }
-              
-              if (!currentContext || currentContext.state !== 'running') {
-                console.log('AudioContext not running, attempting to resume...');
-                if (currentContext) {
-                  await currentContext.resume();
-                  // Wait for context to fully resume
-                  await new Promise(r => setTimeout(r, 500));
-                } else {
-                  throw new Error('AudioContext not initialized');
-                }
-              }
-              
-              // Now we can start recording
-              console.log('Starting recording with new recorder');
-              recorder.start();
-              setIsRecording(true);
-              setAudioData(null);
-              resolve(true);
-            } catch (startErr) {
-              console.error('Error starting recorder after init:', startErr);
-              setError(`Error starting recording: ${startErr.message}`);
-              resolve(false);
-            }
-          }, 800); // Increased delay to ensure state updates have completed
-        });
-      }
-      
-      // If recorder already exists, use it directly
-      if (recorder) {
-        try {
-          console.log('Using existing recorder');
-          // Make sure AudioContext is running
-          if (audioContext && audioContext.state !== 'running') {
-            console.log('Resuming AudioContext...');
-            await audioContext.resume();
-            // Add a small delay after resuming context
-            await new Promise(resolve => setTimeout(resolve, 500));
+      let currentRecorder = recorder;
+      let currentContext = audioContext;
+
+      // Loop to handle initialization and context resuming
+      while (initializationAttempts.current < 3) {
+        initializationAttempts.current++;
+        console.log(`Attempt ${initializationAttempts.current} to start recording...`);
+
+        // 1. Initialize if necessary
+        if (!currentRecorder || !currentContext) {
+          console.log('Recorder or context missing, running initRecording...');
+          const initialized = await initRecording();
+          if (!initialized) {
+            console.log('Initialization failed during start attempt.');
+            setError(prev => prev || 'Failed to initialize audio system.');
+            continue; // Try again if attempts remain
           }
-          
-          console.log('Starting recording...');
-          recorder.start();
-          setIsRecording(true);
-          setAudioData(null);
-          return true;
-        } catch (err) {
-          console.error('Error starting existing recorder:', err);
-          setError(`Error starting recording: ${err.message}`);
-          
-          // If starting fails with existing recorder, try to create a new one
-          console.log('Recreating recorder...');
-          setRecorder(null);
-          setAudioContext(null);
-          initializationAttempts.current = 0;
-          return startRecording(); // Recursive call will go through the initialization path
+          // Re-fetch state after initialization
+          currentRecorder = recorder;
+          currentContext = audioContext;
+          // Need a brief pause after initialization for state propagation
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        // 2. Ensure context is running
+        if (currentContext && currentContext.state !== 'running') {
+          console.log(`AudioContext state is ${currentContext.state}, attempting to resume...`);
+          try {
+            await currentContext.resume();
+            // Wait for resume to potentially take effect
+            await new Promise(resolve => setTimeout(resolve, 500)); 
+            console.log(`AudioContext state after resume attempt: ${currentContext.state}`);
+            if (currentContext.state !== 'running') {
+              setError('Failed to resume AudioContext. Please interact with the page and try again.');
+              continue; // Try again if attempts remain
+            }
+          } catch (resumeError) {
+            console.error('Error resuming AudioContext:', resumeError);
+            setError(`Error resuming audio context: ${resumeError.message}`);
+            continue; // Try again if attempts remain
+          }
+        }
+
+        // 3. Try starting the recorder
+        if (currentRecorder && currentContext && currentContext.state === 'running') {
+          try {
+            console.log('Attempting to start recorder...');
+            await currentRecorder.start();
+            setIsRecording(true);
+            setAudioData(null);
+            setIsInitializing(false);
+            console.log('Recording started successfully.');
+            return true; // Success!
+          } catch (startError) {
+            console.error(`Error starting recorder on attempt ${initializationAttempts.current}:`, startError);
+            setError(`Error starting recording: ${startError.message}`);
+            // Reset recorder for next attempt
+            setRecorder(null);
+            setAudioContext(null);
+            currentRecorder = null;
+            currentContext = null;
+            await new Promise(resolve => setTimeout(resolve, 200)); // Brief pause before retrying
+          }
+        } else {
+           console.log('Conditions not met for starting recorder, retrying...');
+           // Reset if context didn't resume or recorder didn't init
+           setRecorder(null);
+           setAudioContext(null);
+           currentRecorder = null;
+           currentContext = null;
+           await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
-      
+
+      // If loop finishes without success
+      console.error('Failed to start recording after multiple attempts.');
+      setError(prev => prev || 'Could not start recording after multiple attempts. Please check permissions or refresh the page.');
+      setIsInitializing(false);
       return false;
+
     } catch (err) {
-      console.error('Error in startRecording:', err);
-      setError(`Error starting recording: ${err.message}`);
+      console.error('Unexpected error in startRecording:', err);
+      setError(`Unexpected error: ${err.message}`);
+      setIsInitializing(false);
       return false;
     }
-  }, [recorder, initRecording, audioContext]);
+  }, [recorder, audioContext, initRecording]); // Dependencies updated
 
   // Stop recording and get the audio data
   const stopRecording = useCallback(async () => {

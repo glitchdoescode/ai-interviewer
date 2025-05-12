@@ -466,11 +466,20 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
         # Convert sessions to response format
         response = []
         for session in sessions:
+            # Ensure datetime objects are converted to strings
+            created_at_str = session["created_at"]
+            if isinstance(created_at_str, datetime):
+                created_at_str = created_at_str.isoformat()
+                
+            last_active_str = session["last_active"]
+            if isinstance(last_active_str, datetime):
+                last_active_str = last_active_str.isoformat()
+
             response.append(SessionResponse(
                 session_id=session["session_id"],
                 user_id=session["user_id"],
-                created_at=session["created_at"],
-                last_active=session["last_active"],
+                created_at=created_at_str,
+                last_active=last_active_str,
                 interview_stage=session.get("metadata", {}).get("interview_stage")
             ))
         
