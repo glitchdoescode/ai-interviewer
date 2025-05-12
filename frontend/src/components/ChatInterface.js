@@ -61,7 +61,20 @@ const ChatInterface = ({ jobRoleData }) => {
     startRecording,
     stopRecording,
     getAudioBase64,
+    isInitializing,
+    permissionGranted,
+    initRecording
   } = useAudioRecorder();
+
+  // Initialize audio on component mount for better user experience
+  useEffect(() => {
+    if (voiceMode) {
+      // Pre-initialize audio in voice mode
+      initRecording().catch(err => {
+        console.error('Failed to initialize audio on mount:', err);
+      });
+    }
+  }, [voiceMode, initRecording]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -179,13 +192,17 @@ const ChatInterface = ({ jobRoleData }) => {
     if (isRecording) {
       try {
         // Stop recording
-        await stopRecording();
+        const audioData = await stopRecording();
+        
+        if (!audioData || !audioData.blob) {
+          throw new Error('Failed to get audio data.');
+        }
         
         // Get base64-encoded audio
-        const audioBase64 = await getAudioBase64();
+        const audioBase64 = await getAudioBase64(audioData.blob);
         
         if (!audioBase64) {
-          throw new Error('Failed to get audio data.');
+          throw new Error('Failed to encode audio data.');
         }
         
         // Set loading state
@@ -194,7 +211,7 @@ const ChatInterface = ({ jobRoleData }) => {
         // Add user message with loading indicator
         addMessage({
           role: 'user',
-          content: '🎤 Recording...',
+          content: '🎤 Transcribing audio...',
           loading: true,
         });
         
@@ -219,18 +236,14 @@ const ChatInterface = ({ jobRoleData }) => {
           audioUrl: response.audio_response_url,
           tool_calls: response.tool_calls
         });
-        
-        // Clear any errors
-        setError(null);
       } catch (err) {
-        console.error('Error processing voice:', err);
-        setError('Failed to process voice recording. Please try again or switch to text mode.');
-        
-        // Remove the loading message
+        console.error('Error processing voice recording:', err);
+        setError('Failed to process audio. Please try again.');
+        // Add error message
         addMessage({
-          role: 'user',
-          content: '❌ Voice recording failed. Please try again.',
-          error: true,
+          role: 'system',
+          content: `Error: ${err.message || 'Failed to process audio'}`,
+          isError: true,
         });
       } finally {
         setLoading(false);
@@ -238,21 +251,49 @@ const ChatInterface = ({ jobRoleData }) => {
     } else {
       // Start recording
       try {
-        const success = await startRecording();
-        if (!success) {
-          throw new Error('Could not start recording');
-        }
-      } catch (err) {
-        console.error('Error starting recording:', err);
-        setError('Could not start recording. Please check microphone permissions.');
+        setLoading(true);
         
-        toast({
-          title: 'Recording Error',
-          description: 'Could not start recording. Please check microphone permissions.',
-          status: 'error',
-          duration: 5000,
-          isClosable: true,
+        // Show initialization message
+        if (!permissionGranted) {
+          addMessage({
+            role: 'system',
+            content: 'Requesting microphone permission...',
+            isSystem: true,
+          });
+        }
+        
+        const started = await startRecording();
+        
+        if (!started) {
+          throw new Error(audioError || 'Failed to start recording');
+        }
+        
+        // Show recording started message
+        addMessage({
+          role: 'system',
+          content: 'Recording started. Speak now and click the stop button when finished.',
+          isSystem: true,
         });
+      } catch (err) {
+        console.error('Error starting voice recording:', err);
+        setError(`Failed to start recording: ${err.message}`);
+        
+        // Show a helpful message based on the error
+        let errorMessage = 'Could not start recording.';
+        if (err.message?.includes('permission')) {
+          errorMessage = 'Microphone permission denied. Please enable it in your browser settings.';
+        } else if (err.message?.includes('AudioContext')) {
+          errorMessage = 'Audio system initialization failed. Try clicking the button again.';
+        }
+        
+        // Add error message to chat
+        addMessage({
+          role: 'system',
+          content: `Error: ${errorMessage}`,
+          isError: true,
+        });
+      } finally {
+        setLoading(false);
       }
     }
   };
@@ -340,142 +381,152 @@ const ChatInterface = ({ jobRoleData }) => {
   };
 
   return (
-    <Box
-      height="100%"
-      display="flex"
-      flexDirection="column"
-      bg="white"
-      borderRadius="md"
-      boxShadow="md"
-      p={4}
-    >
-      {/* Hidden div for audio recording */}
-      <div id="recorder-instance" style={{ display: 'none' }}></div>
-      
-      {/* Chat Header */}
-      <Flex
-        alignItems="center"
-        justifyContent="space-between"
-        p={2}
-        mb={4}
-        borderBottom="1px"
+    <Flex direction="column" h="100vh" overflow="hidden">
+      <Box flex="1" overflow="auto" p={4}>
+        <VStack spacing={4} align="stretch">
+          {messages.map((message, index) => {
+            // Check if this is a coding challenge message from the AI
+            if (
+              message.role === 'assistant' && 
+              message.tool_calls && 
+              message.tool_calls.some(call => call.name === 'start_coding_challenge')
+            ) {
+              // Extract the coding challenge data
+              const codingChallenge = message.tool_calls.find(
+                call => call.name === 'start_coding_challenge'
+              ).result;
+              
+              // Store the coding challenge for later use
+              if (!currentCodingChallenge) {
+                setCurrentCodingChallenge(codingChallenge);
+                setIsWaitingForCodingChallenge(true);
+              }
+              
+              // Render both the message and the coding challenge
+              return (
+                <React.Fragment key={index}>
+                  <ChatMessage message={message} />
+                                     <CodingChallenge 
+                     challenge={codingChallenge}
+                     onSubmit={(code, isCompleted) => {
+                       // Submit the code and continue the interview
+                       try {
+                         setLoading(true);
+                         continueAfterCodingChallenge(
+                           code, 
+                           sessionId, 
+                           userId, 
+                           isCompleted
+                         ).then(response => {
+                           // Add AI response to chat
+                           addMessage({
+                             role: 'assistant',
+                             content: response.response,
+                             tool_calls: response.tool_calls
+                           });
+                           
+                           // Reset coding challenge state
+                           setIsWaitingForCodingChallenge(false);
+                           setCurrentCodingChallenge(null);
+                           setLoading(false);
+                         }).catch(err => {
+                           console.error('Error submitting code:', err);
+                           setError('Failed to submit code solution. Please try again.');
+                           setLoading(false);
+                         });
+                       } catch (err) {
+                         console.error('Error preparing code submission:', err);
+                         setError('Failed to submit code. Please try again.');
+                         setLoading(false);
+                       }
+                     }}
+                     onRequestHint={(code) => handleRequestHint(code)}
+                     isWaiting={isWaitingForCodingChallenge}
+                   />
+                </React.Fragment>
+              );
+            }
+            
+            // Regular message
+            return <ChatMessage key={index} message={message} />;
+          })}
+          
+          {/* Loading indicator */}
+          {loading && (
+            <Flex justifyContent="center" p={4}>
+              <Spinner size="md" color="blue.500" mr={2} />
+              <Text>{isInitializing ? 'Initializing audio...' : 'Processing...'}</Text>
+            </Flex>
+          )}
+          
+          {/* Error display */}
+          {(error || audioError) && (
+            <Alert status="error" variant="left-accent" my={2}>
+              <AlertIcon />
+              <Text>{error || audioError}</Text>
+            </Alert>
+          )}
+          
+          <div ref={messagesEndRef} />
+        </VStack>
+      </Box>
+
+      {/* Input area */}
+      <Flex 
+        p={4} 
+        borderTop="1px" 
         borderColor="gray.200"
+        alignItems="center"
+        backgroundColor="white"
       >
-        <Text fontSize="lg" fontWeight="bold">
-          Technical Interview
-        </Text>
+        <Input
+          placeholder="Type your message..."
+          value={messageInput}
+          onChange={(e) => setMessageInput(e.target.value)}
+          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+          mr={2}
+          disabled={loading || isWaitingForCodingChallenge}
+        />
         
-        <Button
-          size="sm"
-          colorScheme={voiceMode ? 'brand' : 'gray'}
-          leftIcon={<FaMicrophone />}
-          onClick={() => setVoiceMode(!voiceMode)}
-        >
-          {voiceMode ? 'Voice Mode' : 'Text Mode'}
-        </Button>
-      </Flex>
-
-      {/* Messages Container */}
-      <VStack
-        flex="1"
-        overflowY="auto"
-        spacing={4}
-        p={2}
-        mb={4}
-        align="stretch"
-      >
-        {messages.length === 0 ? (
-          <Box textAlign="center" color="gray.500" mt={10}>
-            <Text>Start your technical interview by saying hello!</Text>
-          </Box>
-        ) : (
-          messages.map((msg, idx) => (
-            <ChatMessage
-              key={idx}
-              message={msg.content}
-              sender={msg.role}
-              isLoading={loading && idx === messages.length - 1 && msg.role === 'assistant'}
-              audioUrl={msg.audioUrl}
-              isHint={msg.isHint}
-            />
-          ))
-        )}
+        <IconButton
+          icon={<FaPaperPlane />}
+          colorScheme="blue"
+          aria-label="Send message"
+          onClick={handleSendMessage}
+          mr={2}
+          isDisabled={loading || !messageInput.trim() || isWaitingForCodingChallenge}
+        />
         
-        {/* Loading message if no messages displayed yet */}
-        {loading && messages.length === 0 && (
-          <Flex justify="center" align="center" my={6}>
-            <Spinner color="brand.500" mr={3} />
-            <Text>Starting interview...</Text>
-          </Flex>
-        )}
+        <IconButton
+          icon={isRecording ? <FaStop /> : <FaMicrophone />}
+          colorScheme={isRecording ? "red" : "blue"}
+          aria-label={isRecording ? "Stop recording" : "Start recording"}
+          onClick={handleVoiceRecording}
+          isDisabled={(loading && !isRecording) || isWaitingForCodingChallenge || isInitializing}
+          isLoading={isInitializing}
+        />
         
-        {/* Error alert */}
-        {error && (
-          <Alert status="error" borderRadius="md">
-            <AlertIcon />
-            {error}
-          </Alert>
-        )}
-        
-        {/* Coding Challenge Component */}
-        {currentCodingChallenge && (
-          <Box my={4}>
-            <CodingChallenge 
-              challenge={currentCodingChallenge}
-              onComplete={handleChallengeComplete}
-              onRequestHint={handleRequestHint}
-            />
-          </Box>
-        )}
-        
-        {/* Invisible element for auto-scrolling */}
-        <div ref={messagesEndRef} />
-      </VStack>
-
-      {/* Message Input */}
-      <Box mt="auto">
         {voiceMode ? (
-          <Button
-            width="100%"
-            height="50px"
-            colorScheme={isRecording ? 'red' : 'brand'}
-            leftIcon={isRecording ? <FaStop /> : <FaMicrophone />}
-            isLoading={loading}
-            onClick={handleVoiceRecording}
+          <Button 
+            variant="outline" 
+            size="sm" 
+            ml={2} 
+            onClick={() => setVoiceMode(false)}
           >
-            {isRecording ? 'Stop Recording' : 'Start Recording'}
+            Text Mode
           </Button>
         ) : (
-          <Flex>
-            <Input
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type your message..."
-              size="md"
-              mr={2}
-              disabled={loading || isWaitingForCodingChallenge}
-            />
-            <IconButton
-              colorScheme="brand"
-              aria-label="Send message"
-              icon={<FaPaperPlane />}
-              onClick={handleSendMessage}
-              isLoading={loading}
-              isDisabled={!messageInput.trim() || isWaitingForCodingChallenge}
-            />
-          </Flex>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            ml={2} 
+            onClick={() => setVoiceMode(true)}
+          >
+            Voice Mode
+          </Button>
         )}
-        
-        {/* Coding Challenge Active Indicator */}
-        {isWaitingForCodingChallenge && (
-          <Alert status="info" mt={2} size="sm" borderRadius="md">
-            <AlertIcon />
-            Please complete the coding challenge above before continuing the interview.
-          </Alert>
-        )}
-      </Box>
-    </Box>
+      </Flex>
+    </Flex>
   );
 };
 
