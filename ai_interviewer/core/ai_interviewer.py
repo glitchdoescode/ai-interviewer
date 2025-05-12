@@ -736,10 +736,10 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                         break
             
             # Determine the current stage of the interview from messages and metadata
+            logger.debug(f"Checking for method _determine_interview_stage_from_metadata on self: {hasattr(self, '_determine_interview_stage_from_metadata')}") # Added debug log
             current_stage = self._determine_interview_stage_from_metadata(messages, metadata)
             
             # Check if we're in a coding challenge stage and should implement human-in-the-loop
-            # This could be triggered by detecting a coding challenge initiation in the messages
             is_coding_challenge = current_stage == InterviewStage.CODING_CHALLENGE.value or \
                                  current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value
             
