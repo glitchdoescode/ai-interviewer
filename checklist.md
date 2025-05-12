@@ -74,6 +74,12 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [x] Connect hints to specific challenges.
     *   [x] Track hints provided during challenges.
 
+*   **Task 3.7: Human-in-the-loop for Coding Challenges**
+    *   [x] Implement LangGraph's interrupt mechanism for pausing during coding challenges.
+    *   [x] Add Command functionality to resume interviews after challenge completion.
+    *   [x] Create proper state transitions between interview and coding interface.
+    *   [x] Ensure seamless conversation flow when returning from challenges.
+
 ### Sprint 4: Basic Evaluation & Reporting (Conceptual MVP)
 *   **Task 4.1: Define Simple Rubric (Conceptual)**
     *   [x] Create `rubric.py` with Pydantic models for evaluation criteria

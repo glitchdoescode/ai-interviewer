@@ -25,7 +25,7 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
-from langchain_core.runnables import RunnableConfig, interrupt, Command
+from langgraph.types import interrupt, Command
 
 # Set up logging
 logging.basicConfig(

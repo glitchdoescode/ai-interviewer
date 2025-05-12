@@ -129,7 +129,7 @@ def reverse_string(s: str) -> str:
         metadata = {"interview_stage": InterviewStage.TECHNICAL_QUESTIONS.value}
         
         # Should detect coding challenge stage
-        stage = self.interviewer._determine_interview_stage(messages, metadata)
+        stage = self.interviewer._determine_interview_stage_from_metadata(messages, metadata)
         self.assertEqual(stage, InterviewStage.CODING_CHALLENGE.value)
         
         # Test with resume from challenge
@@ -140,7 +140,7 @@ def reverse_string(s: str) -> str:
         }
         
         # Should transition to technical questions after completed challenge
-        stage = self.interviewer._determine_interview_stage(messages, metadata)
+        stage = self.interviewer._determine_interview_stage_from_metadata(messages, metadata)
         self.assertEqual(stage, InterviewStage.TECHNICAL_QUESTIONS.value)
         
         # Test with resume but not completed
@@ -151,7 +151,7 @@ def reverse_string(s: str) -> str:
         }
         
         # Should stay in coding challenge
-        stage = self.interviewer._determine_interview_stage(messages, metadata)
+        stage = self.interviewer._determine_interview_stage_from_metadata(messages, metadata)
         self.assertEqual(stage, InterviewStage.CODING_CHALLENGE.value)
 
 

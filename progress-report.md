@@ -136,6 +136,8 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - Test case evaluation
    - Hint system for candidates who get stuck
    - Language-specific validation
+   - True human-in-the-loop functionality using LangGraph's interrupt/Command mechanisms
+   - Seamless context preservation when switching between interview and coding interface
 
 8. **Enhanced CLI**: Improved the command-line interface with additional parameters and better state persistence.
    - Added voice-enabled CLI with natural speech interaction
@@ -189,6 +191,8 @@ We have completed the initial implementation of the AI Interviewer platform's co
 5. **Persistence**: Using MongoDB for persistence with clean integration in the unified AIInterviewer class. This works well for both CLI and potential web applications.
 
 6. **Pair Programming**: Successfully implemented a comprehensive hint generation system that provides specific, contextual guidance based on code analysis. The integration with LLMs for fallback hints ensures we can always provide useful assistance.
+
+7. **Human-in-the-loop Implementation**: Properly implemented true human-in-the-loop functionality for coding challenges using LangGraph's interrupt and Command mechanisms, allowing for a natural pause in the interview flow while the candidate completes the coding task, followed by a seamless resumption of the interview with preserved context.
 
 ## Next Steps
 

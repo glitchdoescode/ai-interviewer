@@ -18,7 +18,7 @@ from langgraph.graph import StateGraph, END, MessagesState
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langchain_core.runnables import RunnableConfig, interrupt, Command
+from langgraph.types import interrupt, Command
 
 # Import tools
 from ai_interviewer.tools.coding_tools import (
@@ -735,8 +735,8 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                             candidate_name = ""
                         break
             
-            # Determine the current stage of the interview from messages
-            current_stage = self._determine_interview_stage(messages, metadata)
+            # Determine the current stage of the interview from messages and metadata
+            current_stage = self._determine_interview_stage_from_metadata(messages, metadata)
             
             # Check if we're in a coding challenge stage and should implement human-in-the-loop
             # This could be triggered by detecting a coding challenge initiation in the messages
@@ -764,17 +764,13 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                 # and then calling the resume endpoint when they submit code
                 coding_challenge_info = metadata.get("current_coding_challenge", {})
                 
-                # This is where we'd implement LangGraph human-in-the-loop
-                # In a real implementation, we'd use LangGraph's interrupt function
-                # For now, we'll simulate this by adding a special message
-                
-                # Return a message indicating we're waiting for the candidate to solve the challenge
-                return (
+                # Use the LangGraph interrupt function to pause execution
+                # The frontend will call the continue_after_challenge endpoint when ready
+                return interrupt(
                     f"I've presented you with a coding challenge: {coding_challenge_info.get('title', 'Coding Exercise')}. "
                     f"Please take your time to solve it in the coding interface. When you're ready, submit your solution "
-                    f"and we'll continue the interview.",
-                    session_id
-                )
+                    f"and we'll continue the interview."
+                ), session_id
             
             # Get AI response using Chat LLM
             response = await self.model.ainvoke(messages)
@@ -1128,3 +1124,97 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
 
 # Import for resume_interview method
 import asyncio 
+
+async def continue_after_challenge(self, user_id: str, session_id: str, message: str, challenge_completed: bool = True) -> Tuple[str, Dict[str, Any]]:
+    """
+    Continue an interview after completing a coding challenge.
+    
+    Args:
+        user_id: User identifier
+        session_id: Session identifier
+        message: Message about challenge completion
+        challenge_completed: Whether the challenge was successfully completed
+        
+    Returns:
+        Tuple of (AI response, session data)
+    """
+    try:
+        # Get session data
+        if not self.session_manager:
+            raise ValueError("Session manager not available")
+            
+        session = self.session_manager.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+            
+        # Update metadata to indicate we're resuming from a challenge
+        metadata = session.get("metadata", {})
+        metadata["resuming_from_challenge"] = True
+        metadata["challenge_completed"] = challenge_completed
+        session["metadata"] = metadata
+        self.session_manager.update_session(session_id, session)
+        
+        # Configure the thread for resuming the workflow
+        thread = {"configurable": {"thread_id": session_id}}
+        
+        # Use Command to resume the interrupted workflow with the message
+        # This properly resolves the interrupt() call in run_interview
+        for event in self.workflow.stream(
+            Command(resume=message),
+            thread,
+            stream_mode="values"
+        ):
+            if "messages" in event:
+                # Get the last message which should be the AI response
+                last_message = event["messages"][-1]
+                if hasattr(last_message, "content"):
+                    ai_response = last_message.content
+                else:
+                    ai_response = str(last_message)
+                
+                # Refresh session data after completion
+                updated_session = self.session_manager.get_session(session_id)
+                return ai_response, updated_session
+        
+        # Fallback in case streaming doesn't produce a response
+        return "I've received your solution to the coding challenge. Let's continue the interview.", session
+                
+    except Exception as e:
+        logging.error(f"Error continuing after challenge: {e}")
+        raise ValueError(f"Failed to continue interview: {str(e)}") 
+
+    def _determine_interview_stage_from_metadata(self, messages: List[BaseMessage], metadata: Dict[str, Any]) -> str:
+        """
+        Determine the current interview stage based on messages and session metadata.
+        
+        Args:
+            messages: List of messages in the conversation
+            metadata: Session metadata containing interview context
+            
+        Returns:
+            Current interview stage value
+        """
+        # Get current stage from metadata
+        current_stage = metadata.get("interview_stage", InterviewStage.INTRODUCTION.value)
+        
+        # Check if we're resuming from a challenge
+        if metadata.get("resuming_from_challenge", False):
+            if metadata.get("challenge_completed", False):
+                # If challenge was completed successfully, move to technical questions
+                logger.info("Challenge completed, transitioning to technical questions stage")
+                return InterviewStage.TECHNICAL_QUESTIONS.value
+            else:
+                # If challenge was not completed, stay in coding challenge stage
+                logger.info("Challenge not completed, remaining in coding challenge stage")
+                return InterviewStage.CODING_CHALLENGE.value
+        
+        # Check for coding challenge tool calls in the messages
+        for msg in messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    if isinstance(tool_call, dict) and tool_call.get("name") == "start_coding_challenge":
+                        logger.info("Found start_coding_challenge tool call, setting stage to CODING_CHALLENGE")
+                        return InterviewStage.CODING_CHALLENGE.value
+        
+        # If no special conditions were found, return the current stage from metadata
+        return current_stage 
