@@ -191,18 +191,21 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [ ] Research and select a suitable frontend framework (React, Vue, etc.)
     *   [ ] Set up project structure for frontend application
     *   [ ] Implement build system and deployment pipeline
-*   **Task P2.2.2: Develop Chat Interface**
-    *   [ ] Create responsive chat UI for text interactions
-    *   [ ] Implement real-time message streaming
-    *   [ ] Add support for code display and editing
+*   **Task P2.2.2: Develop Voice-First Interface**
+    *   [ ] Create microphone input and audio output components
+    *   [ ] Implement visual indicators for listening/speaking states
+    *   [ ] Add audio recording controls (start/stop/pause)
+    *   [ ] Design minimal transcript display for reference
 *   **Task P2.2.3: API Integration**
-    *   [ ] Connect frontend to FastAPI backend
-    *   [ ] Implement authentication and session management
-    *   [ ] Add error handling and retry mechanisms
+    *   [ ] Connect frontend to FastAPI backend endpoints
+    *   [ ] Implement WebSocket or polling for real-time audio streaming
+    *   [ ] Add proper error handling for audio/speech services
+    *   [ ] Integrate with backend session management
 *   **Task P2.2.4: User Experience Improvements**
-    *   [ ] Add animations and transitions
-    *   [ ] Implement dark/light mode
-    *   [ ] Design responsive layout for mobile and desktop
+    *   [ ] Add voice activity visualization (waveform/amplitude display)
+    *   [ ] Implement accessibility features for diverse users
+    *   [ ] Create responsive design for mobile and desktop devices
+    *   [ ] Add visual cues for interview progress/stages
 
 ### Iteration 3: Advanced AI Interviewer & Adaptive Q&A
 *   **Task P2.3.1: Enhance `DynamicQuestionGenerationTool`**
