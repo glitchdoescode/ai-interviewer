@@ -40,7 +40,7 @@ const ChatInterface = ({ jobRoleData }) => {
     loading,
     error,
     voiceMode,
-    interviewStage,
+    // Remove unused interviewStage
     setSessionId,
     addMessage,
     setLoading,
@@ -341,44 +341,7 @@ const ChatInterface = ({ jobRoleData }) => {
     }
   };
 
-  // Handle completion of coding challenge
-  const handleChallengeComplete = async (result) => {
-    try {
-      setLoading(true);
-      
-      // Send message that challenge was completed
-      const response = await continueAfterCodingChallenge(
-        "I've completed the coding challenge.",
-        sessionId,
-        userId,
-        result.evaluation.passed
-      );
-      
-      // Add AI response
-      addMessage({
-        role: 'assistant',
-        content: response.response,
-        tool_calls: response.tool_calls
-      });
-      
-      // Reset coding challenge state
-      setCurrentCodingChallenge(null);
-      setIsWaitingForCodingChallenge(false);
-    } catch (err) {
-      console.error('Error completing challenge:', err);
-      setError('Failed to process challenge completion. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Handle keyboard shortcuts (Enter to send message)
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
+  // No need for handleKeyDown as we use onKeyPress directly in the Input component
 
   return (
     <Flex direction="column" h="100vh" overflow="hidden">
@@ -406,7 +369,7 @@ const ChatInterface = ({ jobRoleData }) => {
               return (
                 <React.Fragment key={index}>
                   <ChatMessage message={message} />
-                                     <CodingChallenge 
+                   <CodingChallenge 
                      challenge={codingChallenge}
                      onSubmit={(code, isCompleted) => {
                        // Submit the code and continue the interview
