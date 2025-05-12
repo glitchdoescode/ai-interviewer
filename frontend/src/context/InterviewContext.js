@@ -1,118 +1,147 @@
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useCallback } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 
-// Initialize context
+// Create context
 const InterviewContext = createContext();
 
-// Action types
-const ACTION_TYPES = {
-  SET_USER_ID: 'SET_USER_ID',
-  SET_SESSION_ID: 'SET_SESSION_ID',
-  SET_LOADING: 'SET_LOADING',
-  SET_MESSAGES: 'SET_MESSAGES',
-  ADD_MESSAGE: 'ADD_MESSAGE',
-  SET_INTERVIEW_STAGE: 'SET_INTERVIEW_STAGE',
-  SET_ERROR: 'SET_ERROR',
-  CLEAR_ERROR: 'CLEAR_ERROR',
-  SET_VOICE_MODE: 'SET_VOICE_MODE',
-};
-
-// Initial state
+// Define initial state
 const initialState = {
-  userId: localStorage.getItem('userId') || null,
+  userId: `user-${uuidv4()}`,
   sessionId: null,
   messages: [],
   loading: false,
-  interviewStage: null,
   error: null,
-  voiceMode: false
+  voiceMode: false,
+  interviewStage: 'introduction',
+  jobRoleData: null,
 };
 
-// Reducer function
-function interviewReducer(state, action) {
+// Define reducer actions
+const ACTIONS = {
+  SET_USER_ID: 'set_user_id',
+  SET_SESSION_ID: 'set_session_id',
+  SET_MESSAGES: 'set_messages',
+  ADD_MESSAGE: 'add_message',
+  SET_LOADING: 'set_loading',
+  SET_ERROR: 'set_error',
+  SET_VOICE_MODE: 'set_voice_mode',
+  SET_INTERVIEW_STAGE: 'set_interview_stage',
+  SET_JOB_ROLE_DATA: 'set_job_role_data',
+  RESET: 'reset',
+};
+
+// Reducer function to handle state updates
+const reducer = (state, action) => {
   switch (action.type) {
-    case ACTION_TYPES.SET_USER_ID:
+    case ACTIONS.SET_USER_ID:
       return { ...state, userId: action.payload };
-    case ACTION_TYPES.SET_SESSION_ID:
+    case ACTIONS.SET_SESSION_ID:
       return { ...state, sessionId: action.payload };
-    case ACTION_TYPES.SET_LOADING:
-      return { ...state, loading: action.payload };
-    case ACTION_TYPES.SET_MESSAGES:
+    case ACTIONS.SET_MESSAGES:
       return { ...state, messages: action.payload };
-    case ACTION_TYPES.ADD_MESSAGE:
-      return { 
-        ...state, 
-        messages: [...state.messages, action.payload] 
-      };
-    case ACTION_TYPES.SET_INTERVIEW_STAGE:
-      return { ...state, interviewStage: action.payload };
-    case ACTION_TYPES.SET_ERROR:
+    case ACTIONS.ADD_MESSAGE:
+      return { ...state, messages: [...state.messages, action.payload] };
+    case ACTIONS.SET_LOADING:
+      return { ...state, loading: action.payload };
+    case ACTIONS.SET_ERROR:
       return { ...state, error: action.payload };
-    case ACTION_TYPES.CLEAR_ERROR:
-      return { ...state, error: null };
-    case ACTION_TYPES.SET_VOICE_MODE:
+    case ACTIONS.SET_VOICE_MODE:
       return { ...state, voiceMode: action.payload };
+    case ACTIONS.SET_INTERVIEW_STAGE:
+      return { ...state, interviewStage: action.payload };
+    case ACTIONS.SET_JOB_ROLE_DATA:
+      return { ...state, jobRoleData: action.payload };
+    case ACTIONS.RESET:
+      return {
+        ...initialState,
+        userId: `user-${uuidv4()}`, // Generate fresh user ID
+        messages: [], // Reset messages
+      };
     default:
       return state;
   }
-}
+};
 
-// Provider component
-export function InterviewProvider({ children }) {
-  const [state, dispatch] = useReducer(interviewReducer, initialState);
-
-  // Persist userId to localStorage
-  useEffect(() => {
-    if (state.userId) {
-      localStorage.setItem('userId', state.userId);
-    }
-  }, [state.userId]);
-
-  // Context value
+/**
+ * Interview Provider component
+ * Provides interview state management context
+ */
+export const InterviewProvider = ({ children }) => {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  
+  // Define action dispatchers as callbacks
+  const setUserId = useCallback((userId) => {
+    dispatch({ type: ACTIONS.SET_USER_ID, payload: userId });
+  }, []);
+  
+  const setSessionId = useCallback((sessionId) => {
+    dispatch({ type: ACTIONS.SET_SESSION_ID, payload: sessionId });
+  }, []);
+  
+  const setMessages = useCallback((messages) => {
+    dispatch({ type: ACTIONS.SET_MESSAGES, payload: messages });
+  }, []);
+  
+  const addMessage = useCallback((message) => {
+    dispatch({ type: ACTIONS.ADD_MESSAGE, payload: message });
+  }, []);
+  
+  const setLoading = useCallback((loading) => {
+    dispatch({ type: ACTIONS.SET_LOADING, payload: loading });
+  }, []);
+  
+  const setError = useCallback((error) => {
+    dispatch({ type: ACTIONS.SET_ERROR, payload: error });
+  }, []);
+  
+  const setVoiceMode = useCallback((voiceMode) => {
+    dispatch({ type: ACTIONS.SET_VOICE_MODE, payload: voiceMode });
+  }, []);
+  
+  const setInterviewStage = useCallback((stage) => {
+    dispatch({ type: ACTIONS.SET_INTERVIEW_STAGE, payload: stage });
+  }, []);
+  
+  const setJobRoleData = useCallback((jobRoleData) => {
+    dispatch({ type: ACTIONS.SET_JOB_ROLE_DATA, payload: jobRoleData });
+  }, []);
+  
+  const resetInterview = useCallback(() => {
+    dispatch({ type: ACTIONS.RESET });
+  }, []);
+  
+  // Create context value object with state and action dispatchers
   const value = {
     ...state,
-    setUserId: (userId) => {
-      dispatch({ type: ACTION_TYPES.SET_USER_ID, payload: userId });
-    },
-    setSessionId: (sessionId) => {
-      dispatch({ type: ACTION_TYPES.SET_SESSION_ID, payload: sessionId });
-    },
-    setLoading: (isLoading) => {
-      dispatch({ type: ACTION_TYPES.SET_LOADING, payload: isLoading });
-    },
-    setMessages: (messages) => {
-      dispatch({ type: ACTION_TYPES.SET_MESSAGES, payload: messages });
-    },
-    addMessage: (message) => {
-      dispatch({ type: ACTION_TYPES.ADD_MESSAGE, payload: message });
-    },
-    setInterviewStage: (stage) => {
-      dispatch({ type: ACTION_TYPES.SET_INTERVIEW_STAGE, payload: stage });
-    },
-    setError: (error) => {
-      dispatch({ type: ACTION_TYPES.SET_ERROR, payload: error });
-    },
-    clearError: () => {
-      dispatch({ type: ACTION_TYPES.CLEAR_ERROR });
-    },
-    setVoiceMode: (enabled) => {
-      dispatch({ type: ACTION_TYPES.SET_VOICE_MODE, payload: enabled });
-    }
+    setUserId,
+    setSessionId,
+    setMessages,
+    addMessage,
+    setLoading,
+    setError,
+    setVoiceMode,
+    setInterviewStage,
+    setJobRoleData,
+    resetInterview,
   };
-
+  
+  // Provide context to children
   return (
     <InterviewContext.Provider value={value}>
       {children}
     </InterviewContext.Provider>
   );
-}
+};
 
-// Custom hook for using the context
-export function useInterview() {
+// Custom hook for accessing interview context
+export const useInterview = () => {
   const context = useContext(InterviewContext);
+  
   if (context === undefined) {
     throw new Error('useInterview must be used within an InterviewProvider');
   }
+  
   return context;
-}
+};
 
 export default InterviewContext; 

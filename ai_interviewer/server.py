@@ -110,15 +110,40 @@ async def get_open_api_endpoint():
     )
 
 # Pydantic models for request/response validation
+class JobRole(BaseModel):
+    """Model for job role configuration."""
+    role_name: str = Field(..., description="Name of the job role (e.g., 'Frontend Developer')")
+    seniority_level: str = Field("Mid-level", description="Seniority level (e.g., 'Junior', 'Mid-level', 'Senior')")
+    required_skills: List[str] = Field(default_factory=list, description="List of required skills for the role")
+    description: str = Field("", description="Detailed job description")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "role_name": "Frontend Developer",
+                "seniority_level": "Mid-level",
+                "required_skills": ["JavaScript", "React", "HTML/CSS", "UI/UX"],
+                "description": "We're looking for a Frontend Developer with strong React skills to join our team."
+            }
+        }
+
 class MessageRequest(BaseModel):
     message: str = Field(..., description="User's message")
     user_id: Optional[str] = Field(None, description="User ID (generated if not provided)")
+    job_role: Optional[str] = Field(None, description="Job role for the interview (e.g., 'Frontend Developer')")
+    seniority_level: Optional[str] = Field(None, description="Seniority level (e.g., 'Junior', 'Mid-level', 'Senior')")
+    required_skills: Optional[List[str]] = Field(None, description="List of required skills for the role")
+    job_description: Optional[str] = Field(None, description="Detailed job description")
     
     class Config:
         schema_extra = {
             "example": {
                 "message": "Hello, I'm here for the interview.",
-                "user_id": "user-123"
+                "user_id": "user-123",
+                "job_role": "Frontend Developer",
+                "seniority_level": "Mid-level",
+                "required_skills": ["JavaScript", "React", "HTML/CSS"],
+                "job_description": "Looking for a developer with strong React skills."
             }
         }
 
@@ -126,13 +151,15 @@ class MessageResponse(BaseModel):
     response: str = Field(..., description="AI interviewer's response")
     session_id: str = Field(..., description="Session ID for continuing the conversation")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
+    job_role: Optional[str] = Field(None, description="Job role for the interview")
     
     class Config:
         schema_extra = {
             "example": {
-                "response": "Hello! Welcome to your technical interview. Could you please introduce yourself?",
+                "response": "Hello! Welcome to your technical interview for the Frontend Developer position. Could you please introduce yourself?",
                 "session_id": "sess-abc123",
-                "interview_stage": "introduction"
+                "interview_stage": "introduction",
+                "job_role": "Frontend Developer"
             }
         }
 
@@ -172,6 +199,10 @@ class AudioTranscriptionRequest(BaseModel):
     audio_base64: str = Field(..., description="Base64-encoded audio data")
     sample_rate: int = Field(16000, description="Audio sample rate in Hz")
     channels: int = Field(1, description="Number of audio channels")
+    job_role: Optional[str] = Field(None, description="Job role for the interview")
+    seniority_level: Optional[str] = Field(None, description="Seniority level")
+    required_skills: Optional[List[str]] = Field(None, description="List of required skills")
+    job_description: Optional[str] = Field(None, description="Detailed job description")
 
 class AudioTranscriptionResponse(BaseModel):
     transcription: str = Field(..., description="Transcribed text from audio")
@@ -179,6 +210,7 @@ class AudioTranscriptionResponse(BaseModel):
     session_id: str = Field(..., description="Session ID for continuing the conversation")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
     audio_response_url: Optional[str] = Field(None, description="URL to audio response file")
+    job_role: Optional[str] = Field(None, description="Job role for the interview")
 
 class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Error details")
@@ -216,7 +248,69 @@ async def log_request_time(request: Request):
     process_time = (datetime.now() - request.state.start_time).total_seconds() * 1000
     logger.info(f"Request to {request.url.path} took {process_time:.2f}ms")
 
+# Define some default job roles
+DEFAULT_JOB_ROLES = [
+    JobRole(
+        role_name="Frontend Developer",
+        seniority_level="Mid-level",
+        required_skills=["JavaScript", "React", "HTML/CSS", "UI/UX", "Responsive Design"],
+        description="We're looking for a Frontend Developer with strong React skills to build responsive and interactive web applications."
+    ),
+    JobRole(
+        role_name="Backend Developer",
+        seniority_level="Mid-level",
+        required_skills=["Python", "Node.js", "Databases", "API Design", "Server Architecture"],
+        description="Backend Developer responsible for server-side application logic, database management, and API development."
+    ),
+    JobRole(
+        role_name="Full Stack Developer",
+        seniority_level="Senior",
+        required_skills=["JavaScript", "React", "Node.js", "Python", "Databases", "DevOps"],
+        description="Senior Full Stack Developer with experience across the entire web stack from frontend to backend."
+    ),
+    JobRole(
+        role_name="Data Scientist",
+        seniority_level="Mid-level",
+        required_skills=["Python", "Statistics", "Machine Learning", "Data Analysis", "SQL"],
+        description="Data Scientist with strong analytical skills to develop machine learning models and extract insights from data."
+    ),
+    JobRole(
+        role_name="DevOps Engineer",
+        seniority_level="Mid-level",
+        required_skills=["CI/CD", "Docker", "Kubernetes", "Cloud Platforms", "Linux", "Scripting"],
+        description="DevOps Engineer to build and maintain CI/CD pipelines and cloud infrastructure."
+    )
+]
+
 # API endpoints
+@app.get(
+    "/api/job-roles",
+    response_model=List[JobRole],
+    responses={
+        200: {"description": "Successfully retrieved job roles"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_job_roles(request: Request):
+    """
+    Get available job roles for interviews.
+    
+    This endpoint returns a list of predefined job roles that can be used
+    to customize the interview experience.
+    
+    Returns:
+        List of JobRole objects
+    """
+    try:
+        # In a real implementation, these would come from a database
+        return DEFAULT_JOB_ROLES
+    except Exception as e:
+        logger.error(f"Error getting job roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post(
     "/api/interview", 
     response_model=MessageResponse,
@@ -245,9 +339,14 @@ async def start_interview(request: Request, request_data: MessageRequest):
         # Generate a user ID if not provided
         user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
         
-        # Process the user message
+        # Process the user message with job role parameters
         ai_response, session_id = await interviewer.run_interview(
-            user_id, request_data.message
+            user_id, 
+            request_data.message,
+            job_role=request_data.job_role,
+            seniority_level=request_data.seniority_level,
+            required_skills=request_data.required_skills,
+            job_description=request_data.job_description
         )
         
         # Get session metadata if available
@@ -260,7 +359,8 @@ async def start_interview(request: Request, request_data: MessageRequest):
         return MessageResponse(
             response=ai_response,
             session_id=session_id,
-            interview_stage=metadata.get("interview_stage")
+            interview_stage=metadata.get("interview_stage"),
+            job_role=metadata.get("job_role")
         )
     except Exception as e:
         logger.error(f"Error starting interview: {e}")
@@ -298,9 +398,15 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
         if not request_data.user_id:
             raise HTTPException(status_code=400, detail="User ID is required")
         
-        # Process the user message
+        # Process the user message with job role parameters (will only apply if session is new)
         ai_response, new_session_id = await interviewer.run_interview(
-            request_data.user_id, request_data.message, session_id
+            request_data.user_id, 
+            request_data.message, 
+            session_id,
+            job_role=request_data.job_role,
+            seniority_level=request_data.seniority_level,
+            required_skills=request_data.required_skills,
+            job_description=request_data.job_description
         )
         
         # Get session metadata if available
@@ -313,7 +419,8 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
         return MessageResponse(
             response=ai_response,
             session_id=new_session_id,
-            interview_stage=metadata.get("interview_stage")
+            interview_stage=metadata.get("interview_stage"),
+            job_role=metadata.get("job_role")
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -436,9 +543,15 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
             raise HTTPException(status_code=422, detail="No speech detected or empty transcription")
         
-        # Process the transcribed message
+        # Process the transcribed message with job role parameters
         ai_response, session_id = await interviewer.run_interview(
-            user_id, transcription, request_data.session_id
+            user_id, 
+            transcription, 
+            request_data.session_id,
+            job_role=request_data.job_role,
+            seniority_level=request_data.seniority_level,
+            required_skills=request_data.required_skills,
+            job_description=request_data.job_description
         )
         
         # Get session metadata if available
@@ -486,7 +599,8 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             response=ai_response,
             session_id=session_id,
             interview_stage=metadata.get("interview_stage"),
-            audio_response_url=audio_response_url
+            audio_response_url=audio_response_url,
+            job_role=metadata.get("job_role")
         )
     except HTTPException:
         raise
