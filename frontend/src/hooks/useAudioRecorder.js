@@ -84,34 +84,21 @@ const useAudioRecorder = () => {
         // Return a new promise that will resolve after the recorder is initialized
         return new Promise(resolve => {
           // Need to delay until next render cycle when recorder state is updated
-          setTimeout(() => {
+          setTimeout(async () => {
             try {
-              // Instead of relying on the state, we'll check for the AudioContext status
-              if (!audioContext || audioContext.state !== 'running') {
-                throw new Error('AudioContext not ready or running');
+              // Ensure we have access to the latest state
+              if (!audioContext) {
+                throw new Error('AudioContext not initialized');
               }
               
-              // Instead of directly using recorder state which might not be updated yet,
-              // we'll get a fresh reference through the AudioContext
-              const audioCtx = audioContext;
-              
-              // Verify audio context is active by creating a test node and checking its state
-              if (!audioCtx || audioCtx.state !== 'running') {
-                throw new Error('AudioContext not active');
+              // Explicitly resume the AudioContext - this is crucial
+              if (audioContext.state !== 'running') {
+                await audioContext.resume();
               }
               
-              if (!stream) {
-                throw new Error('Audio stream not available');
-              }
-              
-              // Try to resume the AudioContext if it's suspended
-              if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
-              }
-              
-              // Manually trigger recorder init again to ensure it's connected
-              const newRecorder = new Recorder(audioCtx);
-              newRecorder.init(stream);
+              // Create a new recorder with the resumed context
+              const newRecorder = new Recorder(audioContext);
+              await newRecorder.init(stream);
               setRecorder(newRecorder);
               
               // Start recording with the new recorder
@@ -124,16 +111,18 @@ const useAudioRecorder = () => {
               setError(`Error starting recording: ${startErr.message}`);
               resolve(false);
             }
-          }, 300); // Increased delay to ensure state updates have completed
+          }, 500); // Increased delay to ensure audio context has time to initialize
         });
       }
       
       // If recorder already exists, use it directly
       if (recorder) {
         try {
-          // Make sure AudioContext is running
-          if (audioContext && audioContext.state === 'suspended') {
+          // Make sure AudioContext is running - CRITICAL STEP
+          if (audioContext && audioContext.state !== 'running') {
             await audioContext.resume();
+            // Add a small delay after resuming context
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
           
           recorder.start();
