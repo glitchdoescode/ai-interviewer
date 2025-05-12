@@ -465,14 +465,18 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
                 audio_path = os.path.join(audio_responses_dir, audio_filename)
                 
                 # Generate audio
-                await voice_handler.speak(
+                success = await voice_handler.speak(
                     text=ai_response,
                     voice=speech_config.get("tts_voice", "nova"),
                     output_file=audio_path,
                     play_audio=False
                 )
                 
-                audio_response_url = f"/api/audio/response/{audio_filename}"
+                if success:
+                    logger.info(f"Generated audio response at {audio_path}")
+                    audio_response_url = f"/api/audio/response/{audio_filename}"
+                else:
+                    logger.warning(f"Failed to generate audio response")
         except Exception as e:
             logger.warning(f"Error generating audio response: {e}")
             # Continue without audio response
@@ -605,12 +609,21 @@ async def get_audio_response(filename: str):
     """
     # Use a path relative to the application directory
     app_dir = os.path.dirname(os.path.abspath(__file__))
-    temp_audio_dir = os.path.join(app_dir, "temp_audio")
-    file_path = os.path.join(temp_audio_dir, filename)
+    audio_responses_dir = os.path.join(app_dir, "audio_responses")
+    file_path = os.path.join(audio_responses_dir, filename)
     
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Audio file not found")
+        # Try temp_audio directory as fallback
+        temp_audio_dir = os.path.join(app_dir, "temp_audio")
+        fallback_path = os.path.join(temp_audio_dir, filename)
+        
+        if os.path.exists(fallback_path):
+            file_path = fallback_path
+        else:
+            logger.error(f"Audio file not found at {file_path} or {fallback_path}")
+            raise HTTPException(status_code=404, detail="Audio file not found")
     
+    logger.info(f"Serving audio file from {file_path}")
     def iterfile():
         with open(file_path, "rb") as f:
             yield from f
