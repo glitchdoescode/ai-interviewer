@@ -26,6 +26,7 @@ import Navbar from '../components/Navbar';
 import ChatInterface from '../components/ChatInterface';
 import { useInterview } from '../context/InterviewContext';
 import { checkVoiceAvailability } from '../api/interviewService';
+import JobRoleSelector from '../components/JobRoleSelector';
 
 /**
  * Interview page component
@@ -39,14 +40,20 @@ const Interview = () => {
   const {
     userId,
     sessionId,
-    interviewStage,
+    loading,
+    error,
     setSessionId,
-    setError,
-    voiceMode,
+    resetInterview,
+    interviewStage,
     setVoiceMode,
+    voiceMode,
+    setError,
+    setJobRoleData,
   } = useInterview();
 
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
+  const [showJobSelector, setShowJobSelector] = useState(!urlSessionId);
+  const [selectedJobRole, setSelectedJobRole] = useState(null);
 
   // Check if the requested session ID should be loaded
   useEffect(() => {
@@ -92,9 +99,45 @@ const Interview = () => {
     checkVoice();
   }, [setError, setVoiceMode, voiceMode, toast]);
 
-  // Function to handle navigating to session history
-  const handleViewHistory = () => {
-    navigate('/history');
+  // Handle job role selection
+  const handleRoleSelect = (roleData) => {
+    setSelectedJobRole(roleData);
+    
+    // Also store in context for use in other components
+    if (roleData) {
+      setJobRoleData(roleData);
+    }
+  };
+  
+  // Handle starting interview with selected role
+  const handleStartInterview = () => {
+    setShowJobSelector(false);
+    
+    // If we have job role data, include it in the initial toast notification
+    if (selectedJobRole) {
+      toast({
+        title: 'Interview Started',
+        description: `Your interview for ${selectedJobRole.role_name} (${selectedJobRole.seniority_level}) is ready to begin.`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+  
+  // Handle ending the interview
+  const handleEndInterview = () => {
+    onClose();
+    resetInterview();
+    navigate('/');
+    
+    toast({
+      title: 'Interview Ended',
+      description: 'Your interview has been completed.',
+      status: 'info',
+      duration: 3000,
+      isClosable: true,
+    });
   };
 
   // Get stage badge color based on interview stage
@@ -192,7 +235,7 @@ const Interview = () => {
                 <Button
                   width="full"
                   leftIcon={<FaHistory />}
-                  onClick={handleViewHistory}
+                  onClick={() => navigate('/history')}
                   variant="outline"
                 >
                   View Interview History
@@ -203,7 +246,58 @@ const Interview = () => {
           
           {/* Main Chat Interface */}
           <GridItem>
-            <ChatInterface />
+            {error && (
+              <Alert status="error" mb={4}>
+                <AlertIcon />
+                {error}
+              </Alert>
+            )}
+            
+            <Grid
+              templateRows="auto 1fr"
+              templateColumns="1fr"
+              gap={4}
+              height="100%"
+            >
+              <GridItem>
+                <Box display="flex" justifyContent="space-between" alignItems="center">
+                  <Box>
+                    <Heading size="lg">Technical Interview</Heading>
+                    {selectedJobRole && (
+                      <Badge colorScheme="green" fontSize="0.8em" ml={2}>
+                        {selectedJobRole.role_name} ({selectedJobRole.seniority_level})
+                      </Badge>
+                    )}
+                    {sessionId && (
+                      <Text fontSize="sm" color="gray.500">
+                        Session ID: {sessionId}
+                      </Text>
+                    )}
+                  </Box>
+                  
+                  <Button 
+                    colorScheme="red" 
+                    variant="outline" 
+                    size="sm"
+                    onClick={onOpen}
+                  >
+                    End Interview
+                  </Button>
+                </Box>
+              </GridItem>
+              
+              <GridItem overflow="hidden">
+                {showJobSelector ? (
+                  <JobRoleSelector 
+                    onRoleSelect={handleRoleSelect}
+                    onStartInterview={handleStartInterview}
+                    isLoading={loading}
+                  />
+                ) : (
+                  <ChatInterface jobRoleData={selectedJobRole} />
+                )}
+              </GridItem>
+            </Grid>
           </GridItem>
         </Grid>
       </Container>
@@ -252,6 +346,27 @@ const Interview = () => {
           <ModalFooter>
             <Button colorScheme="brand" onClick={onClose}>
               Got it
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      
+      <Modal isOpen={isOpen} onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>End Interview</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <Text>
+              Are you sure you want to end this interview? Your session will be saved.
+            </Text>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button colorScheme="red" onClick={handleEndInterview}>
+              End Interview
             </Button>
           </ModalFooter>
         </ModalContent>

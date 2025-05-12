@@ -21,8 +21,11 @@ import { startInterview, continueInterview, transcribeAndRespond } from '../api/
 
 /**
  * Chat interface component for interview interactions
+ * 
+ * @param {Object} props Component props
+ * @param {Object} props.jobRoleData Optional job role configuration data
  */
-const ChatInterface = () => {
+const ChatInterface = ({ jobRoleData }) => {
   const {
     userId,
     sessionId,
@@ -30,7 +33,6 @@ const ChatInterface = () => {
     loading,
     error,
     voiceMode,
-    setUserId,
     setSessionId,
     addMessage,
     setLoading,
@@ -69,99 +71,123 @@ const ChatInterface = () => {
     }
   }, [audioError, toast]);
 
-  // Handle sending a text message
+  // Function to handle sending a new message
   const handleSendMessage = async () => {
+    // Don't send empty messages
     if (!messageInput.trim()) return;
-    
+
     try {
+      // Set loading state
       setLoading(true);
       
-      // Add user message to UI immediately
-      addMessage({ sender: 'user', message: messageInput });
+      // Add user message to chat
+      addMessage({
+        role: 'user',
+        content: messageInput,
+      });
       
-      // Clear input
+      // Clear the input field
       setMessageInput('');
       
       let response;
       
-      // Either start a new interview or continue an existing one
-      if (!sessionId) {
-        response = await startInterview(messageInput, userId);
-        setSessionId(response.session_id);
-        if (!userId) {
-          // If we didn't have a userId, the API generated one for us
-          setUserId(response.user_id || 'anonymous');
-        }
+      // If we have a session ID, continue the interview, otherwise start a new one
+      if (sessionId) {
+        response = await continueInterview(messageInput, sessionId, userId, jobRoleData);
       } else {
-        response = await continueInterview(sessionId, messageInput, userId);
+        response = await startInterview(messageInput, userId, jobRoleData);
+        
+        // Set the session ID from the response
+        setSessionId(response.session_id);
       }
       
-      // Add AI's response to the chat
-      addMessage({ sender: 'ai', message: response.response });
-      
-    } catch (err) {
-      setError(err.message || 'Error sending message');
-      toast({
-        title: 'Error',
-        description: err.message || 'Error sending message',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
+      // Add AI response to chat
+      addMessage({
+        role: 'assistant',
+        content: response.response,
       });
+      
+      // Clear any errors
+      setError(null);
+    } catch (err) {
+      console.error('Error sending message:', err);
+      setError('Failed to send message. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Handle voice recording toggle
+  // Function to handle voice recording
   const handleVoiceRecording = async () => {
     if (isRecording) {
-      setLoading(true);
-      
-      // Stop recording
-      const audio = await stopRecording();
-      
-      if (audio && audio.blob) {
-        try {
-          // Convert audio to base64
-          const base64Audio = await getAudioBase64(audio.blob);
-          
-          // Send audio to transcribe and get response
-          const response = await transcribeAndRespond(base64Audio, userId, sessionId);
-          
-          // Add transcription as user message
-          addMessage({ sender: 'user', message: response.transcription });
-          
-          // Add AI response
-          addMessage({ sender: 'ai', message: response.response });
-          
-          // Update session info
-          setSessionId(response.session_id);
-          
-          // Play audio response if available
-          if (response.audio_response_url) {
-            const audio = new Audio(response.audio_response_url);
-            audio.play();
-          }
-        } catch (err) {
-          setError(err.message || 'Error processing voice');
-          toast({
-            title: 'Error',
-            description: err.message || 'Error processing voice',
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-          });
-        } finally {
-          setLoading(false);
+      try {
+        // Stop recording
+        await stopRecording();
+        
+        // Get base64-encoded audio
+        const audioBase64 = await getAudioBase64();
+        
+        if (!audioBase64) {
+          throw new Error('Failed to get audio data.');
         }
-      } else {
+        
+        // Set loading state
+        setLoading(true);
+        
+        // Add user message with loading indicator
+        addMessage({
+          role: 'user',
+          content: '🎤 Recording...',
+          loading: true,
+        });
+        
+        // Send audio for transcription and get response
+        const response = await transcribeAndRespond(audioBase64, userId, sessionId, jobRoleData);
+        
+        // Update user message with transcription
+        addMessage({
+          role: 'user',
+          content: response.transcription,
+        });
+        
+        // If we don't have a session ID yet, set it
+        if (!sessionId) {
+          setSessionId(response.session_id);
+        }
+        
+        // Add AI response
+        addMessage({
+          role: 'assistant',
+          content: response.response,
+          audioUrl: response.audio_response_url
+        });
+        
+        // Clear any errors
+        setError(null);
+      } catch (err) {
+        console.error('Error processing voice:', err);
+        setError('Failed to process voice recording. Please try again or switch to text mode.');
+        
+        // Remove the loading message
+        addMessage({
+          role: 'user',
+          content: '❌ Voice recording failed. Please try again.',
+          error: true,
+        });
+      } finally {
         setLoading(false);
       }
     } else {
       // Start recording
-      const success = await startRecording();
-      if (!success) {
+      try {
+        const success = await startRecording();
+        if (!success) {
+          throw new Error('Could not start recording');
+        }
+      } catch (err) {
+        console.error('Error starting recording:', err);
+        setError('Could not start recording. Please check microphone permissions.');
+        
         toast({
           title: 'Recording Error',
           description: 'Could not start recording. Please check microphone permissions.',

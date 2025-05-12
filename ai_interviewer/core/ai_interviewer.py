@@ -53,16 +53,22 @@ class InterviewStage(Enum):
     CONCLUSION = "conclusion"  # Wrapping up the interview
 
 # System prompt template
-INTERVIEW_SYSTEM_PROMPT = """You are an AI Technical Interviewer for a software engineering position.
+INTERVIEW_SYSTEM_PROMPT = """You are an AI Technical Interviewer for a {job_role} position.
 
 Your goal is to conduct a professional, thorough interview that assesses the candidate's technical skills, problem-solving abilities, and communication style.
+
+JOB DETAILS:
+Role: {job_role}
+Seniority: {seniority_level}
+Required Skills: {required_skills}
+Additional Context: {job_description}
 
 INTERVIEW STRUCTURE:
 1. If the candidate's name is not provided (or is blank/empty), your FIRST message must ask for their name and wait for a response.
 2. Once you have the name, start with a friendly introduction, introduce yourself, and make the candidate comfortable.
-3. Ask a series of technical questions related to software engineering, gradually increasing in difficulty.
+3. Ask a series of technical questions related to the job role, gradually increasing in difficulty.
 4. Follow up on answers to probe deeper into the candidate's understanding.
-5. Present a coding challenge when appropriate.
+5. Present a coding challenge when appropriate, focused on relevant skills for the role.
 6. Provide constructive feedback on the candidate's solutions.
 7. Conclude with a summary and next steps.
 
@@ -107,16 +113,32 @@ Current Stage: {current_stage}
 class AIInterviewer:
     """Main class that encapsulates the AI Interviewer functionality."""
     
-    def __init__(self, use_mongodb: bool = True, connection_uri: Optional[str] = None):
+    def __init__(self, 
+                use_mongodb: bool = True, 
+                connection_uri: Optional[str] = None,
+                job_role: str = "Software Engineering",
+                seniority_level: str = "Mid-level",
+                required_skills: List[str] = None,
+                job_description: str = ""):
         """
         Initialize the AI Interviewer with tools, model, and workflow.
         
         Args:
             use_mongodb: Whether to use MongoDB for persistence
             connection_uri: MongoDB connection URI (if None, uses config)
+            job_role: The specific job role for the interview
+            seniority_level: The seniority level for the position
+            required_skills: List of required skills for the position
+            job_description: Detailed job description for context
         """
         # Log configuration
         log_config()
+        
+        # Store job role configuration
+        self.job_role = job_role
+        self.seniority_level = seniority_level
+        self.required_skills = required_skills or ["Programming", "Problem Solving", "Technical Knowledge"]
+        self.job_description = job_description
         
         # Set up tools
         self.tools = [
@@ -411,6 +433,12 @@ class AIInterviewer:
         interview_id = thread_id or "New Interview"
         current_stage = session_data.get("interview_stage", InterviewStage.INTRODUCTION.value)
         
+        # Get job role information from session data or use default
+        job_role = session_data.get("job_role", self.job_role)
+        seniority_level = session_data.get("seniority_level", self.seniority_level)
+        required_skills = session_data.get("required_skills", self.required_skills)
+        job_description = session_data.get("job_description", self.job_description)
+        
         # Determine the interview stage if it's not set
         if not current_stage or current_stage == InterviewStage.INTRODUCTION.value:
             if not candidate_name:
@@ -435,11 +463,15 @@ class AIInterviewer:
                     else:
                         current_stage = InterviewStage.TECHNICAL_QUESTIONS.value
         
-        # Create system message with context
+        # Create system message with context, including job role information
         system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
             candidate_name=candidate_name or "[Not provided yet]",
             interview_id=interview_id,
-            current_stage=current_stage
+            current_stage=current_stage,
+            job_role=job_role,
+            seniority_level=seniority_level,
+            required_skills=", ".join(required_skills),
+            job_description=job_description
         )
         
         # Prepend system message if not already present
@@ -592,7 +624,14 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
             # Fallback to current stage if there's an error
             return current_stage
     
-    async def run_interview(self, user_id: str, query: str, session_id: Optional[str] = None) -> Tuple[str, str]:
+    async def run_interview(self, 
+                          user_id: str, 
+                          query: str, 
+                          session_id: Optional[str] = None,
+                          job_role: Optional[str] = None,
+                          seniority_level: Optional[str] = None,
+                          required_skills: Optional[List[str]] = None,
+                          job_description: Optional[str] = None) -> Tuple[str, str]:
         """
         Process a user query within an interview session.
         
@@ -600,6 +639,10 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
             user_id: User identifier
             query: User's message
             session_id: Optional session ID (if None, most recent or new session used)
+            job_role: Optional job role to override default
+            seniority_level: Optional seniority level to override default
+            required_skills: Optional list of required skills to override default
+            job_description: Optional job description to override default
             
         Returns:
             Tuple of (AI response as string, session_id)
@@ -637,7 +680,7 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                 }
             }
             
-            # For a new session, initialize the interview stage
+            # For a new session, initialize the interview stage and job role information
             try:
                 if self.session_manager:
                     session = self.session_manager.get_session(session_id)
@@ -645,13 +688,35 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                         metadata = session["metadata"]
                         if "interview_stage" not in metadata:
                             metadata["interview_stage"] = InterviewStage.INTRODUCTION.value
-                            self.session_manager.update_session_metadata(session_id, metadata)
+                        
+                        # Add job role information if not already present or if overridden
+                        if job_role or "job_role" not in metadata:
+                            metadata["job_role"] = job_role or self.job_role
+                        if seniority_level or "seniority_level" not in metadata:
+                            metadata["seniority_level"] = seniority_level or self.seniority_level
+                        if required_skills or "required_skills" not in metadata:
+                            metadata["required_skills"] = required_skills or self.required_skills
+                        if job_description or "job_description" not in metadata:
+                            metadata["job_description"] = job_description or self.job_description
+                            
+                        self.session_manager.update_session_metadata(session_id, metadata)
                 else:
                     # In-memory session initialization
-                    if session_id in self.active_sessions and "interview_stage" not in self.active_sessions[session_id]:
-                        self.active_sessions[session_id]["interview_stage"] = InterviewStage.INTRODUCTION.value
+                    if session_id in self.active_sessions:
+                        if "interview_stage" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["interview_stage"] = InterviewStage.INTRODUCTION.value
+                        
+                        # Add job role information
+                        if job_role or "job_role" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["job_role"] = job_role or self.job_role
+                        if seniority_level or "seniority_level" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["seniority_level"] = seniority_level or self.seniority_level
+                        if required_skills or "required_skills" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["required_skills"] = required_skills or self.required_skills
+                        if job_description or "job_description" not in self.active_sessions[session_id]:
+                            self.active_sessions[session_id]["job_description"] = job_description or self.job_description
             except Exception as e:
-                logger.error(f"Error initializing interview stage: {e}")
+                logger.error(f"Error initializing interview stage and job role info: {e}")
             
             # Create human message from the query
             human_message = HumanMessage(content=query)

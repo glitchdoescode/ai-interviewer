@@ -15,14 +15,25 @@ const api = axios.create({
  * Start a new interview session
  * @param {string} message - Initial user message
  * @param {string} userId - Optional user ID
+ * @param {Object} jobRoleData - Optional job role configuration
  * @returns {Promise} Promise with response data
  */
-export const startInterview = async (message, userId = null) => {
+export const startInterview = async (message, userId = null, jobRoleData = null) => {
   try {
-    const response = await api.post('/interview', {
+    const requestBody = {
       message,
       user_id: userId
-    });
+    };
+    
+    // Add job role data if provided
+    if (jobRoleData) {
+      requestBody.job_role = jobRoleData.role_name;
+      requestBody.seniority_level = jobRoleData.seniority_level;
+      requestBody.required_skills = jobRoleData.required_skills;
+      requestBody.job_description = jobRoleData.description;
+    }
+    
+    const response = await api.post('/interview', requestBody);
     return response.data;
   } catch (error) {
     console.error('Error starting interview:', error);
@@ -35,14 +46,25 @@ export const startInterview = async (message, userId = null) => {
  * @param {string} sessionId - Interview session ID
  * @param {string} message - User message
  * @param {string} userId - User ID
+ * @param {Object} jobRoleData - Optional job role configuration for new sessions
  * @returns {Promise} Promise with response data
  */
-export const continueInterview = async (sessionId, message, userId) => {
+export const continueInterview = async (sessionId, message, userId, jobRoleData = null) => {
   try {
-    const response = await api.post(`/interview/${sessionId}`, {
+    const requestBody = {
       message,
       user_id: userId
-    });
+    };
+    
+    // Add job role data if provided
+    if (jobRoleData) {
+      requestBody.job_role = jobRoleData.role_name;
+      requestBody.seniority_level = jobRoleData.seniority_level;
+      requestBody.required_skills = jobRoleData.required_skills;
+      requestBody.job_description = jobRoleData.description;
+    }
+    
+    const response = await api.post(`/interview/${sessionId}`, requestBody);
     return response.data;
   } catch (error) {
     console.error('Error continuing interview:', error);
@@ -73,15 +95,26 @@ export const getUserSessions = async (userId, includeCompleted = false) => {
  * @param {string} audioBase64 - Base64-encoded audio data
  * @param {string} userId - User ID
  * @param {string} sessionId - Optional session ID
+ * @param {Object} jobRoleData - Optional job role configuration
  * @returns {Promise} Promise with response data
  */
-export const transcribeAndRespond = async (audioBase64, userId, sessionId = null) => {
+export const transcribeAndRespond = async (audioBase64, userId, sessionId = null, jobRoleData = null) => {
   try {
-    const response = await api.post('/audio/transcribe', {
+    const requestBody = {
       audio_base64: audioBase64,
       user_id: userId,
       session_id: sessionId
-    });
+    };
+    
+    // Add job role data if provided
+    if (jobRoleData) {
+      requestBody.job_role = jobRoleData.role_name;
+      requestBody.seniority_level = jobRoleData.seniority_level;
+      requestBody.required_skills = jobRoleData.required_skills;
+      requestBody.job_description = jobRoleData.description;
+    }
+    
+    const response = await api.post('/audio/transcribe', requestBody);
     return response.data;
   } catch (error) {
     console.error('Error transcribing audio:', error);
@@ -103,13 +136,28 @@ export const checkVoiceAvailability = async () => {
   }
 };
 
+/**
+ * Fetches available job roles for interviews
+ * @returns {Promise<Array>} Array of job role objects
+ */
+const getJobRoles = async () => {
+  try {
+    const response = await api.get('/job-roles');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching job roles:', error);
+    throw error;
+  }
+};
+
 // Create a service object to export
 const interviewService = {
   startInterview,
   continueInterview,
   getUserSessions,
   transcribeAndRespond,
-  checkVoiceAvailability
+  checkVoiceAvailability,
+  getJobRoles
 };
 
 export default interviewService; 

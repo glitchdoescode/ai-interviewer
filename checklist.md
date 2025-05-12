@@ -219,7 +219,37 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.3.4: (Optional Long-Term) LLM Fine-tuning Study**
     *   [ ] Research feasibility and requirements for fine-tuning an LLM for interview question generation or evaluation.
 
-### Iteration 4: Interactive Coding Challenge - Execution & AI Assistance
+### Iteration 4: Job Role Configuration System
+*   **Task P2.4.1: Job Role Data Model**
+    *   [x] Define JobRole model with fields for role name, description, required skills, seniority level
+    *   [x] Create database schema for storing job role templates
+    *   [x] Implement API endpoints for CRUD operations on job roles
+
+*   **Task P2.4.2: Backend Integration**
+    *   [x] Modify AIInterviewer class to accept job role parameters
+    *   [x] Update system prompt template to include job-specific context
+    *   [x] Add session metadata for storing job role information
+    *   [x] Enhance interview stage transitions based on role requirements
+
+*   **Task P2.4.3: API Endpoint Updates**
+    *   [x] Add job_role_id parameter to /api/interview endpoint
+    *   [x] Create endpoint for listing available job roles
+    *   [x] Implement interview configuration options in API
+    *   [x] Add filters for interview sessions by job role
+
+*   **Task P2.4.4: Frontend Job Role Selection**
+    *   [x] Create job role selection screen before interview start
+    *   [x] Add job role dropdown component with descriptions
+    *   [x] Implement custom skill tags for job roles
+    *   [x] Create admin interface for managing job roles
+
+*   **Task P2.4.5: Dynamic Interview Content**
+    *   [x] Implement dynamic system prompts based on selected job role
+    *   [x] Create skill-specific question banks for different roles
+    *   [x] Add seniority-based difficulty scaling
+    *   [x] Enhance evaluation criteria based on role expectations
+
+### Iteration 5: Interactive Coding Challenge - Execution & AI Assistance
 *   **Task P2.4.1: Secure Code Execution Sandbox**
     *   [ ] Research and select a code execution sandbox solution (e.g., Docker containers with resource limits, a service like `judge0`, or `RestrictedPython`).
     *   [ ] Implement `ExecuteCodeTool`:
@@ -236,7 +266,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.4.4: Capture Code Evolution**
     *   [ ] Modify `InterviewState` or logging to store snapshots of candidate's code at submission or hint requests.
 
-### Iteration 5: Automated Problem Generation ("Magic Import")
+### Iteration 6: Automated Problem Generation ("Magic Import")
 *   **Task P2.5.1: Design `ProblemGenerationFromJDTool`**
     *   `@tool async def generate_coding_challenge_from_jd(job_description: str, skills_required: List[str]) -> Dict:`
     *   Uses an LLM to generate a problem statement, test cases, and reference solution based on input.
