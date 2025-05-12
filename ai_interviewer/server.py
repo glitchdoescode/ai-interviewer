@@ -408,14 +408,33 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         audio_bytes = base64.b64decode(request_data.audio_base64)
         
         # Transcribe the audio
-        transcription = await voice_handler.transcribe_audio_bytes(
+        transcription_result = await voice_handler.transcribe_audio_bytes(
             audio_bytes,
             sample_rate=request_data.sample_rate,
             channels=request_data.channels
         )
         
-        if not transcription:
-            raise HTTPException(status_code=422, detail="Failed to transcribe audio or no speech detected")
+        # Handle different return types from transcribe_audio_bytes
+        if isinstance(transcription_result, str):
+            # If it's a string, use it directly as the transcript
+            transcription = transcription_result
+        elif isinstance(transcription_result, dict):
+            # If it's a dict, extract the transcript
+            if transcription_result.get("success", False):
+                transcription = transcription_result.get("transcript", "")
+            else:
+                # Failed transcription
+                error_msg = transcription_result.get("error", "Unknown transcription error")
+                logger.error(f"Transcription failed: {error_msg}")
+                raise HTTPException(status_code=422, detail=f"Failed to transcribe audio: {error_msg}")
+        else:
+            # Unexpected return type
+            logger.error(f"Unexpected transcription result type: {type(transcription_result)}")
+            raise HTTPException(status_code=500, detail="Internal transcription error")
+        
+        # Check if we have a valid transcription
+        if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
+            raise HTTPException(status_code=422, detail="No speech detected or empty transcription")
         
         # Process the transcribed message
         ai_response, session_id = await interviewer.run_interview(
@@ -433,14 +452,26 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         audio_response_url = None
         try:
             if voice_handler:
+                # Create a unique filename for the audio response
                 audio_filename = f"{session_id}_{int(datetime.now().timestamp())}.wav"
-                audio_path = os.path.join("audio_responses", audio_filename)
+                
+                # Use a path relative to the application directory
+                app_dir = os.path.dirname(os.path.abspath(__file__))
+                audio_responses_dir = os.path.join(app_dir, "audio_responses")
                 
                 # Ensure directory exists
-                os.makedirs("audio_responses", exist_ok=True)
+                os.makedirs(audio_responses_dir, exist_ok=True)
+                
+                audio_path = os.path.join(audio_responses_dir, audio_filename)
                 
                 # Generate audio
-                await voice_handler.text_to_speech(ai_response, output_path=audio_path)
+                await voice_handler.speak(
+                    text=ai_response,
+                    voice=speech_config.get("tts_voice", "nova"),
+                    output_file=audio_path,
+                    play_audio=False
+                )
+                
                 audio_response_url = f"/api/audio/response/{audio_filename}"
         except Exception as e:
             logger.warning(f"Error generating audio response: {e}")
@@ -487,14 +518,33 @@ async def upload_audio_file(
         audio_bytes = await file.read()
         
         # Transcribe the audio
-        transcription = await voice_handler.transcribe_audio_bytes(
+        transcription_result = await voice_handler.transcribe_audio_bytes(
             audio_bytes,
             sample_rate=16000,  # Default sample rate
             channels=1          # Default channels
         )
         
-        if not transcription:
-            raise HTTPException(status_code=422, detail="Failed to transcribe audio or no speech detected")
+        # Handle different return types from transcribe_audio_bytes
+        if isinstance(transcription_result, str):
+            # If it's a string, use it directly as the transcript
+            transcription = transcription_result
+        elif isinstance(transcription_result, dict):
+            # If it's a dict, extract the transcript
+            if transcription_result.get("success", False):
+                transcription = transcription_result.get("transcript", "")
+            else:
+                # Failed transcription
+                error_msg = transcription_result.get("error", "Unknown transcription error")
+                logger.error(f"Transcription failed: {error_msg}")
+                raise HTTPException(status_code=422, detail=f"Failed to transcribe audio: {error_msg}")
+        else:
+            # Unexpected return type
+            logger.error(f"Unexpected transcription result type: {type(transcription_result)}")
+            raise HTTPException(status_code=500, detail="Internal transcription error")
+        
+        # Check if we have a valid transcription
+        if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
+            raise HTTPException(status_code=422, detail="No speech detected or empty transcription")
         
         # Process the transcribed message
         ai_response, new_session_id = await interviewer.run_interview(

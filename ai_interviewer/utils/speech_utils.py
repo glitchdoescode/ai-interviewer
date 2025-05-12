@@ -549,15 +549,17 @@ class VoiceHandler:
         
         logger.info("Initialized VoiceHandler")
     
-    async def transcribe_audio_bytes(self, audio_bytes: bytes) -> Dict[str, Any]:
+    async def transcribe_audio_bytes(self, audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> Dict[str, Any]:
         """
         Transcribe audio from bytes using Deepgram's API.
         
         Args:
             audio_bytes: Audio data as bytes
+            sample_rate: Audio sample rate in Hz
+            channels: Number of audio channels
             
         Returns:
-            Dictionary with transcription results
+            Dictionary with transcription results or the transcription text
         """
         try:
             # Create a temporary file to store the audio bytes
@@ -566,8 +568,19 @@ class VoiceHandler:
                 temp_file.write(audio_bytes)
             
             try:
+                # Add sample rate and channels to params for the transcription
+                params = {
+                    "sample_rate": str(sample_rate),  # Convert to string for API
+                    "channels": str(channels)
+                }
+                
                 # Transcribe the temporary file
-                result = await self.stt.transcribe_file(temp_path)
+                result = await self.stt.transcribe_file(temp_path, params=params)
+                
+                # If the result contains a 'transcript' field, return it
+                if isinstance(result, dict) and result.get('success', False) and 'transcript' in result:
+                    return result['transcript']
+                
                 return result
             finally:
                 # Clean up temporary file

@@ -71,21 +71,50 @@ const useAudioRecorder = () => {
   // Start recording
   const startRecording = useCallback(async () => {
     try {
+      // Reset any previous errors
+      setError(null);
+      
       // If recorder doesn't exist, initialize it first
       if (!recorder) {
         const initialized = await initRecording();
-        if (!initialized) return false;
+        if (!initialized) {
+          return false;
+        }
         
-        // We need to wait for the next render cycle since setRecorder is async
-        // This prevents trying to use the recorder before it's set in state
+        // Return a new promise that will resolve after the recorder is initialized
         return new Promise(resolve => {
-          setTimeout(async () => {
+          // Need to delay until next render cycle when recorder state is updated
+          setTimeout(() => {
             try {
-              // By now the recorder should be set in state
-              if (!recorder) {
-                throw new Error('Recorder not initialized properly');
+              // Get the recorder from a closure as the state hasn't updated in this callback
+              const recorderInstance = document.querySelector('#recorder-instance');
+              
+              // Instead of relying on the state, we'll check for the AudioContext status
+              if (!audioContext || audioContext.state !== 'running') {
+                throw new Error('AudioContext not ready or running');
               }
-              recorder.start();
+              
+              // Instead of directly using recorder state which might not be updated yet,
+              // we'll get a fresh reference through the AudioContext
+              const audioCtx = audioContext;
+              const recNode = audioCtx.createGain(); // Just a dummy node to verify context is working
+              
+              if (!stream) {
+                throw new Error('Audio stream not available');
+              }
+              
+              // Try to resume the AudioContext if it's suspended
+              if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+              }
+              
+              // Manually trigger recorder init again to ensure it's connected
+              const newRecorder = new Recorder(audioCtx);
+              newRecorder.init(stream);
+              setRecorder(newRecorder);
+              
+              // Start recording with the new recorder
+              newRecorder.start();
               setIsRecording(true);
               setAudioData(null);
               resolve(true);
@@ -94,21 +123,39 @@ const useAudioRecorder = () => {
               setError(`Error starting recording: ${startErr.message}`);
               resolve(false);
             }
-          }, 100); // Small delay to ensure state update has completed
+          }, 300); // Increased delay to ensure state updates have completed
         });
       }
-
-      // If recorder already exists, start it directly
-      recorder.start();
-      setIsRecording(true);
-      setAudioData(null);
-      return true;
+      
+      // If recorder already exists, use it directly
+      if (recorder) {
+        try {
+          // Make sure AudioContext is running
+          if (audioContext && audioContext.state === 'suspended') {
+            await audioContext.resume();
+          }
+          
+          recorder.start();
+          setIsRecording(true);
+          setAudioData(null);
+          return true;
+        } catch (err) {
+          console.error('Error starting existing recorder:', err);
+          setError(`Error starting recording: ${err.message}`);
+          
+          // If starting fails with existing recorder, try to create a new one
+          setRecorder(null);
+          return startRecording(); // Recursive call will go through the initialization path
+        }
+      }
+      
+      return false;
     } catch (err) {
-      console.error('Error starting recording:', err);
+      console.error('Error in startRecording:', err);
       setError(`Error starting recording: ${err.message}`);
       return false;
     }
-  }, [recorder, initRecording]);
+  }, [recorder, initRecording, stream, audioContext]);
 
   // Stop recording and get the audio data
   const stopRecording = useCallback(async () => {
