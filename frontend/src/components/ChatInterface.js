@@ -18,6 +18,7 @@ import { useInterview } from '../context/InterviewContext';
 import useAudioRecorder from '../hooks/useAudioRecorder';
 import { startInterview, continueInterview, transcribeAndRespond } from '../api/interviewService';
 
+
 /**
  * Chat interface component for interview interactions
  */
@@ -31,7 +32,6 @@ const ChatInterface = () => {
     voiceMode,
     setUserId,
     setSessionId,
-    setMessages,
     addMessage,
     setLoading,
     setError,
@@ -45,7 +45,6 @@ const ChatInterface = () => {
   // Audio recording functionality
   const {
     isRecording,
-    audioData,
     error: audioError,
     startRecording,
     stopRecording,

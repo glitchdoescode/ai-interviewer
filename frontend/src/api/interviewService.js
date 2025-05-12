@@ -103,10 +103,13 @@ export const checkVoiceAvailability = async () => {
   }
 };
 
-export default {
+// Create a service object to export
+const interviewService = {
   startInterview,
   continueInterview,
   getUserSessions,
   transcribeAndRespond,
   checkVoiceAvailability
-}; 
+};
+
+export default interviewService; 

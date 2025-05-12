@@ -86,9 +86,6 @@ const useAudioRecorder = () => {
           // Need to delay until next render cycle when recorder state is updated
           setTimeout(() => {
             try {
-              // Get the recorder from a closure as the state hasn't updated in this callback
-              const recorderInstance = document.querySelector('#recorder-instance');
-              
               // Instead of relying on the state, we'll check for the AudioContext status
               if (!audioContext || audioContext.state !== 'running') {
                 throw new Error('AudioContext not ready or running');
@@ -97,7 +94,11 @@ const useAudioRecorder = () => {
               // Instead of directly using recorder state which might not be updated yet,
               // we'll get a fresh reference through the AudioContext
               const audioCtx = audioContext;
-              const recNode = audioCtx.createGain(); // Just a dummy node to verify context is working
+              
+              // Verify audio context is active by creating a test node and checking its state
+              if (!audioCtx || audioCtx.state !== 'running') {
+                throw new Error('AudioContext not active');
+              }
               
               if (!stream) {
                 throw new Error('Audio stream not available');
