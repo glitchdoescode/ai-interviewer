@@ -8,8 +8,11 @@ import {
   HStack,
   Button,
   useColorModeValue,
+  Spacer,
+  useColorMode,
+  IconButton
 } from '@chakra-ui/react';
-import { FaHistory, FaMicrophone } from 'react-icons/fa';
+import { FaMicrophone, FaMoon, FaSun } from 'react-icons/fa';
 
 /**
  * Navbar component for site navigation
@@ -18,6 +21,7 @@ const Navbar = () => {
   const location = useLocation();
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const { colorMode, toggleColorMode } = useColorMode();
 
   return (
     <Box
@@ -91,6 +95,14 @@ const Navbar = () => {
             Start Interview
           </Button>
         </HStack>
+
+        {/* Color Mode Toggle */}
+        <Spacer />
+        <IconButton
+          icon={colorMode === 'light' ? <FaMoon /> : <FaSun />}
+          aria-label="Toggle color mode"
+          onClick={toggleColorMode}
+        />
       </Flex>
     </Box>
   );
