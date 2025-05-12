@@ -14,9 +14,16 @@ import {
 } from '@chakra-ui/react';
 import { FaPaperPlane, FaMicrophone, FaStop } from 'react-icons/fa';
 import ChatMessage from './ChatMessage';
+import CodingChallenge from './CodingChallenge';
 import { useInterview } from '../context/InterviewContext';
 import useAudioRecorder from '../hooks/useAudioRecorder';
-import { startInterview, continueInterview, transcribeAndRespond } from '../api/interviewService';
+import { 
+  startInterview, 
+  continueInterview, 
+  transcribeAndRespond,
+  continueAfterCodingChallenge,
+  getChallengeHint
+} from '../api/interviewService';
 
 
 /**
@@ -33,6 +40,7 @@ const ChatInterface = ({ jobRoleData }) => {
     loading,
     error,
     voiceMode,
+    interviewStage,
     setSessionId,
     addMessage,
     setLoading,
@@ -41,6 +49,8 @@ const ChatInterface = ({ jobRoleData }) => {
   } = useInterview();
 
   const [messageInput, setMessageInput] = useState('');
+  const [currentCodingChallenge, setCurrentCodingChallenge] = useState(null);
+  const [isWaitingForCodingChallenge, setIsWaitingForCodingChallenge] = useState(false);
   const messagesEndRef = useRef(null);
   const toast = useToast();
 
@@ -71,6 +81,38 @@ const ChatInterface = ({ jobRoleData }) => {
     }
   }, [audioError, toast]);
 
+  // Check for coding challenge instructions in AI messages
+  useEffect(() => {
+    // Look for coding challenge data in the latest message
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'assistant') {
+        // Check if the message contains coding challenge data
+        // This could be embedded in a tool_call from the LLM
+        if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
+          const startCodingChallengeTool = lastMessage.tool_calls.find(
+            tool => tool.name === 'start_coding_challenge'
+          );
+          
+          if (startCodingChallengeTool && startCodingChallengeTool.result) {
+            try {
+              const challengeData = typeof startCodingChallengeTool.result === 'string' 
+                ? JSON.parse(startCodingChallengeTool.result) 
+                : startCodingChallengeTool.result;
+                
+              if (challengeData.status === 'success') {
+                setCurrentCodingChallenge(challengeData);
+                setIsWaitingForCodingChallenge(true);
+              }
+            } catch (err) {
+              console.error('Error parsing coding challenge data:', err);
+            }
+          }
+        }
+      }
+    }
+  }, [messages]);
+
   // Function to handle sending a new message
   const handleSendMessage = async () => {
     // Don't send empty messages
@@ -93,7 +135,21 @@ const ChatInterface = ({ jobRoleData }) => {
       
       // If we have a session ID, continue the interview, otherwise start a new one
       if (sessionId) {
-        response = await continueInterview(messageInput, sessionId, userId, jobRoleData);
+        // Check if we were in a coding challenge
+        if (isWaitingForCodingChallenge) {
+          response = await continueAfterCodingChallenge(
+            messageInput, 
+            sessionId, 
+            userId, 
+            true // assume user is done with challenge when they send a message
+          );
+          
+          // Reset coding challenge state
+          setCurrentCodingChallenge(null);
+          setIsWaitingForCodingChallenge(false);
+        } else {
+          response = await continueInterview(messageInput, sessionId, userId, jobRoleData);
+        }
       } else {
         response = await startInterview(messageInput, userId, jobRoleData);
         
@@ -105,6 +161,7 @@ const ChatInterface = ({ jobRoleData }) => {
       addMessage({
         role: 'assistant',
         content: response.response,
+        tool_calls: response.tool_calls
       });
       
       // Clear any errors
@@ -159,7 +216,8 @@ const ChatInterface = ({ jobRoleData }) => {
         addMessage({
           role: 'assistant',
           content: response.response,
-          audioUrl: response.audio_response_url
+          audioUrl: response.audio_response_url,
+          tool_calls: response.tool_calls
         });
         
         // Clear any errors
@@ -199,6 +257,80 @@ const ChatInterface = ({ jobRoleData }) => {
     }
   };
 
+  // Handle coding challenge hint request
+  const handleRequestHint = async (currentCode) => {
+    if (!currentCodingChallenge) return;
+    
+    try {
+      setLoading(true);
+      
+      const hintResponse = await getChallengeHint(
+        currentCodingChallenge.challenge_id,
+        currentCode,
+        userId,
+        sessionId
+      );
+      
+      // Add hint as an AI message
+      if (hintResponse.hints && hintResponse.hints.length > 0) {
+        addMessage({
+          role: 'assistant',
+          content: `Hint: ${hintResponse.hints.join('\n\n')}`,
+          isHint: true
+        });
+      } else {
+        addMessage({
+          role: 'assistant',
+          content: "I don't have a specific hint for this code at the moment. Try breaking down the problem into smaller steps.",
+          isHint: true
+        });
+      }
+    } catch (err) {
+      console.error('Error getting hint:', err);
+      
+      toast({
+        title: 'Hint Error',
+        description: 'Failed to get a hint. Please try again later.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle completion of coding challenge
+  const handleChallengeComplete = async (result) => {
+    try {
+      setLoading(true);
+      
+      // Send message that challenge was completed
+      const response = await continueAfterCodingChallenge(
+        "I've completed the coding challenge.",
+        sessionId,
+        userId,
+        result.evaluation.passed
+      );
+      
+      // Add AI response
+      addMessage({
+        role: 'assistant',
+        content: response.response,
+        tool_calls: response.tool_calls
+      });
+      
+      // Reset coding challenge state
+      setCurrentCodingChallenge(null);
+      setIsWaitingForCodingChallenge(false);
+    } catch (err) {
+      console.error('Error completing challenge:', err);
+      setError('Failed to process challenge completion. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Handle keyboard shortcuts (Enter to send message)
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -217,7 +349,7 @@ const ChatInterface = ({ jobRoleData }) => {
       boxShadow="md"
       p={4}
     >
-      {/* Hidden div for audio recorder reference */}
+      {/* Hidden div for audio recording */}
       <div id="recorder-instance" style={{ display: 'none' }}></div>
       
       {/* Chat Header */}
@@ -260,9 +392,11 @@ const ChatInterface = ({ jobRoleData }) => {
           messages.map((msg, idx) => (
             <ChatMessage
               key={idx}
-              message={msg.message}
-              sender={msg.sender}
-              isLoading={loading && idx === messages.length - 1 && msg.sender === 'ai'}
+              message={msg.content}
+              sender={msg.role}
+              isLoading={loading && idx === messages.length - 1 && msg.role === 'assistant'}
+              audioUrl={msg.audioUrl}
+              isHint={msg.isHint}
             />
           ))
         )}
@@ -281,6 +415,17 @@ const ChatInterface = ({ jobRoleData }) => {
             <AlertIcon />
             {error}
           </Alert>
+        )}
+        
+        {/* Coding Challenge Component */}
+        {currentCodingChallenge && (
+          <Box my={4}>
+            <CodingChallenge 
+              challenge={currentCodingChallenge}
+              onComplete={handleChallengeComplete}
+              onRequestHint={handleRequestHint}
+            />
+          </Box>
         )}
         
         {/* Invisible element for auto-scrolling */}
@@ -303,22 +448,31 @@ const ChatInterface = ({ jobRoleData }) => {
         ) : (
           <Flex>
             <Input
-              flex="1"
-              placeholder="Type your message..."
               value={messageInput}
               onChange={(e) => setMessageInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              disabled={loading}
+              placeholder="Type your message..."
+              size="md"
               mr={2}
+              disabled={loading || isWaitingForCodingChallenge}
             />
             <IconButton
               colorScheme="brand"
               aria-label="Send message"
               icon={<FaPaperPlane />}
-              isLoading={loading}
               onClick={handleSendMessage}
+              isLoading={loading}
+              isDisabled={!messageInput.trim() || isWaitingForCodingChallenge}
             />
           </Flex>
+        )}
+        
+        {/* Coding Challenge Active Indicator */}
+        {isWaitingForCodingChallenge && (
+          <Alert status="info" mt={2} size="sm" borderRadius="md">
+            <AlertIcon />
+            Please complete the coding challenge above before continuing the interview.
+          </Alert>
         )}
       </Box>
     </Box>

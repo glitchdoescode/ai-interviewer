@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import logging
 import base64
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
@@ -25,6 +25,7 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
+from langchain_core.runnables import RunnableConfig, interrupt, Command
 
 # Set up logging
 logging.basicConfig(
@@ -806,6 +807,205 @@ else:
         
         # If we get here, the path wasn't found
         raise HTTPException(status_code=404, detail="Not found")
+
+# Define models for coding challenge requests/responses
+class CodingSubmissionRequest(BaseModel):
+    challenge_id: str
+    code: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+class CodingHintRequest(BaseModel):
+    challenge_id: str
+    code: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    error_message: Optional[str] = None
+
+class CodingSubmissionResponse(BaseModel):
+    status: str
+    challenge_id: str
+    execution_results: dict
+    feedback: dict
+    evaluation: dict
+
+class CodingHintResponse(BaseModel):
+    status: str
+    challenge_id: str
+    hints: List[str]
+
+class ChallengeCompleteRequest(BaseModel):
+    message: str
+    user_id: str
+    challenge_completed: bool = True
+    
+# Add routes for handling coding challenges
+
+@app.post(
+    "/api/coding/submit",
+    response_model=CodingSubmissionResponse,
+    responses={
+        200: {"description": "Successfully submitted code solution"},
+        400: {"description": "Bad request - missing required fields", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("10/minute")
+async def submit_code_solution(request: Request, submission: CodingSubmissionRequest):
+    """
+    Submit a candidate's code solution for evaluation.
+    
+    This endpoint processes a submitted solution for a coding challenge and returns feedback.
+    
+    Args:
+        submission: CodingSubmissionRequest containing the code solution and challenge ID
+        
+    Returns:
+        CodingSubmissionResponse with evaluation results
+    """
+    try:
+        # Call the submit_code_for_challenge tool
+        from ai_interviewer.tools.coding_tools import submit_code_for_challenge
+        
+        result = submit_code_for_challenge(
+            challenge_id=submission.challenge_id,
+            candidate_code=submission.code
+        )
+        
+        # If session ID is provided, update session state with the completed challenge
+        if submission.session_id and submission.user_id and interviewer.session_manager:
+            session = interviewer.session_manager.get_session(submission.session_id)
+            if session:
+                metadata = session.get("metadata", {})
+                challenges = metadata.get("completed_challenges", [])
+                challenges.append({
+                    "challenge_id": submission.challenge_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "passed": result.get("evaluation", {}).get("passed", False)
+                })
+                metadata["completed_challenges"] = challenges
+                session["metadata"] = metadata
+                interviewer.session_manager.update_session(submission.session_id, session)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error submitting code solution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(
+    "/api/coding/hint",
+    response_model=CodingHintResponse,
+    responses={
+        200: {"description": "Successfully retrieved hints"},
+        400: {"description": "Bad request - missing required fields", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("15/minute")
+async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
+    """
+    Get a hint for a coding challenge based on current code.
+    
+    This endpoint processes the current code and returns targeted hints to help the candidate.
+    
+    Args:
+        hint_request: CodingHintRequest containing the current code and challenge ID
+        
+    Returns:
+        CodingHintResponse with hints
+    """
+    try:
+        # Call the get_coding_hint tool
+        from ai_interviewer.tools.coding_tools import get_coding_hint
+        
+        result = get_coding_hint(
+            challenge_id=hint_request.challenge_id,
+            current_code=hint_request.code,
+            error_message=hint_request.error_message
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting coding hint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(
+    "/api/interview/{session_id}/challenge-complete",
+    response_model=MessageResponse,
+    responses={
+        200: {"description": "Successfully continued after challenge"},
+        400: {"description": "Bad request - missing user ID", "model": ErrorResponse},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("15/minute")
+async def continue_after_challenge(request: Request, session_id: str, request_data: ChallengeCompleteRequest):
+    """
+    Continue an interview after completing a coding challenge.
+    
+    This endpoint continues the interview after a coding challenge has been submitted.
+    
+    Args:
+        session_id: Session ID to continue
+        request_data: ChallengeCompleteRequest containing user message and completion status
+        
+    Returns:
+        MessageResponse with the AI's response and session ID
+    """
+    try:
+        if not request_data.user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        # Get the session
+        if not interviewer.session_manager:
+            raise HTTPException(status_code=500, detail="Session manager not available")
+            
+        session = interviewer.session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+            
+        # Update metadata to indicate we're resuming from a challenge
+        metadata = session.get("metadata", {})
+        metadata["resuming_from_challenge"] = True
+        metadata["challenge_completed"] = request_data.challenge_completed
+        session["metadata"] = metadata
+        interviewer.session_manager.update_session(session_id, session)
+        
+        # Continue the interview
+        ai_response, new_session_id = await interviewer.run_interview(
+            request_data.user_id,
+            request_data.message,
+            session_id
+        )
+        
+        # Get updated session metadata
+        metadata = {}
+        if interviewer.session_manager:
+            session = interviewer.session_manager.get_session(new_session_id)
+            if session and "metadata" in session:
+                metadata = session["metadata"]
+        
+        return MessageResponse(
+            response=ai_response,
+            session_id=new_session_id,
+            interview_stage=metadata.get("interview_stage"),
+            job_role=metadata.get("job_role")
+        )
+    except ValueError as e:
+        if "session" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Session not found: {str(e)}")
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error continuing after challenge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
