@@ -11,10 +11,16 @@ import base64
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
@@ -27,12 +33,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
+# Setup rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
+# Initialize FastAPI app with enhanced metadata for OpenAPI docs
 app = FastAPI(
     title="AI Interviewer API",
-    description="REST API for the AI Technical Interviewer platform",
+    description="""
+    REST API for the AI Technical Interviewer platform.
+    
+    This API provides endpoints for conducting technical interviews with AI,
+    managing interview sessions, and processing audio for voice-based interviews.
+    
+    ## Features
+    
+    * Text-based interview sessions
+    * Voice-based interview with STT/TTS
+    * Session management for resuming interviews
+    * User session history
+    
+    ## Authentication
+    
+    Authentication will be added in a future update.
+    """,
     version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
 )
+
+# Add rate limiter exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add CORS middleware to allow cross-origin requests
 app.add_middleware(
@@ -58,19 +89,63 @@ except Exception as e:
     voice_handler = None
     voice_enabled = False
 
+# Custom OpenAPI documentation
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=app.title + " - API Documentation",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    )
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_open_api_endpoint():
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
 # Pydantic models for request/response validation
 class MessageRequest(BaseModel):
     message: str = Field(..., description="User's message")
     user_id: Optional[str] = Field(None, description="User ID (generated if not provided)")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "message": "Hello, I'm here for the interview.",
+                "user_id": "user-123"
+            }
+        }
 
 class MessageResponse(BaseModel):
     response: str = Field(..., description="AI interviewer's response")
     session_id: str = Field(..., description="Session ID for continuing the conversation")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "response": "Hello! Welcome to your technical interview. Could you please introduce yourself?",
+                "session_id": "sess-abc123",
+                "interview_stage": "introduction"
+            }
+        }
 
 class SessionRequest(BaseModel):
     session_id: str = Field(..., description="Session ID to resume")
     user_id: str = Field(..., description="User ID associated with the session")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "user_id": "user-123"
+            }
+        }
 
 class SessionResponse(BaseModel):
     session_id: str = Field(..., description="Session ID")
@@ -78,6 +153,17 @@ class SessionResponse(BaseModel):
     created_at: str = Field(..., description="Session creation timestamp")
     last_active: str = Field(..., description="Last activity timestamp")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "user_id": "user-123",
+                "created_at": "2023-07-15T14:30:00.000Z",
+                "last_active": "2023-07-15T14:35:00.000Z",
+                "interview_stage": "technical_questions"
+            }
+        }
 
 class AudioTranscriptionRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="User ID (generated if not provided)")
@@ -93,6 +179,25 @@ class AudioTranscriptionResponse(BaseModel):
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
     audio_response_url: Optional[str] = Field(None, description="URL to audio response file")
 
+class ErrorResponse(BaseModel):
+    detail: str = Field(..., description="Error details")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "detail": "Session not found or invalid user ID"
+            }
+        }
+
+# Exception handler for general exceptions
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred. Please try again later."}
+    )
+
 # Background task to clean up resources when the server is shutting down
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -103,25 +208,45 @@ async def shutdown_event():
     except Exception as e:
         logger.error(f"Error cleaning up resources: {e}")
 
+# Dependency for monitoring request timing
+async def log_request_time(request: Request):
+    request.state.start_time = datetime.now()
+    yield
+    process_time = (datetime.now() - request.state.start_time).total_seconds() * 1000
+    logger.info(f"Request to {request.url.path} took {process_time:.2f}ms")
+
 # API endpoints
-@app.post("/api/interview", response_model=MessageResponse)
-async def start_interview(request: MessageRequest):
+@app.post(
+    "/api/interview", 
+    response_model=MessageResponse,
+    responses={
+        200: {"description": "Successfully started interview"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("10/minute")
+async def start_interview(request: Request, request_data: MessageRequest):
     """
     Start a new interview session.
     
+    This endpoint initiates a new AI interview session with the provided message.
+    If no user_id is provided, a random one will be generated.
+    
     Args:
-        request: MessageRequest containing the user's message and optional user ID
+        request_data: MessageRequest containing the user's message and optional user ID
         
     Returns:
         MessageResponse with the AI's response and session ID
     """
     try:
         # Generate a user ID if not provided
-        user_id = request.user_id or f"api-user-{uuid.uuid4()}"
+        user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
         
         # Process the user message
         ai_response, session_id = await interviewer.run_interview(
-            user_id, request.message
+            user_id, request_data.message
         )
         
         # Get session metadata if available
@@ -140,26 +265,41 @@ async def start_interview(request: MessageRequest):
         logger.error(f"Error starting interview: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/interview/{session_id}", response_model=MessageResponse)
-async def continue_interview(session_id: str, request: MessageRequest):
+@app.post(
+    "/api/interview/{session_id}", 
+    response_model=MessageResponse,
+    responses={
+        200: {"description": "Successfully continued interview"},
+        400: {"description": "Bad request - missing user ID", "model": ErrorResponse},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("15/minute")
+async def continue_interview(request: Request, session_id: str, request_data: MessageRequest):
     """
     Continue an existing interview session.
     
+    This endpoint continues an existing interview session using the provided session ID.
+    The user_id must match the one associated with the session.
+    
     Args:
         session_id: Session ID to continue
-        request: MessageRequest containing the user's message and user ID
+        request_data: MessageRequest containing the user's message and user ID
         
     Returns:
         MessageResponse with the AI's response and session ID
     """
     try:
         # Ensure user ID is provided
-        if not request.user_id:
+        if not request_data.user_id:
             raise HTTPException(status_code=400, detail="User ID is required")
         
         # Process the user message
         ai_response, new_session_id = await interviewer.run_interview(
-            request.user_id, request.message, session_id
+            request_data.user_id, request_data.message, session_id
         )
         
         # Get session metadata if available
@@ -174,24 +314,45 @@ async def continue_interview(session_id: str, request: MessageRequest):
             session_id=new_session_id,
             interview_stage=metadata.get("interview_stage")
         )
+    except ValueError as e:
+        if "session" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Session not found: {str(e)}")
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error continuing interview: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/sessions/{user_id}", response_model=List[SessionResponse])
-async def get_user_sessions(user_id: str, include_completed: bool = False):
+@app.get(
+    "/api/sessions/{user_id}", 
+    response_model=List[SessionResponse],
+    responses={
+        200: {"description": "Successfully retrieved sessions"},
+        404: {"description": "No sessions found for user", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_user_sessions(request: Request, user_id: str, include_completed: bool = False):
     """
     Get all sessions for a user.
     
+    This endpoint retrieves all interview sessions associated with the provided user ID.
+    
     Args:
         user_id: User ID to get sessions for
-        include_completed: Whether to include completed sessions
+        include_completed: Whether to include completed sessions (default: false)
         
     Returns:
-        List of SessionResponse objects
+        List of SessionResponse objects containing session details
     """
     try:
         sessions = interviewer.get_user_sessions(user_id, include_completed)
+        
+        if not sessions:
+            return []
         
         # Convert sessions to response format
         response = []
@@ -209,32 +370,47 @@ async def get_user_sessions(user_id: str, include_completed: bool = False):
         logger.error(f"Error getting user sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/audio/transcribe", response_model=AudioTranscriptionResponse)
-async def transcribe_and_respond(request: AudioTranscriptionRequest):
+@app.post(
+    "/api/audio/transcribe", 
+    response_model=AudioTranscriptionResponse,
+    responses={
+        200: {"description": "Successfully transcribed audio and got response"},
+        422: {"description": "Failed to transcribe audio or no speech detected", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+        501: {"description": "Voice processing not available", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("5/minute")
+async def transcribe_and_respond(request: Request, request_data: AudioTranscriptionRequest):
     """
     Transcribe audio and get AI interviewer response.
     
+    This endpoint transcribes the provided audio data and sends the transcription
+    to the AI interviewer for a response.
+    
     Args:
-        request: AudioTranscriptionRequest containing audio data
+        request_data: AudioTranscriptionRequest containing audio data and optional session info
         
     Returns:
-        AudioTranscriptionResponse with transcription and AI response
+        AudioTranscriptionResponse with transcription, AI response, and session ID
     """
     if not voice_enabled or not voice_handler:
         raise HTTPException(status_code=501, detail="Voice processing not available")
     
     try:
         # Generate a user ID if not provided
-        user_id = request.user_id or f"api-user-{uuid.uuid4()}"
+        user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
         
         # Decode base64 audio
-        audio_bytes = base64.b64decode(request.audio_base64)
+        audio_bytes = base64.b64decode(request_data.audio_base64)
         
         # Transcribe the audio
         transcription = await voice_handler.transcribe_audio_bytes(
             audio_bytes,
-            sample_rate=request.sample_rate,
-            channels=request.channels
+            sample_rate=request_data.sample_rate,
+            channels=request_data.channels
         )
         
         if not transcription:
@@ -242,7 +418,7 @@ async def transcribe_and_respond(request: AudioTranscriptionRequest):
         
         # Process the transcribed message
         ai_response, session_id = await interviewer.run_interview(
-            user_id, transcription, request.session_id
+            user_id, transcription, request_data.session_id
         )
         
         # Get session metadata if available
@@ -252,32 +428,32 @@ async def transcribe_and_respond(request: AudioTranscriptionRequest):
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
-        # Generate speech response
-        audio_filename = f"response_{uuid.uuid4()}.wav"
-        audio_path = os.path.join("temp_audio", audio_filename)
-        
-        # Create temp directory if it doesn't exist
-        os.makedirs("temp_audio", exist_ok=True)
-        
-        # Generate speech
-        await voice_handler.speak(
-            text=ai_response,
-            voice=speech_config.get("tts_voice", "nova"),
-            output_file=audio_path,
-            play_audio=False
-        )
-        
-        # For simplicity, we're returning a URL that can be used to fetch the audio
-        # In a production system, you might upload this to cloud storage
-        audio_url = f"/api/audio/response/{audio_filename}"
+        # Optional: Generate audio response
+        audio_response_url = None
+        try:
+            if voice_handler:
+                audio_filename = f"{session_id}_{int(datetime.now().timestamp())}.wav"
+                audio_path = os.path.join("audio_responses", audio_filename)
+                
+                # Ensure directory exists
+                os.makedirs("audio_responses", exist_ok=True)
+                
+                # Generate audio
+                await voice_handler.text_to_speech(ai_response, output_path=audio_path)
+                audio_response_url = f"/api/audio/response/{audio_filename}"
+        except Exception as e:
+            logger.warning(f"Error generating audio response: {e}")
+            # Continue without audio response
         
         return AudioTranscriptionResponse(
             transcription=transcription,
             response=ai_response,
             session_id=session_id,
             interview_stage=metadata.get("interview_stage"),
-            audio_response_url=audio_url
+            audio_response_url=audio_response_url
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing audio: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -385,31 +561,68 @@ async def get_audio_response(filename: str):
         media_type="audio/wav"
     )
 
-@app.get("/api/health")
+@app.get("/api/health",
+    responses={
+        200: {"description": "Service is healthy"},
+        500: {"description": "Service is unhealthy", "model": ErrorResponse}
+    }
+)
 async def health_check():
     """
-    Check the health of the server.
+    Health check endpoint.
+    
+    This endpoint checks if the service is running properly and if the
+    database connection is available.
     
     Returns:
-        JSON response with status "ok"
+        Status of the service and its components
     """
-    return {
-        "status": "ok",
-        "voice_enabled": voice_enabled
-    }
+    try:
+        # Check AI Interviewer is working
+        session_count = len(interviewer.list_active_sessions())
+        
+        # Check voice handler if enabled
+        voice_status = "available" if voice_enabled and voice_handler else "unavailable"
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "active_sessions": session_count,
+            "voice_processing": voice_status,
+            "version": app.version
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Service is unhealthy: {str(e)}"
+        )
 
-# Run the server
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
     Start the FastAPI server.
     
     Args:
-        host: Host to bind to
-        port: Port to bind to
+        host: Host to bind the server to
+        port: Port to bind the server to
     """
     import uvicorn
     
-    uvicorn.run(app, host=host, port=port)
+    # Create audio responses directory if it doesn't exist
+    os.makedirs("audio_responses", exist_ok=True)
+    
+    # Configure Uvicorn logging
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(levelname)s - %(message)s"
+    log_config["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    
+    # Start the server
+    uvicorn.run(
+        app, 
+        host=host, 
+        port=port,
+        log_config=log_config
+    )
 
 if __name__ == "__main__":
     # Run the server directly if this module is executed

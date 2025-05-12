@@ -1,8 +1,22 @@
 """
-MongoDB-based checkpoint storage for LangGraph.
+[DEPRECATED] MongoDB-based checkpoint storage for LangGraph.
 
-This module provides a checkpointer that uses MongoDB as a persistence layer.
+This module has been replaced by the official LangGraph MongoDBSaver implementation.
+See the AIInterviewer class in ai_interviewer/core/ai_interviewer.py for proper usage.
+
+from pymongo import MongoClient
+from langgraph.checkpoint.mongodb import MongoDBSaver
+
+# Example usage:
+# client = MongoClient(mongodb_uri)
+# checkpointer = MongoDBSaver(
+#     client=client, 
+#     db_name="your_database", 
+#     collection_name="your_collection"
+# )
 """
+
+# This file is kept for reference only and should not be used in production.
 
 import logging
 import time
@@ -389,6 +403,4 @@ class MongoDBCheckpointer(BaseCheckpointSaver):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
-        self.close()
-
-# Remove the AsyncMongoDBCheckpointer for now until we properly implement it 
+        self.close() 
