@@ -11,8 +11,15 @@ import {
   Alert,
   AlertIcon,
   useToast,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  useDisclosure
 } from '@chakra-ui/react';
-import { FaPaperPlane, FaMicrophone, FaStop } from 'react-icons/fa';
+import { FaPaperPlane, FaMicrophone, FaStop, FaExclamationTriangle } from 'react-icons/fa';
 import ChatMessage from './ChatMessage';
 import CodingChallenge from './CodingChallenge';
 import { useInterview } from '../context/InterviewContext';
@@ -51,8 +58,10 @@ const ChatInterface = ({ jobRoleData }) => {
   const [messageInput, setMessageInput] = useState('');
   const [currentCodingChallenge, setCurrentCodingChallenge] = useState(null);
   const [isWaitingForCodingChallenge, setIsWaitingForCodingChallenge] = useState(false);
+  const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const messagesEndRef = useRef(null);
   const toast = useToast();
+  const { isOpen, onOpen, onClose } = useDisclosure();
 
   // Audio recording functionality
   const {
@@ -63,18 +72,30 @@ const ChatInterface = ({ jobRoleData }) => {
     getAudioBase64,
     isInitializing,
     permissionGranted,
-    initRecording
+    initRecording,
+    checkPermissionStatus
   } = useAudioRecorder();
 
   // Initialize audio on component mount for better user experience
   useEffect(() => {
     if (voiceMode) {
       // Pre-initialize audio in voice mode
-      initRecording().catch(err => {
-        console.error('Failed to initialize audio on mount:', err);
+      checkPermissionStatus().then(hasAccess => {
+        if (!hasAccess && !permissionGranted) {
+          setShowPermissionHelp(true);
+        }
+      }).catch(err => {
+        console.error('Failed to check microphone permissions:', err);
       });
     }
-  }, [voiceMode, initRecording]);
+  }, [voiceMode, checkPermissionStatus, permissionGranted]);
+
+  // Show permission help modal when needed
+  useEffect(() => {
+    if (showPermissionHelp) {
+      onOpen();
+    }
+  }, [showPermissionHelp, onOpen]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -84,9 +105,16 @@ const ChatInterface = ({ jobRoleData }) => {
   // Show toast for audio errors
   useEffect(() => {
     if (audioError) {
+      // Show more user-friendly error messages
+      let errorMessage = audioError;
+      if (audioError.includes('permission denied') || audioError.includes('NotAllowedError')) {
+        errorMessage = 'Microphone access was denied. Please check your browser settings.';
+        setShowPermissionHelp(true);
+      }
+
       toast({
         title: 'Audio Error',
-        description: audioError,
+        description: errorMessage,
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -219,7 +247,6 @@ const ChatInterface = ({ jobRoleData }) => {
         const response = await transcribeAndRespond(audioBase64, userId, sessionId, jobRoleData);
         
         console.log('Audio response received:', response);
-        console.log('Audio URL:', response.audio_response_url);
         
         // Update user message with transcription
         addMessage({
@@ -233,7 +260,6 @@ const ChatInterface = ({ jobRoleData }) => {
         }
         
         // Add AI response
-        console.log('Adding AI message with audio URL:', response.audio_response_url);
         addMessage({
           role: 'assistant',
           content: response.response,
@@ -256,6 +282,15 @@ const ChatInterface = ({ jobRoleData }) => {
       // Start recording
       try {
         setLoading(true);
+        
+        // First check permission status
+        const hasPermission = await checkPermissionStatus();
+        
+        if (!hasPermission && !permissionGranted) {
+          setShowPermissionHelp(true);
+          setLoading(false);
+          return;
+        }
         
         // Show initialization message
         if (!permissionGranted) {
@@ -280,15 +315,17 @@ const ChatInterface = ({ jobRoleData }) => {
         });
       } catch (err) {
         console.error('Error starting voice recording:', err);
-        setError(`Failed to start recording: ${err.message}`);
         
         // Show a helpful message based on the error
         let errorMessage = 'Could not start recording.';
-        if (err.message?.includes('permission')) {
-          errorMessage = 'Microphone permission denied. Please enable it in your browser settings.';
+        if (err.message?.includes('permission') || err.name === 'NotAllowedError') {
+          errorMessage = 'Microphone permission denied. Please allow it in your browser settings.';
+          setShowPermissionHelp(true);
         } else if (err.message?.includes('AudioContext')) {
           errorMessage = 'Audio system initialization failed. Try clicking the button again.';
         }
+        
+        setError(errorMessage);
         
         // Add error message to chat
         addMessage({
@@ -299,6 +336,30 @@ const ChatInterface = ({ jobRoleData }) => {
       } finally {
         setLoading(false);
       }
+    }
+  };
+
+  // Function to handle retrying microphone access
+  const handleRetryMicrophoneAccess = async () => {
+    setShowPermissionHelp(false);
+    onClose();
+    
+    try {
+      setLoading(true);
+      const initialized = await initRecording();
+      
+      if (initialized) {
+        toast({
+          title: 'Success',
+          description: 'Microphone access granted!',
+          status: 'success',
+          duration: 3000,
+        });
+      }
+    } catch (err) {
+      console.error('Error during microphone retry:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -443,6 +504,11 @@ const ChatInterface = ({ jobRoleData }) => {
             <Alert status="error" variant="left-accent" my={2}>
               <AlertIcon />
               <Text>{error || audioError}</Text>
+              {(error?.includes('permission') || audioError?.includes('permission')) && (
+                <Button size="sm" ml={2} onClick={() => setShowPermissionHelp(true)}>
+                  Help
+                </Button>
+              )}
             </Alert>
           )}
           
@@ -505,6 +571,43 @@ const ChatInterface = ({ jobRoleData }) => {
           </Button>
         )}
       </Flex>
+
+      {/* Microphone Permission Help Modal */}
+      <Modal isOpen={isOpen} onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Microphone Access Required</ModalHeader>
+          <ModalBody>
+            <VStack spacing={4} align="stretch">
+              <Alert status="info">
+                <AlertIcon />
+                <Text>Voice mode requires microphone access to function properly.</Text>
+              </Alert>
+              
+              <Text fontWeight="bold">How to enable microphone access:</Text>
+              
+              <VStack align="start" spacing={2} pl={4}>
+                <Text>1. Look for the microphone icon in your browser's address bar</Text>
+                <Text>2. Click on it and select "Allow"</Text>
+                <Text>3. If not visible, go to your browser settings</Text>
+                <Text>4. Find "Site Settings" or "Privacy & Security"</Text>
+                <Text>5. Locate "Microphone" permissions and allow for this site</Text>
+              </VStack>
+              
+              <Alert status="warning">
+                <AlertIcon as={FaExclamationTriangle} />
+                <Text>After enabling permissions, you may need to refresh the page.</Text>
+              </Alert>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={handleRetryMicrophoneAccess}>
+              Try Again
+            </Button>
+            <Button variant="ghost" onClick={onClose}>Close</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Flex>
   );
 };
