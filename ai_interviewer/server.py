@@ -610,8 +610,10 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         
         # Check if we have a valid transcription
         if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
-            raise HTTPException(status_code=422, detail="No speech detected or empty transcription")
-        
+            # Use a default message instead of returning an error
+            logger.info("Empty transcription detected, using default message")
+            transcription = "Hello, I'd like to continue our interview."
+            
         # Process the transcribed message with job role parameters
         ai_response, session_id = await interviewer.run_interview(
             user_id, 
@@ -750,8 +752,10 @@ async def upload_audio_file(
         
         # Check if we have a valid transcription
         if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
-            raise HTTPException(status_code=422, detail="No speech detected or empty transcription")
-        
+            # Use a default message instead of returning an error
+            logger.info("Empty transcription detected, using default message")
+            transcription = "Hello, I'd like to continue our interview."
+            
         # Process the transcribed message
         ai_response, new_session_id = await interviewer.run_interview(
             user_id, transcription, session_id
