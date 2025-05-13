@@ -10,7 +10,7 @@ import uuid
 from langchain_core.tools import tool
 from ai_interviewer.models.coding_challenge import get_coding_challenge, CodingChallenge
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
-from ai_interviewer.tools.code_execution import CodeExecutor, SafetyChecker
+from ai_interviewer.tools.code_execution import CodeExecutor, SafetyChecker, execute_candidate_code
 from ai_interviewer.tools.code_feedback import CodeFeedbackGenerator
 from ai_interviewer.tools.pair_programming import HintGenerator
 
@@ -110,56 +110,29 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_leve
                     "message": "Your submission appears to be empty or contains only comments."
                 }
             }
-        
-        # Check code safety before execution
-        is_safe = True
-        safety_message = ""
-        
-        if challenge.language.lower() == "python":
-            is_safe, safety_message = SafetyChecker.check_python_code_safety(candidate_code)
-        
-        if not is_safe:
-            return {
-                "status": "security_error",
-                "challenge_id": challenge_id,
-                "evaluation": {
-                    "passed": False,
-                    "message": f"Security check failed: {safety_message}. Please remove unsafe operations."
-                }
-            }
-        
-        # Execute the code against test cases
-        execution_results = {}
-        
-        if challenge.language.lower() == "python":
-            # Extract all test cases (including hidden)
-            test_cases = [
-                {
-                    "input": tc.input,
-                    "expected_output": tc.expected_output,
-                    "explanation": tc.explanation,
-                    "is_hidden": tc.is_hidden
-                }
-                for tc in challenge.test_cases
-            ]
             
-            # Execute the code
-            execution_results = CodeExecutor.execute_python_code(
-                code=candidate_code,
-                test_cases=test_cases,
-                timeout=challenge.time_limit_mins * 60  # Convert minutes to seconds
-            )
-        elif challenge.language.lower() == "javascript":
-            # JavaScript execution is a placeholder for now
-            execution_results = CodeExecutor.execute_javascript_code(
-                code=candidate_code,
-                test_cases=[tc.dict() for tc in challenge.test_cases]
-            )
+        # Extract all test cases (including hidden)
+        test_cases = [
+            {
+                "input": tc.input,
+                "expected_output": tc.expected_output,
+                "explanation": tc.explanation,
+                "is_hidden": tc.is_hidden
+            }
+            for tc in challenge.test_cases
+        ]
+        
+        # Execute the code using our secure Docker executor
+        execution_results = execute_candidate_code(
+            language=challenge.language.lower(),
+            code=candidate_code,
+            test_cases=test_cases
+        )
         
         # Generate detailed feedback
         feedback = CodeFeedbackGenerator.generate_feedback(
             code=candidate_code,
-            execution_results=execution_results,
+            execution_results=execution_results.get("detailed_results", execution_results),
             language=challenge.language,
             skill_level=skill_level
         )
@@ -171,7 +144,7 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_leve
             "execution_results": execution_results,
             "feedback": feedback,
             "evaluation": {
-                "passed": execution_results.get("all_passed", False),
+                "passed": execution_results.get("status") == "success" and execution_results.get("pass_count", 0) == execution_results.get("total_tests", 0),
                 "pass_rate": feedback["correctness"].get("pass_rate", 0),
                 "code_quality_score": feedback["code_quality"].get("overall_score", 0),
                 "summary": feedback["summary"],

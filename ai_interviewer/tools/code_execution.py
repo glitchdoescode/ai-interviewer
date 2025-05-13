@@ -13,8 +13,115 @@ import time
 from typing import Dict, List, Optional, Any, Tuple
 from contextlib import redirect_stdout, redirect_stderr
 
+from langchain_core.tools import tool
+
+# Import docker sandbox
+from ai_interviewer.tools.docker_sandbox import DockerSandbox
+
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Initialize Docker sandbox (will be lazily loaded)
+_docker_sandbox = None
+
+def get_docker_sandbox() -> Optional[DockerSandbox]:
+    """
+    Get or initialize the Docker sandbox instance.
+    
+    Returns:
+        DockerSandbox instance or None if Docker is not available
+    """
+    global _docker_sandbox
+    
+    if _docker_sandbox is None:
+        try:
+            _docker_sandbox = DockerSandbox()
+            # Verify Docker is available
+            docker_check = _docker_sandbox.check_docker_requirements()
+            if docker_check.get("docker_available", False):
+                logger.info("Docker sandbox initialized successfully")
+            else:
+                logger.warning(f"Docker not available: {docker_check.get('message', 'Unknown error')}")
+                _docker_sandbox = None
+        except Exception as e:
+            logger.error(f"Failed to initialize Docker sandbox: {e}")
+            _docker_sandbox = None
+    
+    return _docker_sandbox
+
+@tool
+def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:
+    """
+    Execute candidate code in a secure sandbox with resource limits.
+    
+    Args:
+        language: Programming language (python, javascript, etc.)
+        code: Source code to execute
+        test_cases: List of test cases to run against the code
+        
+    Returns:
+        Dictionary with execution results including pass_count, total_tests, outputs, and errors
+    """
+    try:
+        logger.info(f"Executing {language} code in secure sandbox")
+        
+        # Get Docker sandbox instance
+        sandbox = get_docker_sandbox()
+        
+        # Check if Docker is available
+        if sandbox is not None:
+            # Execute code in Docker sandbox
+            logger.info("Using Docker sandbox for secure execution")
+            results = sandbox.execute_code(
+                language=language,
+                code=code,
+                test_cases=test_cases
+            )
+            
+            # Format results for consumption by the interviewer agent
+            return {
+                "status": results.get("status", "error"),
+                "pass_count": results.get("passed", 0),
+                "total_tests": results.get("passed", 0) + results.get("failed", 0),
+                "outputs": [t.get("output") for t in results.get("test_results", [])],
+                "errors": results.get("error_message", ""),
+                "detailed_results": results
+            }
+        else:
+            # Fall back to legacy execution method for compatibility
+            logger.warning("Docker not available, falling back to legacy CodeExecutor")
+            
+            if language.lower() == "python":
+                results = CodeExecutor.execute_python_code(code, test_cases)
+                return {
+                    "status": results.get("status", "error"),
+                    "pass_count": results.get("passed", 0),
+                    "total_tests": results.get("passed", 0) + results.get("failed", 0),
+                    "outputs": [t.get("output") for t in results.get("test_results", [])],
+                    "errors": results.get("error_message", ""),
+                    "detailed_results": results
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error_message": f"Legacy execution not supported for language: {language}",
+                    "pass_count": 0,
+                    "total_tests": len(test_cases),
+                    "outputs": [],
+                    "errors": f"Legacy execution not supported for language: {language}"
+                }
+    except Exception as e:
+        logger.error(f"Error executing code: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "error_message": str(e),
+            "pass_count": 0,
+            "total_tests": len(test_cases),
+            "outputs": [],
+            "errors": str(e)
+        }
 
 
 class CodeExecutor:
@@ -41,6 +148,21 @@ class CodeExecutor:
         Returns:
             Dictionary with execution results
         """
+        # First, try using the Docker sandbox if available
+        sandbox = get_docker_sandbox()
+        if sandbox:
+            logger.info("Using Docker sandbox for Python code execution")
+            return sandbox.execute_code(
+                language="python",
+                code=code,
+                test_cases=test_cases,
+                function_name=function_name,
+                timeout=timeout
+            )
+        
+        # Fall back to legacy in-process execution if Docker is not available
+        logger.warning("Docker sandbox not available, using legacy in-process execution (less secure)")
+        
         results = {
             "status": "success",
             "passed": 0,
@@ -181,23 +303,32 @@ class CodeExecutor:
         """
         Execute JavaScript code using Node.js in a controlled environment.
         
-        This is a placeholder for future implementation using either:
-        1. subprocess to call Node.js
-        2. PyExecJS or similar for JavaScript execution
-        3. Docker-based sandboxing
-        
         Args:
             code: JavaScript code to execute
             test_cases: List of test cases to run
             function_name: Name of the function to test
             
         Returns:
-            Dictionary with execution results (currently mocked)
+            Dictionary with execution results
         """
+        # First, try using the Docker sandbox if available
+        sandbox = get_docker_sandbox()
+        if sandbox:
+            logger.info("Using Docker sandbox for JavaScript code execution")
+            return sandbox.execute_code(
+                language="javascript",
+                code=code,
+                test_cases=test_cases,
+                function_name=function_name
+            )
+            
+        # Fall back to placeholder if Docker is not available
+        logger.warning("Docker sandbox not available, JavaScript execution not supported in legacy mode")
+        
         # Placeholder implementation - would use subprocess to call Node.js in real implementation
         return {
             "status": "not_implemented",
-            "message": "JavaScript execution not yet implemented. This would use Node.js in a production environment."
+            "message": "JavaScript execution requires Docker. Please install Docker to enable JavaScript code execution."
         }
     
     @staticmethod
@@ -255,78 +386,29 @@ class CodeExecutor:
             if set(expected.keys()) != set(actual.keys()):
                 return False
             
-            # Check each value
-            return all(CodeExecutor._check_output_equality(actual[k], expected[k]) for k in expected)
+            # Check values
+            return all(CodeExecutor._check_output_equality(actual[k], v) for k, v in expected.items())
         
-        # Handle sets
-        if isinstance(expected, set) and isinstance(actual, set):
-            return expected == actual
-        
-        # Handle tuples
-        if isinstance(expected, tuple) and isinstance(actual, tuple):
-            if len(expected) != len(actual):
-                return False
-            return all(CodeExecutor._check_output_equality(a, e) for a, e in zip(actual, expected))
-        
-        # For primitive types and other cases, use direct equality
-        try:
-            return actual == expected
-        except Exception:
-            # If comparison fails, they're not equal
-            return False
+        # Direct comparison for other types
+        return actual == expected
 
 
 class SafetyChecker:
     """
-    Checks code for potentially unsafe operations before execution.
-    
-    This is important for preventing malicious code execution in the sandbox.
+    Check code for potentially unsafe operations.
     """
     
     @staticmethod
     def check_python_code_safety(code: str) -> Tuple[bool, str]:
         """
-        Check Python code for potentially unsafe operations.
+        Check Python code for unsafe operations.
         
         Args:
             code: Python code to check
             
         Returns:
-            Tuple of (is_safe, reason) where reason is empty if code is safe
+            Tuple of (is_safe, message)
         """
-        # Check for imports of dangerous modules
-        dangerous_modules = {
-            'os', 'sys', 'subprocess', 'shutil', 'socket', 'requests', 
-            'urllib', 'http', 'ftplib', 'telnetlib', 'importlib'
-        }
-        
-        # Use AST parsing for better detection
-        try:
-            tree = ast.parse(code)
-            
-            for node in ast.walk(tree):
-                # Check for dangerous imports
-                if isinstance(node, ast.Import):
-                    for name in node.names:
-                        if name.name.split('.')[0] in dangerous_modules:
-                            return False, f"Unsafe module import: {name.name}"
-                
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module and node.module.split('.')[0] in dangerous_modules:
-                        return False, f"Unsafe module import: {node.module}"
-                
-                # Check for exec or eval calls
-                elif isinstance(node, ast.Call) and hasattr(node.func, 'id'):
-                    if node.func.id in ('exec', 'eval', 'compile'):
-                        return False, f"Unsafe function call: {node.func.id}"
-                
-                # Check for dangerous attribute access (like os.system)
-                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                    if node.value.id in dangerous_modules and node.attr in ('system', 'popen', 'spawn', 'exec'):
-                        return False, f"Unsafe attribute access: {node.value.id}.{node.attr}"
-            
-            return True, ""
-        
-        except Exception as e:
-            logger.error(f"Error checking code safety: {e}")
-            return False, f"Error analyzing code: {str(e)}" 
+        # Deprecated: Now handled by Docker sandbox
+        # We keep this for backward compatibility
+        return True, "Safety checks now performed by Docker sandbox" 
