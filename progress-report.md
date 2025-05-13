@@ -85,11 +85,23 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - ✅ Add visual indicators for interview stages and loading states
    - ✅ Create accessible and user-friendly interface design
 
+10. **Enhanced Dynamic Question Generation**: Implemented a comprehensive question generation system:
+    - Created `generate_interview_question` tool that adapts to candidate responses and conversation context
+    - Developed `analyze_candidate_response` tool for evaluating answers on multiple dimensions
+    - Integrated both tools into the core AIInterviewer workflow
+    - Added API endpoints for direct access to these capabilities
+    - Implemented robust error handling and fallback mechanisms
+    - Created detailed testing capabilities with a dedicated test script
+    - Questions now align with job roles, skill areas, and appropriate difficulty levels
+    - Support for conversation-aware follow-up questions that build on previous responses
+    - Detailed response analysis for identifying strengths, weaknesses and follow-up areas
+
 ### Next Steps
 1. Advanced AI Interviewer Features (Phase 2, Iteration 3):
-   - Enhance DynamicQuestionGenerationTool to incorporate candidate's previous responses
-   - Allow specifying difficulty level and skill areas in questions
-   - Improve response analysis to extract key concepts and assess depth of understanding
+   - ✅ Enhanced DynamicQuestionGenerationTool to incorporate candidate's previous responses
+   - ✅ Added capability to specify difficulty level and skill areas in questions
+   - ✅ Implemented question alignment with job role profiles
+   - ✅ Improved response analysis to extract key concepts and assess depth of understanding
    - Refine interview_agent prompts for more natural transitions and empathetic responses
    - Refine coding challenge initiation in `AIInterviewer._determine_interview_stage` to be job-role specific (requires passing job_role/state and adding logic to check if coding is appropriate for the role).
    - Ensure a clear and robust flow for detailed coding challenge results to be passed from the frontend (after `/api/coding/submit`) into the `message` field of `ChallengeCompleteRequest` (for `/api/interview/{session_id}/challenge-complete`), so the AI receives them for specific feedback generation.
@@ -125,17 +137,33 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - Audio recording and playback handling
    - Voice-enabled CLI interface
 
-2. **Dynamic Question Generation**: Questions now adapt based on topic, skill level, and previous conversation.
+2. **Enhanced Dynamic Question Generation**: 
+   - Questions now adapt based on previous candidate responses for more natural conversation flow
+   - Support for difficulty levels (beginner/intermediate/advanced) to match candidate experience
+   - Skill-specific focus for targeting particular areas (e.g., Python, React, Data Structures)
+   - Job role alignment to ensure questions are relevant to the position
+   - Response analysis with structured evaluation of candidate answers
+   - API endpoints for direct question generation and response analysis
 
-3. **LLM-Based Candidate Name Extraction**: Replaced regex patterns with an advanced LLM-based approach for name extraction.
+3. **Deep Response Analysis**:
+   - Added key concept extraction to identify specific technical terms used correctly
+   - Implemented depth of understanding assessment beyond surface-level knowledge
+   - Added evaluation of conceptual connections between different topics
+   - Ability to detect misconceptions and technical inaccuracies
+   - Assessment of practical experience vs. theoretical knowledge
+   - Comprehensive understanding scoring with multiple dimensions
+   - Enhanced API endpoint with experience level customization
+   - Detailed feedback on strengths and areas for improvement
 
-4. **Improved State Management**: Enhanced persistence of state between conversation turns, fixing AttributeError issues.
+4. **LLM-Based Candidate Name Extraction**: Replaced regex patterns with an advanced LLM-based approach for name extraction.
 
-5. **Automatic Stage Transitions**: The interview now progresses naturally through stages based on conversation flow.
+5. **Improved State Management**: Enhanced persistence of state between conversation turns, fixing AttributeError issues.
 
-6. **Response Evaluation**: Added tools to evaluate candidate responses using LLM-based assessment.
+6. **Automatic Stage Transitions**: The interview now progresses naturally through stages based on conversation flow.
 
-7. **Interactive Coding Challenges**: Implemented complete coding challenge flow with:
+7. **Response Evaluation**: Added tools to evaluate candidate responses using LLM-based assessment.
+
+8. **Interactive Coding Challenges**: Implemented complete coding challenge flow with:
    - Multiple sample challenges across different languages
    - Challenge selection based on topic
    - Test case evaluation
@@ -144,20 +172,20 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - True human-in-the-loop functionality using LangGraph's interrupt/Command mechanisms
    - Seamless context preservation when switching bet9ween interview and coding interface
 
-8. **Enhanced CLI**: Improved the command-line interface with additional parameters and better state persistence.
+9. **Enhanced CLI**: Improved the command-line interface with additional parameters and better state persistence.
    - Added voice-enabled CLI with natural speech interaction
    - Support for both text and voice-based interview modes
    - Configurable audio recording and playback settings
 
-9. **Unified Architecture**: Refactored the codebase to use a unified AIInterviewer class that follows industry best practices.
+10. **Unified Architecture**: Refactored the codebase to use a unified AIInterviewer class that follows industry best practices.
 
-10. **Asynchronous Interview Support**: Implemented session persistence and management:
+11. **Asynchronous Interview Support**: Implemented session persistence and management:
     - MongoDB-based checkpointing for LangGraph state
     - Session management for resuming interviews
     - CLI commands for listing and resuming sessions
     - Transcript saving in multiple formats
 
-11. **Improved Coding Evaluation**: Enhanced code evaluation with detailed analysis:
+12. **Improved Coding Evaluation**: Enhanced code evaluation with detailed analysis:
     - Secure code execution with safety checks
     - Comprehensive test case execution with detailed results
     - Code quality metrics (complexity, style, maintainability)
@@ -165,14 +193,14 @@ We have completed the initial implementation of the AI Interviewer platform's co
     - Tailored feedback based on candidate skill level
     - Structured feedback with strengths and improvement areas
 
-12. **AI Pair Programming**: Implemented sophisticated pair programming features:
+13. **AI Pair Programming**: Implemented sophisticated pair programming features:
     - Context-aware hint generation system with multiple specialized generators
     - Intelligent code suggestions based on challenge context and code patterns
     - Code completion support for multiple programming languages
     - Focused code review with actionable feedback
     - LLM-based assistance for complex programming challenges
 
-13. **FastAPI Server Implementation**: Developed a comprehensive REST API for the AI Interviewer:
+14. **FastAPI Server Implementation**: Developed a comprehensive REST API for the AI Interviewer:
     - Complete FastAPI server implementation with production-ready features
     - REST API endpoints for text and voice-based interview interactions
     - Session management endpoints for managing multiple interview sessions
@@ -182,6 +210,8 @@ We have completed the initial implementation of the AI Interviewer platform's co
     - Docker and docker-compose configuration for easy deployment
     - Environment variable configuration for different environments
     - API testing script for validating endpoint functionality
+
+
 
 ## Challenges & Considerations
 

@@ -1150,6 +1150,7 @@ class ResponseAnalysisRequest(BaseModel):
     job_role: str = Field(..., description="Job role for context")
     skill_areas: Optional[List[str]] = Field(None, description="Skills that were being evaluated")
     expected_topics: Optional[List[str]] = Field(None, description="Expected topics in a good answer")
+    experience_level: str = Field("intermediate", description="Experience level of the candidate (beginner, intermediate, advanced)")
     
     class Config:
         schema_extra = {
@@ -1158,7 +1159,8 @@ class ResponseAnalysisRequest(BaseModel):
                 "response": "The virtual DOM is React's way of improving performance by creating a lightweight copy of the actual DOM. When state changes, React first updates the virtual DOM and then compares it with the previous version to identify the minimal set of DOM operations needed. This approach is more efficient than directly manipulating the DOM.",
                 "job_role": "Frontend Developer",
                 "skill_areas": ["React", "JavaScript", "Web Performance"],
-                "expected_topics": ["Virtual DOM concept", "Reconciliation", "Performance benefits"]
+                "expected_topics": ["Virtual DOM concept", "Reconciliation", "Performance benefits"],
+                "experience_level": "intermediate"
             }
         }
 
@@ -1215,14 +1217,19 @@ async def analyze_response(request: Request, req_data: ResponseAnalysisRequest):
     """
     Analyze a candidate's response to identify strengths, weaknesses, and potential follow-up areas.
     
-    This endpoint evaluates candidate responses on multiple dimensions including
-    relevance, technical accuracy, and depth of knowledge.
+    This endpoint performs a deep analysis of candidate responses including:
+    - Key concept extraction
+    - Depth of understanding assessment
+    - Conceptual connections
+    - Evidence of practical experience
+    - Problem-solving approach
+    - Technical accuracy evaluation
     
     Args:
         req_data: ResponseAnalysisRequest containing question, response, and context
         
     Returns:
-        Detailed analysis of the response
+        Comprehensive analysis of the response with depth of understanding metrics
     """
     try:
         result = analyze_candidate_response(
@@ -1230,7 +1237,8 @@ async def analyze_response(request: Request, req_data: ResponseAnalysisRequest):
             response=req_data.response,
             job_role=req_data.job_role,
             skill_areas=req_data.skill_areas,
-            expected_topics=req_data.expected_topics
+            expected_topics=req_data.expected_topics,
+            experience_level=req_data.experience_level
         )
         return result
     except Exception as e:
