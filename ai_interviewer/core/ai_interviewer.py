@@ -528,6 +528,42 @@ class AIInterviewer:
             # Return error message
             error_msg = AIMessage(content=f"I apologize, but I'm experiencing a technical issue. Let's continue our conversation.")
             return {"messages": messages + [error_msg]}
+        
+    def _determine_interview_stage_from_metadata(self, messages: List[BaseMessage], metadata: Dict[str, Any]) -> str:
+        """
+        Determine the current interview stage based on messages and session metadata.
+        
+        Args:
+            messages: List of messages in the conversation
+            metadata: Session metadata containing interview context
+            
+        Returns:
+            Current interview stage value
+        """
+        # Get current stage from metadata
+        current_stage = metadata.get("interview_stage", InterviewStage.INTRODUCTION.value)
+        
+        # Check if we're resuming from a challenge
+        if metadata.get("resuming_from_challenge", False):
+            if metadata.get("challenge_completed", False):
+                # If challenge was completed successfully, move to technical questions
+                logger.info("Challenge completed, transitioning to technical questions stage")
+                return InterviewStage.TECHNICAL_QUESTIONS.value
+            else:
+                # If challenge was not completed, stay in coding challenge stage
+                logger.info("Challenge not completed, remaining in coding challenge stage")
+                return InterviewStage.CODING_CHALLENGE.value
+        
+        # Check for coding challenge tool calls in the messages
+        for msg in messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    if isinstance(tool_call, dict) and tool_call.get("name") == "start_coding_challenge":
+                        logger.info("Found start_coding_challenge tool call, setting stage to CODING_CHALLENGE")
+                        return InterviewStage.CODING_CHALLENGE.value
+        
+        # If no special conditions were found, return the current stage from metadata
+        return current_stage 
     
     def _determine_interview_stage(self, messages: List[BaseMessage], new_response: AIMessage, current_stage: str) -> str:
         """
@@ -684,7 +720,7 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                     
                     # Update metadata
                     session["metadata"] = metadata
-                    self.session_manager.update_session(session_id, session)
+                    self.session_manager.update_session_metadata(session_id, metadata)
                 
                 # Update existing session with current message
                 messages.append(HumanMessage(content=user_message))
@@ -723,6 +759,27 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_message)
                 ]
+                
+                # Create the session in MongoDB if available
+                if self.session_manager:
+                    try:
+                        # Create the session first using the session_manager's create_session method
+                        created_session_id = self.session_manager.create_session(user_id, metadata)
+                        # Use the session_id from create_session to ensure consistency
+                        session_id = created_session_id
+                        logger.info(f"Created new MongoDB session with ID: {session_id}")
+                    except Exception as e:
+                        logger.error(f"Error creating MongoDB session: {e}")
+                        # Continue with memory-based session tracking as fallback
+                
+                # Store the session in memory as well for redundancy
+                self.active_sessions[session_id] = {
+                    "user_id": user_id,
+                    "messages": messages,
+                    "metadata": metadata,
+                    "created_at": metadata["created_at"],
+                    "last_active": datetime.now().isoformat()
+                }
             
             # Get candidate name if available
             candidate_name = ""
@@ -826,7 +883,7 @@ Respond with only one of: INTRODUCTION, TECHNICAL_QUESTIONS, CODING_CHALLENGE, F
                 "last_active": datetime.now().isoformat()
             }
             
-            self.session_manager.update_session(session_id, updated_session)
+            self.session_manager.update_session_metadata(session_id, metadata)
             
             return ai_message_content, session_id
             
@@ -1152,7 +1209,7 @@ async def continue_after_challenge(self, user_id: str, session_id: str, message:
         metadata["resuming_from_challenge"] = True
         metadata["challenge_completed"] = challenge_completed
         session["metadata"] = metadata
-        self.session_manager.update_session(session_id, session)
+        self.session_manager.update_session_metadata(session_id, metadata)
         
         # Configure the thread for resuming the workflow
         thread = {"configurable": {"thread_id": session_id}}
@@ -1182,39 +1239,3 @@ async def continue_after_challenge(self, user_id: str, session_id: str, message:
     except Exception as e:
         logging.error(f"Error continuing after challenge: {e}")
         raise ValueError(f"Failed to continue interview: {str(e)}") 
-
-def _determine_interview_stage_from_metadata(self, messages: List[BaseMessage], metadata: Dict[str, Any]) -> str:
-    """
-    Determine the current interview stage based on messages and session metadata.
-    
-    Args:
-        messages: List of messages in the conversation
-        metadata: Session metadata containing interview context
-        
-    Returns:
-        Current interview stage value
-    """
-    # Get current stage from metadata
-    current_stage = metadata.get("interview_stage", InterviewStage.INTRODUCTION.value)
-    
-    # Check if we're resuming from a challenge
-    if metadata.get("resuming_from_challenge", False):
-        if metadata.get("challenge_completed", False):
-            # If challenge was completed successfully, move to technical questions
-            logger.info("Challenge completed, transitioning to technical questions stage")
-            return InterviewStage.TECHNICAL_QUESTIONS.value
-        else:
-            # If challenge was not completed, stay in coding challenge stage
-            logger.info("Challenge not completed, remaining in coding challenge stage")
-            return InterviewStage.CODING_CHALLENGE.value
-    
-    # Check for coding challenge tool calls in the messages
-    for msg in messages:
-        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tool_call in msg.tool_calls:
-                if isinstance(tool_call, dict) and tool_call.get("name") == "start_coding_challenge":
-                    logger.info("Found start_coding_challenge tool call, setting stage to CODING_CHALLENGE")
-                    return InterviewStage.CODING_CHALLENGE.value
-    
-    # If no special conditions were found, return the current stage from metadata
-    return current_stage 
