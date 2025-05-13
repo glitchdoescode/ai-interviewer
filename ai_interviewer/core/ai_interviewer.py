@@ -319,7 +319,7 @@ class AIInterviewer:
                     # Check for extracted name in new messages
                     if not candidate_name and "messages" in tool_result:
                         combined_messages = messages + tool_result.get("messages", [])
-                        name_match = extract_name_from_messages(combined_messages)
+                        name_match = self._extract_candidate_name(combined_messages)
                         if name_match:
                             updated_state["candidate_name"] = name_match
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
@@ -338,7 +338,7 @@ class AIInterviewer:
                     
                     # Check for extracted name in new messages
                     if not candidate_name and "messages" in tool_result:
-                        name_match = extract_name_from_messages(updated_messages)
+                        name_match = self._extract_candidate_name(updated_messages)
                         if name_match:
                             candidate_name = name_match
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
@@ -490,7 +490,7 @@ class AIInterviewer:
             
             # Extract name from conversation if not already known
             if not candidate_name:
-                name_match = extract_name_from_messages(messages + [ai_message])
+                name_match = self._extract_candidate_name(messages + [ai_message])
                 if name_match:
                     candidate_name = name_match
                     logger.info(f"Extracted candidate name during model call: {candidate_name}")
@@ -721,7 +721,7 @@ class AIInterviewer:
         # Check for candidate name in the user message if not already known
         if not candidate_name:
             # First try with simple name patterns
-            name_match = extract_name_from_messages([human_msg])
+            name_match = self._extract_candidate_name([human_msg])
             if name_match:
                 candidate_name = name_match
                 logger.info(f"Extracted candidate name from new message: {candidate_name}")
@@ -824,7 +824,7 @@ class AIInterviewer:
                     
                     # Attempt to extract name from the conversation if not already set
                     if not candidate_name:
-                        name_match = extract_name_from_messages(all_messages)
+                        name_match = self._extract_candidate_name(all_messages)
                         if name_match:
                             candidate_name = name_match
                             metadata[CANDIDATE_NAME_KEY] = candidate_name
@@ -1231,107 +1231,6 @@ async def continue_after_challenge(self, user_id: str, session_id: str, message:
     except Exception as e:
         logger.error(f"Error continuing after challenge: {e}")
         return "I apologize, but I encountered an error processing your challenge submission. Let's continue with the interview.", {} 
-
-def extract_name_from_messages(messages: List[BaseMessage]) -> str:
-    """
-    Extract candidate name from conversation messages.
-    
-    This function analyzes the conversation to find where the candidate
-    introduces themselves or mentions their name.
-    
-    Args:
-        messages: List of conversation messages
-        
-    Returns:
-        Extracted name or empty string if no name found
-    """
-    # Common name patterns in conversations
-    name_patterns = [
-        # "My name is John Doe"
-        r"(?:my|the) name(?:'s| is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
-        # Case-insensitive version for "my name is Deepak"
-        r"(?i)(?:my|the) name(?:'s| is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Za-z][a-z]+(?: [A-Za-z][a-z]+){0,2})",
-        # "I am John Doe"
-        r"(?:i am|i'm|this is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
-        # Case-insensitive version for I am Deepak
-        r"(?i)(?:i am|i'm|this is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Za-z][a-z]+(?: [A-Za-z][a-z]+){0,2})",
-        # "John Doe here"
-        r"([A-Z][a-z]+(?: [A-Z][a-z]+){0,2}) here",
-        # "I'm John" (at start of message)
-        r"^(?:i'm|i am) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
-    ]
-    
-    # First look for the most recent human messages, as they're most likely to contain the name
-    human_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
-    
-    # Special case: direct response "My name is Deepak"
-    # This is a higher-priority check
-    for msg in reversed(human_messages):
-        content = msg.content
-        # Direct name introduction pattern match with additional debug
-        direct_match = re.search(r"(?i)my name is ([A-Za-z][a-z]+)", content)
-        if direct_match:
-            name = direct_match.group(1).strip()
-            logger.info(f"Direct name match found: {name}")
-            
-            # Additional validation
-            if 2 <= len(name) <= 50 and not any(char.isdigit() for char in name):
-                # Ensure proper capitalization
-                name = name[0].upper() + name[1:]
-                return name
-    
-    for msg in reversed(human_messages):  # Start with most recent messages
-        content = msg.content
-        
-        # Check all patterns for a match
-        for pattern in name_patterns:
-            match = re.search(pattern, content)
-            if match:
-                name = match.group(1).strip()
-                logger.info(f"Extracted name from message: {name}")
-                
-                # Additional validation
-                if 2 <= len(name) <= 50 and not any(char.isdigit() for char in name):
-                    # Ensure proper capitalization for case-insensitive matches
-                    if pattern.startswith('(?i)'):
-                        name = name[0].upper() + name[1:].lower()
-                    return name
-    
-    # If no direct introduction found, look for the custom name cases in user messages
-    for msg in reversed(human_messages):
-        content = msg.content.lower()
-        
-        # Check for simple replies that include names (e.g., "Deepak" or "My name is Deepak")
-        if 3 <= len(content) <= 40 and not any(char.isdigit() for char in content):
-            # Check for single word name (e.g., "Deepak")
-            words = content.split()
-            if len(words) == 1 and words[0][0].isalpha():
-                name = words[0].capitalize()
-                logger.info(f"Extracted single word name: {name}")
-                
-                # Filter out common intro words and non-names
-                non_names = ["hello", "hi", "hey", "yes", "no", "okay", "ok", "sure", 
-                            "indeed", "thanks", "thank", "sorry", "please", "bye"]
-                if name.lower() not in non_names:
-                    return name
-    
-    # Now look in AI messages for patterns like "Hello [name]"
-    ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
-    
-    for msg in reversed(ai_messages):
-        content = msg.content
-        
-        # Look for greeting patterns
-        greeting_match = re.search(r"(?:hello|hi|hey)\s+([A-Z][a-z]+)", content, re.IGNORECASE)
-        if greeting_match:
-            name = greeting_match.group(1).strip()
-            # Validate it's a name and not a generic term
-            if name.lower() not in ["there", "everyone", "friend", "all", "folks", "team"]:
-                logger.info(f"Extracted name from AI greeting: {name}")
-                return name
-    
-    return ""
-
 
 def safe_extract_content(message: AIMessage) -> str:
     """
