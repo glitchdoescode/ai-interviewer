@@ -730,21 +730,42 @@ class AIInterviewer:
             ]
             has_submission = any(keyword in ' '.join([m.content.lower() for m in messages[-3:] if hasattr(m, 'content')]) for keyword in submission_keywords)
             
-            if has_submission:
-                logger.info("Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING stage")
+            # Also check metadata for manual transition triggered by frontend submission
+            # This typically happens via the continue_after_challenge API endpoint
+            metadata_transition = False
+            for msg in messages:
+                if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
+                    if "resuming_from_challenge: true" in msg.content.lower():
+                        metadata_transition = True
+                        break
+            
+            if has_submission or metadata_transition:
+                logger.info(f"Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING stage (triggered by{'metadata' if metadata_transition else 'message content'})")
                 return InterviewStage.CODING_CHALLENGE_WAITING.value
         
         elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
-            # This is usually handled by the continue_after_challenge method
-            # But we can check for evaluation completed keywords and move to next stage
+            # This stage is primarily a UI-driven state that indicates we're waiting for the frontend
+            # to complete the coding challenge submission flow and call the challenge-complete endpoint.
+            # The actual transition to FEEDBACK is typically handled by the continue_after_challenge method.
+            
+            # However, we provide a backup detection mechanism here for text-based interfaces
+            # by checking for evaluation language in the AI's response
             evaluation_keywords = [
                 "your solution was", "feedback on your code", "your implementation", 
                 "code review", "assessment of your solution", "evaluation of your code"
             ]
             has_evaluation = any(keyword in ai_content for keyword in evaluation_keywords)
             
-            if has_evaluation:
-                logger.info("Transitioning from CODING_CHALLENGE_WAITING to FEEDBACK stage")
+            # Also check recent history for coding evaluation data in the metadata
+            has_evaluation_data = False
+            for msg in messages[-5:]:
+                if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
+                    if "coding_evaluation:" in msg.content.lower():
+                        has_evaluation_data = True
+                        break
+            
+            if has_evaluation or has_evaluation_data:
+                logger.info(f"Transitioning from CODING_CHALLENGE_WAITING to FEEDBACK stage (triggered by{'evaluation data' if has_evaluation_data else 'evaluation keywords'})")
                 return InterviewStage.FEEDBACK.value
         
         elif current_stage == InterviewStage.FEEDBACK.value:
@@ -1475,7 +1496,7 @@ class AIInterviewer:
         Args:
             user_id: User identifier
             session_id: Session identifier
-            message: Message to include as context
+            message: Message to include as context (should contain coding evaluation details)
             challenge_completed: Whether the challenge was completed successfully
             
         Returns:
@@ -1501,6 +1522,9 @@ class AIInterviewer:
             metadata["resuming_from_challenge"] = True
             metadata["challenge_completed"] = challenge_completed
             
+            # Extract coding evaluation data if available
+            coding_evaluation = metadata.get("coding_evaluation", {})
+            
             # Choose next stage based on challenge completion
             if challenge_completed:
                 # If completed successfully, move to feedback stage
@@ -1518,14 +1542,42 @@ class AIInterviewer:
                 self.session_manager.update_session_metadata(session_id, metadata)
             
             # Prepare context message for continuing the interview
+            feedback_context = ""
+            if coding_evaluation:
+                # Add structured evaluation data to provide context for the AI
+                test_results = coding_evaluation.get("test_results", {})
+                passed = test_results.get("passed", 0) 
+                total = test_results.get("total", 0)
+                feedback = coding_evaluation.get("feedback", "")
+                quality = coding_evaluation.get("quality_metrics", {})
+                
+                if passed and total:
+                    feedback_context += f" My solution passed {passed} out of {total} test cases. "
+                
+                if feedback:
+                    feedback_context += f"The feedback was: {feedback} "
+                    
+                if quality:
+                    # Add any quality metrics highlights
+                    if "complexity" in quality:
+                        feedback_context += f"Code complexity was rated as {quality.get('complexity')}. "
+                        
+                    if "readability" in quality:
+                        feedback_context += f"Readability was {quality.get('readability')}. "
+                        
+            # Combine message with generated feedback context
             result = f"I've submitted my solution to the coding challenge. "
             if challenge_completed:
                 result += "I believe I've completed it successfully."
             else:
                 result += "I made some progress but couldn't fully complete it."
+            
+            # Add feedback context if available and not redundant with message
+            if feedback_context and not any(part in message.lower() for part in feedback_context.lower().split(". ")):
+                result += feedback_context
                 
-            # Add user's message if provided
-            if message:
+            # Add user's message if provided and not already included
+            if message and message not in result:
                 result += f" {message}"
                 
             # Run the interview with this context

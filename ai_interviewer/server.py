@@ -1003,10 +1003,25 @@ class CodingHintResponse(BaseModel):
     hints: List[str]
 
 class ChallengeCompleteRequest(BaseModel):
-    message: str
-    user_id: str
-    challenge_completed: bool = True
+    message: str = Field(..., description="Message to include with submission, should contain detailed coding evaluation results from /api/coding/submit")
+    user_id: str = Field(..., description="User ID")
+    challenge_completed: bool = Field(True, description="Whether the challenge was successfully completed")
+    evaluation_summary: Optional[Dict] = Field(None, description="Optional evaluation summary from /api/coding/submit endpoint")
     
+    class Config:
+        schema_extra = {
+            "example": {
+                "message": "I've completed the coding challenge. My solution passed 5 out of 6 test cases. The main issue was handling edge cases with empty input arrays.",
+                "user_id": "user-123",
+                "challenge_completed": True,
+                "evaluation_summary": {
+                    "passed": True,
+                    "test_results": {"passed": 5, "failed": 1, "total": 6},
+                    "feedback": "Good solution that handles most cases correctly."
+                }
+            }
+        }
+
 # Add routes for handling coding challenges
 
 @app.post(
@@ -1026,6 +1041,20 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
     Submit a candidate's code solution for evaluation.
     
     This endpoint processes a submitted solution for a coding challenge and returns feedback.
+    
+    Frontend Implementation Guidelines:
+    1. After calling this endpoint and receiving the evaluation results, store them.
+    2. Present the results to the user and allow them to review/confirm.
+    3. When the user is ready to continue the interview, call:
+       `/api/interview/{session_id}/challenge-complete`
+    4. Pass the evaluation results in both:
+       - As structured data in the `evaluation_summary` field 
+       - As human-readable text in the `message` field
+    
+    This two-step process (submit then complete) allows the frontend to:
+    - Process and display detailed evaluation results to the user
+    - Let the user review their submission before continuing
+    - Ensure the AI interviewer has the full context when providing feedback
     
     Args:
         submission: CodingSubmissionRequest containing the code solution and challenge ID
@@ -1120,6 +1149,15 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
     
     This endpoint continues the interview after a coding challenge has been submitted.
     
+    For optimal AI feedback, the frontend should:
+    1. First submit the code to /api/coding/submit to get detailed evaluation
+    2. Include those evaluation results in both:
+       - The 'message' field (as human-readable text)
+       - The 'evaluation_summary' field (as structured data from the /api/coding/submit response)
+    
+    This ensures the AI interviewer has complete context about the code submission
+    to provide specific and relevant feedback during the subsequent conversation.
+    
     Args:
         session_id: Session ID to continue
         request_data: ChallengeCompleteRequest containing user message and completion status
@@ -1143,13 +1181,36 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
         metadata = session.get("metadata", {})
         metadata["resuming_from_challenge"] = True
         metadata["challenge_completed"] = request_data.challenge_completed
+        
+        # Store evaluation summary if provided
+        if request_data.evaluation_summary:
+            metadata["coding_evaluation"] = request_data.evaluation_summary
+            logger.info(f"Stored coding evaluation in session metadata: {request_data.evaluation_summary}")
+        
         session["metadata"] = metadata
         interviewer.session_manager.update_session(session_id, session)
         
-        # Continue the interview
+        # Prepare a more detailed message if evaluation summary is provided
+        message = request_data.message
+        if request_data.evaluation_summary and not "passed" in message.lower():
+            # Ensure evaluation details are included in the message
+            test_results = request_data.evaluation_summary.get("test_results", {})
+            passed = test_results.get("passed", 0)
+            total = test_results.get("total", 0)
+            
+            # Only append if not already mentioned in the message
+            if not any(keyword in message.lower() for keyword in [f"{passed} test", f"{passed}/{total}", f"{passed} out of {total}"]):
+                message += f" The solution passed {passed} out of {total} test cases."
+            
+            # Add feedback if available and not already in message
+            feedback = request_data.evaluation_summary.get("feedback", "")
+            if feedback and feedback not in message:
+                message += f" Feedback: {feedback}"
+        
+        # Continue the interview with enhanced context
         ai_response, new_session_id = await interviewer.run_interview(
             request_data.user_id,
-            request_data.message,
+            message,
             session_id
         )
         
