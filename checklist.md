@@ -221,7 +221,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.3.2: Deeper Response Analysis**
     *   [x] Enhance `EvaluateCandidateResponseTool` to extract key concepts or assess depth of understanding, not just clarity.
 *   **Task P2.3.3: Natural Conversation Flow**
-    *   [ ] Refine `interview_agent` system prompts for more natural transitions, empathetic responses, and ability to handle digressions or clarifications.
+    *   [x] Refine `interview_agent` system prompts for more natural transitions, empathetic responses, and ability to handle digressions or clarifications.
 *   **Task P2.3.4: (Optional Long-Term) LLM Fine-tuning Study**
     *   [ ] Research feasibility and requirements for fine-tuning an LLM for interview question generation or evaluation.
 
