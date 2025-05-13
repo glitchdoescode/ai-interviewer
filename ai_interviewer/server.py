@@ -8,6 +8,7 @@ import uuid
 import asyncio
 import logging
 import base64
+import re
 from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
 
@@ -527,11 +528,13 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         
         # Check if we have an existing session with candidate information
         session_data = {}
+        candidate_name_before = None
         if request_data.session_id and interviewer.session_manager:
             existing_session = interviewer.session_manager.get_session(request_data.session_id)
             if existing_session and "metadata" in existing_session:
                 session_data = existing_session["metadata"]
-                logger.info(f"Restored session data with candidate: {session_data.get('candidate_name', 'Unknown')}")
+                candidate_name_before = session_data.get('candidate_name')
+                logger.info(f"Restored session data with candidate: {candidate_name_before or 'Unknown'}")
         
         # Extract base64 data from data URI format
         # Expected format: data:audio/wav;base64,BASE64_DATA
@@ -621,7 +624,13 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             # Use a default message instead of returning an error
             logger.info("Empty transcription detected, using default message")
             transcription = "Hello, I'd like to continue our interview."
-            
+        
+        # Check transcription for name pattern before invoking the interviewer
+        name_pattern = re.search(r"(?i)my name is ([A-Za-z][a-z]+)", transcription)
+        if name_pattern:
+            potential_name = name_pattern.group(1).strip()
+            logger.info(f"Potential name detected in transcription: {potential_name}")
+
         # Process the transcribed message with job role parameters
         ai_response, session_id = await interviewer.run_interview(
             user_id, 
@@ -658,9 +667,14 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             
             if session and "metadata" in session:
                 metadata = session["metadata"]
+                candidate_name_after = metadata.get('candidate_name')
                 
                 # Log candidate name for debugging
-                logger.info(f"Session metadata has candidate_name: {metadata.get('candidate_name', 'No name found')}")
+                logger.info(f"Session metadata has candidate_name: {candidate_name_after or 'No name found'}")
+                
+                # Check if candidate name changed
+                if candidate_name_before != candidate_name_after and candidate_name_after:
+                    logger.info(f"Candidate name changed from '{candidate_name_before or 'Unknown'}' to '{candidate_name_after}'")
         
         # Optional: Generate audio response
         audio_response_url = None
