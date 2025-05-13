@@ -17,7 +17,8 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
-  useDisclosure
+  useDisclosure,
+  Divider
 } from '@chakra-ui/react';
 import { FaPaperPlane, FaMicrophone, FaStop, FaExclamationTriangle } from 'react-icons/fa';
 import ChatMessage from './ChatMessage';
@@ -31,6 +32,7 @@ import {
   continueAfterCodingChallenge,
   getChallengeHint
 } from '../api/interviewService';
+import { Link } from 'react-router-dom';
 
 
 /**
@@ -598,6 +600,25 @@ const ChatInterface = ({ jobRoleData }) => {
                 <AlertIcon as={FaExclamationTriangle} />
                 <Text>After enabling permissions, you may need to refresh the page.</Text>
               </Alert>
+              
+              <Divider />
+              
+              <Box>
+                <Text fontWeight="bold" mb={2}>Still having issues?</Text>
+                <Button 
+                  as={Link} 
+                  to="/microphone-test" 
+                  colorScheme="teal" 
+                  size="sm" 
+                  width="full"
+                  onClick={onClose}
+                >
+                  Open Microphone Troubleshooter
+                </Button>
+                <Text fontSize="sm" mt={2}>
+                  The troubleshooter will help diagnose and fix microphone issues.
+                </Text>
+              </Box>
             </VStack>
           </ModalBody>
           <ModalFooter>
