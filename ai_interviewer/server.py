@@ -27,6 +27,7 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
 from langgraph.types import interrupt, Command
+from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 
 # Set up logging
 logging.basicConfig(
@@ -1121,6 +1122,119 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
             raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error continuing after challenge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add these models after the existing Pydantic models
+class QuestionGenerationRequest(BaseModel):
+    job_role: str = Field(..., description="Job role for the interview (e.g., 'Frontend Developer')")
+    skill_areas: Optional[List[str]] = Field(None, description="List of specific skills to focus on")
+    difficulty_level: str = Field("intermediate", description="Level of difficulty (beginner, intermediate, advanced)")
+    previous_questions: Optional[List[str]] = Field(None, description="List of questions already asked")
+    previous_responses: Optional[List[str]] = Field(None, description="List of candidate's previous responses")
+    current_topic: Optional[str] = Field(None, description="Current discussion topic, if any")
+    follow_up_to: Optional[str] = Field(None, description="Specific question or response to follow up on")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "job_role": "Frontend Developer",
+                "skill_areas": ["JavaScript", "React", "CSS"],
+                "difficulty_level": "intermediate",
+                "current_topic": "Component architecture"
+            }
+        }
+
+class ResponseAnalysisRequest(BaseModel):
+    question: str = Field(..., description="The question that was asked")
+    response: str = Field(..., description="The candidate's response to analyze")
+    job_role: str = Field(..., description="Job role for context")
+    skill_areas: Optional[List[str]] = Field(None, description="Skills that were being evaluated")
+    expected_topics: Optional[List[str]] = Field(None, description="Expected topics in a good answer")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "question": "Explain the virtual DOM in React and why it's important.",
+                "response": "The virtual DOM is React's way of improving performance by creating a lightweight copy of the actual DOM. When state changes, React first updates the virtual DOM and then compares it with the previous version to identify the minimal set of DOM operations needed. This approach is more efficient than directly manipulating the DOM.",
+                "job_role": "Frontend Developer",
+                "skill_areas": ["React", "JavaScript", "Web Performance"],
+                "expected_topics": ["Virtual DOM concept", "Reconciliation", "Performance benefits"]
+            }
+        }
+
+# Add these API endpoints before the app.on_event("shutdown") handler
+@app.post(
+    "/api/questions/generate",
+    responses={
+        200: {"description": "Successfully generated question"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("20/minute")
+async def generate_question(request: Request, req_data: QuestionGenerationRequest):
+    """
+    Generate a dynamic interview question based on job role and other parameters.
+    
+    This endpoint generates contextually-relevant interview questions that can be
+    tailored to specific skill areas, difficulty levels, and previous responses.
+    
+    Args:
+        req_data: QuestionGenerationRequest containing job role and other parameters
+        
+    Returns:
+        Generated question with metadata
+    """
+    try:
+        result = generate_interview_question(
+            job_role=req_data.job_role,
+            skill_areas=req_data.skill_areas,
+            difficulty_level=req_data.difficulty_level,
+            previous_questions=req_data.previous_questions,
+            previous_responses=req_data.previous_responses,
+            current_topic=req_data.current_topic,
+            follow_up_to=req_data.follow_up_to
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error generating question: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(
+    "/api/questions/analyze-response",
+    responses={
+        200: {"description": "Successfully analyzed response"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("15/minute")
+async def analyze_response(request: Request, req_data: ResponseAnalysisRequest):
+    """
+    Analyze a candidate's response to identify strengths, weaknesses, and potential follow-up areas.
+    
+    This endpoint evaluates candidate responses on multiple dimensions including
+    relevance, technical accuracy, and depth of knowledge.
+    
+    Args:
+        req_data: ResponseAnalysisRequest containing question, response, and context
+        
+    Returns:
+        Detailed analysis of the response
+    """
+    try:
+        result = analyze_candidate_response(
+            question=req_data.question,
+            response=req_data.response,
+            job_role=req_data.job_role,
+            skill_areas=req_data.skill_areas,
+            expected_topics=req_data.expected_topics
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error analyzing response: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):

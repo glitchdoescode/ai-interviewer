@@ -31,6 +31,10 @@ from ai_interviewer.tools.pair_programming import (
     complete_code,
     review_code_section
 )
+from ai_interviewer.tools.question_tools import (
+    generate_interview_question,
+    analyze_candidate_response
+)
 
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
@@ -210,7 +214,11 @@ class AIInterviewer:
             # Pair programming tools
             suggest_code_improvements,
             complete_code,
-            review_code_section
+            review_code_section,
+            
+            # Question generation and analysis tools
+            generate_interview_question,
+            analyze_candidate_response
         ]
         
         # Create tool node with proper state handling
