@@ -14,7 +14,6 @@ const useAudioRecorder = () => {
   const [audioContext, setAudioContext] = useState(null);
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
-  const initializationAttempts = useRef(0);
 
   // Clean up audio resources when the component unmounts
   useEffect(() => {
@@ -31,161 +30,111 @@ const useAudioRecorder = () => {
     };
   }, [stream, audioContext]);
 
-  // Initialize audio recording
+  // Initialize audio recording with clearer error handling
   const initRecording = useCallback(async () => {
-    try {
-      // Prevent multiple initializations running simultaneously
-      if (isInitializing) {
-        console.log('Already initializing audio...');
-        return false;
-      }
+    // Prevent multiple initializations
+    if (isInitializing) {
+      console.log('Already initializing audio...');
+      return false;
+    }
 
+    try {
       setIsInitializing(true);
       setError(null);
-      initializationAttempts.current += 1;
-      console.log(`Initializing audio recording (attempt ${initializationAttempts.current})...`);
+      
+      console.log('Requesting microphone permission...');
       
       // Request user permission to access the microphone
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       setStream(audioStream);
       setPermissionGranted(true);
       
+      console.log('Microphone permission granted, creating audio context...');
+      
       // Create an audio context
-      let context;
-      try {
-        context = new (window.AudioContext || window.webkitAudioContext)();
-        
-        // Ensure the context is running
-        if (context.state !== 'running') {
-          await context.resume();
-        }
-        
-        setAudioContext(context);
-        console.log(`AudioContext created and state is: ${context.state}`);
-      } catch (contextError) {
-        console.error('Error creating AudioContext:', contextError);
-        setIsInitializing(false);
-        throw new Error(`Could not create audio context: ${contextError.message}`);
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      
+      // Ensure the context is running
+      if (context.state !== 'running') {
+        await context.resume();
       }
       
+      setAudioContext(context);
+      console.log(`AudioContext created and state is: ${context.state}`);
+      
       // Create a new recorder with the audio context
-      const newRecorder = new Recorder(context, {
-        onAnalysed: data => {
-          // You can use this callback to visualize the audio data
-          // console.log('Audio data:', data);
-        },
-      });
+      const newRecorder = new Recorder(context);
 
       // Connect the recorder to the stream
       await newRecorder.init(audioStream);
-      
-      // Save the recorder in state
       setRecorder(newRecorder);
-      setIsInitializing(false);
+      
       console.log('Audio recording initialized successfully');
       return true;
     } catch (err) {
       console.error('Error initializing audio recording:', err);
-      setError(`Error accessing microphone: ${err.message}`);
-      setIsInitializing(false);
+      
+      // Provide specific error messages based on the error type
+      if (err.name === 'NotAllowedError') {
+        setError('Microphone permission denied. Please allow access in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone detected. Please check your device settings.');
+      } else if (err.name === 'AbortError') {
+        setError('Recording permission request was aborted. Please try again.');
+      } else {
+        setError(`Error accessing microphone: ${err.message}`);
+      }
+      
       return false;
+    } finally {
+      setIsInitializing(false);
     }
   }, [isInitializing]);
 
-  // Start recording
+  // Start recording with improved error handling
   const startRecording = useCallback(async () => {
-    setIsInitializing(true); // Indicate initialization/start process
-    setError(null);
-    initializationAttempts.current = 0;
-
     try {
-      let currentRecorder = recorder;
-      let currentContext = audioContext;
-
-      // Loop to handle initialization and context resuming
-      while (initializationAttempts.current < 3) {
-        initializationAttempts.current++;
-        console.log(`Attempt ${initializationAttempts.current} to start recording...`);
-
-        // 1. Initialize if necessary
-        if (!currentRecorder || !currentContext) {
-          console.log('Recorder or context missing, running initRecording...');
-          const initialized = await initRecording();
-          if (!initialized) {
-            console.log('Initialization failed during start attempt.');
-            setError(prev => prev || 'Failed to initialize audio system.');
-            continue; // Try again if attempts remain
-          }
-          // Re-fetch state after initialization
-          currentRecorder = recorder;
-          currentContext = audioContext;
-          // Need a brief pause after initialization for state propagation
-          await new Promise(resolve => setTimeout(resolve, 300));
+      setError(null);
+      
+      // Initialize recording if needed
+      if (!recorder || !audioContext) {
+        console.log('Recorder not initialized, initializing...');
+        const initialized = await initRecording();
+        if (!initialized) {
+          return false;
         }
-
-        // 2. Ensure context is running
-        if (currentContext && currentContext.state !== 'running') {
-          console.log(`AudioContext state is ${currentContext.state}, attempting to resume...`);
-          try {
-            await currentContext.resume();
-            // Wait for resume to potentially take effect
-            await new Promise(resolve => setTimeout(resolve, 500)); 
-            console.log(`AudioContext state after resume attempt: ${currentContext.state}`);
-            if (currentContext.state !== 'running') {
-              setError('Failed to resume AudioContext. Please interact with the page and try again.');
-              continue; // Try again if attempts remain
-            }
-          } catch (resumeError) {
-            console.error('Error resuming AudioContext:', resumeError);
-            setError(`Error resuming audio context: ${resumeError.message}`);
-            continue; // Try again if attempts remain
-          }
-        }
-
-        // 3. Try starting the recorder
-        if (currentRecorder && currentContext && currentContext.state === 'running') {
-          try {
-            console.log('Attempting to start recorder...');
-            await currentRecorder.start();
-            setIsRecording(true);
-            setAudioData(null);
-            setIsInitializing(false);
-            console.log('Recording started successfully.');
-            return true; // Success!
-          } catch (startError) {
-            console.error(`Error starting recorder on attempt ${initializationAttempts.current}:`, startError);
-            setError(`Error starting recording: ${startError.message}`);
-            // Reset recorder for next attempt
-            setRecorder(null);
-            setAudioContext(null);
-            currentRecorder = null;
-            currentContext = null;
-            await new Promise(resolve => setTimeout(resolve, 200)); // Brief pause before retrying
-          }
-        } else {
-           console.log('Conditions not met for starting recorder, retrying...');
-           // Reset if context didn't resume or recorder didn't init
-           setRecorder(null);
-           setAudioContext(null);
-           currentRecorder = null;
-           currentContext = null;
-           await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Need a brief pause after initialization
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+      // Ensure audio context is running
+      if (audioContext.state !== 'running') {
+        console.log('Resuming audio context...');
+        await audioContext.resume();
+        
+        // Wait for resume to take effect
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        if (audioContext.state !== 'running') {
+          setError('Could not activate audio context. Please try clicking the button again.');
+          return false;
         }
       }
-
-      // If loop finishes without success
-      console.error('Failed to start recording after multiple attempts.');
-      setError(prev => prev || 'Could not start recording after multiple attempts. Please check permissions or refresh the page.');
-      setIsInitializing(false);
-      return false;
-
+      
+      // Start recording
+      console.log('Starting recorder...');
+      await recorder.start();
+      setIsRecording(true);
+      setAudioData(null);
+      console.log('Recording started successfully.');
+      return true;
     } catch (err) {
-      console.error('Unexpected error in startRecording:', err);
-      setError(`Unexpected error: ${err.message}`);
-      setIsInitializing(false);
+      console.error('Error starting recording:', err);
+      setError(`Could not start recording: ${err.message}`);
       return false;
     }
-  }, [recorder, audioContext, initRecording]); // Dependencies updated
+  }, [recorder, audioContext, initRecording]);
 
   // Stop recording and get the audio data
   const stopRecording = useCallback(async () => {
@@ -226,6 +175,25 @@ const useAudioRecorder = () => {
     }
     setAudioData(null);
   }, [recorder, isRecording]);
+  
+  // Check permission status
+  const checkPermissionStatus = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioDevices = devices.filter(device => device.kind === 'audioinput');
+      
+      if (audioDevices.length === 0) {
+        setError('No audio input devices found.');
+        return false;
+      }
+      
+      return true;
+    } catch (err) {
+      console.error('Error checking permission status:', err);
+      setError(`Error checking microphone access: ${err.message}`);
+      return false;
+    }
+  }, []);
 
   return {
     isRecording,
@@ -238,6 +206,7 @@ const useAudioRecorder = () => {
     stopRecording,
     cancelRecording,
     getAudioBase64,
+    checkPermissionStatus
   };
 };
 

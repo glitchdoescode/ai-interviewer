@@ -9,7 +9,42 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Add timeout to prevent hanging requests
+  timeout: 30000, // 30 seconds
 });
+
+// Global error handler function
+const handleApiError = (error, customMessage = null) => {
+  // Extract the most useful error information
+  let errorMessage = customMessage || 'An error occurred';
+  
+  if (error.response) {
+    // The server responded with an error status code
+    const serverError = error.response.data?.detail || error.response.statusText;
+    errorMessage = `Server error: ${serverError}`;
+    console.error('API error response:', {
+      status: error.response.status,
+      data: error.response.data,
+      message: serverError
+    });
+  } else if (error.request) {
+    // The request was made but no response was received
+    errorMessage = 'No response from server. Check your network connection.';
+    console.error('API no response:', error.request);
+  } else {
+    // Something else caused the error
+    errorMessage = error.message || errorMessage;
+    console.error('API request error:', error.message);
+  }
+  
+  // Create an enhanced error object
+  const enhancedError = new Error(errorMessage);
+  enhancedError.originalError = error;
+  enhancedError.status = error.response?.status;
+  enhancedError.serverData = error.response?.data;
+  
+  throw enhancedError;
+};
 
 /**
  * Start a new interview session
@@ -36,8 +71,7 @@ export const startInterview = async (message, userId = null, jobRoleData = null)
     const response = await api.post('/interview', requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error starting interview:', error);
-    throw error;
+    return handleApiError(error, 'Failed to start interview');
   }
 };
 
@@ -51,6 +85,14 @@ export const startInterview = async (message, userId = null, jobRoleData = null)
  */
 export const continueInterview = async (message, sessionId, userId, jobRoleData = null) => {
   try {
+    if (!sessionId) {
+      throw new Error('Session ID is required');
+    }
+    
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    
     const requestBody = {
       message,
       user_id: userId
@@ -67,8 +109,7 @@ export const continueInterview = async (message, sessionId, userId, jobRoleData 
     const response = await api.post(`/interview/${sessionId}`, requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error continuing interview:', error);
-    throw error;
+    return handleApiError(error, 'Failed to continue interview');
   }
 };
 
@@ -80,13 +121,17 @@ export const continueInterview = async (message, sessionId, userId, jobRoleData 
  */
 export const getUserSessions = async (userId, includeCompleted = false) => {
   try {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    
     const response = await api.get(`/sessions/${userId}`, {
       params: { include_completed: includeCompleted }
     });
+    
     return response.data;
   } catch (error) {
-    console.error('Error getting user sessions:', error);
-    throw error;
+    return handleApiError(error, 'Failed to retrieve user sessions');
   }
 };
 
@@ -100,9 +145,13 @@ export const getUserSessions = async (userId, includeCompleted = false) => {
  */
 export const transcribeAndRespond = async (audioBase64, userId, sessionId = null, jobRoleData = null) => {
   try {
+    if (!audioBase64) {
+      throw new Error('Audio data is required');
+    }
+    
     const requestBody = {
       audio_base64: audioBase64,
-      user_id: userId,
+      user_id: userId || `anon-${Date.now()}`,
       session_id: sessionId,
       sample_rate: 16000,  // Default sample rate
       channels: 1          // Default channels
@@ -116,15 +165,32 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
       requestBody.job_description = jobRoleData.description;
     }
     
-    console.log('Sending audio transcription request:', requestBody);
+    console.log('Sending audio transcription request...');
     
     const response = await api.post('/audio/transcribe', requestBody);
-    console.log('Received audio transcription response:', response.data);
+    
+    // Validate response
+    if (!response.data || !response.data.transcription) {
+      throw new Error('Invalid response from transcription service');
+    }
     
     return response.data;
   } catch (error) {
-    console.error('Error processing voice:', error);
-    throw error;
+    // Special handling for 501 Not Implemented - voice processing not available
+    if (error.response && error.response.status === 501) {
+      const enhancedError = new Error('Voice processing is not available on this server');
+      enhancedError.isVoiceUnavailable = true;
+      throw enhancedError;
+    }
+    
+    // Special handling for 422 Unprocessable Entity - no speech detected
+    if (error.response && error.response.status === 422) {
+      const enhancedError = new Error('No speech detected or audio could not be transcribed');
+      enhancedError.isNoSpeech = true;
+      throw enhancedError;
+    }
+    
+    return handleApiError(error, 'Failed to process voice input');
   }
 };
 
@@ -152,6 +218,14 @@ export const checkVoiceAvailability = async () => {
  */
 export const submitChallengeCode = async (challengeId, code, userId = null, sessionId = null) => {
   try {
+    if (!challengeId) {
+      throw new Error('Challenge ID is required');
+    }
+    
+    if (!code || code.trim() === '') {
+      throw new Error('Code solution is required');
+    }
+    
     const requestBody = {
       challenge_id: challengeId,
       code: code,
@@ -162,8 +236,7 @@ export const submitChallengeCode = async (challengeId, code, userId = null, sess
     const response = await api.post('/coding/submit', requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error submitting code:', error);
-    throw error;
+    return handleApiError(error, 'Failed to submit code solution');
   }
 };
 
@@ -178,9 +251,13 @@ export const submitChallengeCode = async (challengeId, code, userId = null, sess
  */
 export const getChallengeHint = async (challengeId, code, userId = null, sessionId = null, errorMessage = null) => {
   try {
+    if (!challengeId) {
+      throw new Error('Challenge ID is required');
+    }
+    
     const requestBody = {
       challenge_id: challengeId,
-      code: code,
+      code: code || '',
       user_id: userId,
       session_id: sessionId,
       error_message: errorMessage
@@ -189,8 +266,7 @@ export const getChallengeHint = async (challengeId, code, userId = null, session
     const response = await api.post('/coding/hint', requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error getting hint:', error);
-    throw error;
+    return handleApiError(error, 'Failed to get hint');
   }
 };
 
@@ -204,6 +280,14 @@ export const getChallengeHint = async (challengeId, code, userId = null, session
  */
 export const continueAfterCodingChallenge = async (message, sessionId, userId, completed = true) => {
   try {
+    if (!sessionId) {
+      throw new Error('Session ID is required');
+    }
+    
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    
     const requestBody = {
       message,
       user_id: userId,
@@ -213,8 +297,7 @@ export const continueAfterCodingChallenge = async (message, sessionId, userId, c
     const response = await api.post(`/interview/${sessionId}/challenge-complete`, requestBody);
     return response.data;
   } catch (error) {
-    console.error('Error continuing after challenge:', error);
-    throw error;
+    return handleApiError(error, 'Failed to continue after challenge');
   }
 };
 
@@ -227,10 +310,29 @@ export const getJobRoles = async () => {
     const response = await api.get('/job-roles');
     return response.data;
   } catch (error) {
-    console.error('Error fetching job roles:', error);
-    throw error;
+    return handleApiError(error, 'Failed to fetch job roles');
   }
 };
+
+// Set up a response interceptor for global error handling
+api.interceptors.response.use(
+  response => response,
+  error => {
+    // Handle rate limiting errors (429)
+    if (error.response && error.response.status === 429) {
+      console.error('Rate limit exceeded:', error.response.data);
+      error.message = 'Too many requests. Please wait a moment before trying again.';
+    }
+    
+    // Handle server errors (500)
+    if (error.response && error.response.status >= 500) {
+      console.error('Server error:', error.response.data);
+      error.message = 'The server encountered an error. Please try again later.';
+    }
+    
+    return Promise.reject(error);
+  }
+);
 
 // Create a service object to export
 const interviewService = {
