@@ -525,6 +525,14 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         logger.info(f"Processing audio transcription request from user: {user_id}")
         logger.info(f"Audio data received, length: {len(request_data.audio_data)}")
         
+        # Check if we have an existing session with candidate information
+        session_data = {}
+        if request_data.session_id and interviewer.session_manager:
+            existing_session = interviewer.session_manager.get_session(request_data.session_id)
+            if existing_session and "metadata" in existing_session:
+                session_data = existing_session["metadata"]
+                logger.info(f"Restored session data with candidate: {session_data.get('candidate_name', 'Unknown')}")
+        
         # Extract base64 data from data URI format
         # Expected format: data:audio/wav;base64,BASE64_DATA
         audio_data = request_data.audio_data
@@ -650,6 +658,9 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             
             if session and "metadata" in session:
                 metadata = session["metadata"]
+                
+                # Log candidate name for debugging
+                logger.info(f"Session metadata has candidate_name: {metadata.get('candidate_name', 'No name found')}")
         
         # Optional: Generate audio response
         audio_response_url = None

@@ -306,6 +306,7 @@ class AIInterviewer:
                 if isinstance(state, dict):
                     # Extract messages from dictionary
                     messages = state.get("messages", [])
+                    candidate_name = state.get("candidate_name", "")
                     
                     # Execute tools using the ToolNode with messages
                     tool_result = self.tool_node.invoke({"messages": messages})
@@ -315,20 +316,37 @@ class AIInterviewer:
                     if "messages" in tool_result:
                         updated_state["messages"] = messages + tool_result["messages"]
                     
+                    # Check for extracted name in new messages
+                    if not candidate_name and "messages" in tool_result:
+                        combined_messages = messages + tool_result.get("messages", [])
+                        name_match = extract_name_from_messages(combined_messages)
+                        if name_match:
+                            updated_state["candidate_name"] = name_match
+                            logger.info(f"Extracted candidate name during tool call: {name_match}")
+                    
                     return updated_state
                 else:
                     # Extract messages from InterviewState
                     messages = state.messages
+                    candidate_name = state.candidate_name
                     
                     # Execute tools using the ToolNode with messages
                     tool_result = self.tool_node.invoke({"messages": messages})
                     
-                    # Create a new InterviewState with updated values
+                    # Get updated messages
                     updated_messages = state.messages + tool_result.get("messages", [])
                     
+                    # Check for extracted name in new messages
+                    if not candidate_name and "messages" in tool_result:
+                        name_match = extract_name_from_messages(updated_messages)
+                        if name_match:
+                            candidate_name = name_match
+                            logger.info(f"Extracted candidate name during tool call: {name_match}")
+                    
+                    # Create a new InterviewState with updated values
                     return InterviewState(
                         messages=updated_messages,
-                        candidate_name=state.candidate_name,
+                        candidate_name=candidate_name,
                         job_role=state.job_role,
                         seniority_level=state.seniority_level,
                         required_skills=state.required_skills,
@@ -472,9 +490,10 @@ class AIInterviewer:
             
             # Extract name from conversation if not already known
             if not candidate_name:
-                name_match = extract_name_from_messages(messages)
+                name_match = extract_name_from_messages(messages + [ai_message])
                 if name_match:
                     candidate_name = name_match
+                    logger.info(f"Extracted candidate name during model call: {candidate_name}")
             
             # Determine if we need to update the interview stage
             new_stage = self._determine_interview_stage(messages, ai_message, interview_stage)
@@ -776,6 +795,14 @@ class AIInterviewer:
                     if candidate_name:
                         metadata[CANDIDATE_NAME_KEY] = candidate_name
                     
+                    # Attempt to extract name from the conversation if not already set
+                    if not candidate_name:
+                        name_match = extract_name_from_messages(all_messages)
+                        if name_match:
+                            candidate_name = name_match
+                            metadata[CANDIDATE_NAME_KEY] = candidate_name
+                            logger.info(f"Extracted candidate name from conversation: {candidate_name}")
+                    
                     # Update stage in metadata
                     metadata[STAGE_KEY] = interview_stage
             
@@ -806,39 +833,38 @@ class AIInterviewer:
                     
                     # Update activity timestamp
                     self.session_manager.update_session_activity(session_id)
+                    
+                    # Save all messages
+                    self.session_manager.update_session_messages(session_id, all_messages)
                 else:
-                    # Use in-memory storage
-                    if session_id in self.active_sessions:
-                        self.active_sessions[session_id].update(metadata)
-                        
-                        # Add transcript
-                        if "transcript" not in self.active_sessions[session_id]:
-                            self.active_sessions[session_id]["transcript"] = []
-                            
+                    # In-memory storage
+                    self.active_sessions[session_id].update(metadata)
+                    
+                    # Update transcript
+                    if "transcript" in self.active_sessions[session_id]:
                         self.active_sessions[session_id]["transcript"].append({
                             "role": "user",
                             "content": user_message,
                             "timestamp": datetime.now().isoformat()
                         })
-                        
                         self.active_sessions[session_id]["transcript"].append({
                             "role": "assistant",
                             "content": ai_message_content,
                             "timestamp": datetime.now().isoformat()
                         })
-                        
-                        # Update activity timestamp
-                        self.active_sessions[session_id]["last_active"] = datetime.now().isoformat()
+                    
+                    # Update messages
+                    self.active_sessions[session_id]["messages"] = all_messages
+                    
+                    # Update timestamp
+                    self.active_sessions[session_id]["last_active"] = datetime.now().isoformat()
             except Exception as e:
-                logger.error(f"Error saving session: {e}")
-                # Continue despite saving error
+                logger.error(f"Error saving session {session_id}: {e}")
             
             return ai_message_content, session_id
-            
         except Exception as e:
-            logger.error(f"Error running interview: {e}")
-            error_message = "I apologize, but I encountered an unexpected error. Please try again or contact support."
-            return error_message, session_id
+            logger.error(f"Error in run_interview: {e}")
+            return "I apologize, but I encountered an issue. Please try again.", session_id
     
     def resume_interview(self, user_id: str, session_id: str, query: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
         """
@@ -1181,31 +1207,73 @@ async def continue_after_challenge(self, user_id: str, session_id: str, message:
 
 def extract_name_from_messages(messages: List[BaseMessage]) -> str:
     """
-    Extracts a person's name from user messages.
+    Extract candidate name from conversation messages.
+    
+    This function analyzes the conversation to find where the candidate
+    introduces themselves or mentions their name.
     
     Args:
-        messages: List of message objects
+        messages: List of conversation messages
         
     Returns:
-        Extracted name or empty string if not found
+        Extracted name or empty string if no name found
     """
-    # Regular expressions for common name patterns
+    # Common name patterns in conversations
     name_patterns = [
-        r"(?:my name is|I am|I'm)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",
-        r"(?:I'm|I am|this is)\s+([A-Z][a-z]+)",
-        r"(?:called|name's)\s+([A-Z][a-z]+)",
+        # "My name is John Doe"
+        r"(?:my|the) name(?:'s| is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
+        # "I am John Doe"
+        r"(?:i am|i'm|this is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
+        # "John Doe here"
+        r"([A-Z][a-z]+(?: [A-Z][a-z]+){0,2}) here",
+        # "I'm John" (at start of message)
+        r"^(?:i'm|i am) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
     ]
     
-    # Look through user messages from newest to oldest
-    for message in reversed(messages):
-        if isinstance(message, HumanMessage) and message.content:
-            content = message.content
-            
-            # Try each pattern
-            for pattern in name_patterns:
-                matches = re.search(pattern, content)
-                if matches:
-                    return matches.group(1).strip()
+    # First look for the most recent human messages, as they're most likely to contain the name
+    human_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
+    
+    for msg in reversed(human_messages):  # Start with most recent messages
+        content = msg.content
+        
+        # Check all patterns for a match
+        for pattern in name_patterns:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                logger.info(f"Extracted name from message: {name}")
+                
+                # Additional validation
+                if 2 <= len(name) <= 50 and not any(char.isdigit() for char in name):
+                    return name
+    
+    # If no direct introduction found, look for the custom name cases in user messages
+    for msg in reversed(human_messages):
+        content = msg.content.lower()
+        
+        # Check for simple replies that include names (e.g., "Deepak" or "My name is Deepak")
+        if 3 <= len(content) <= 40 and not any(char.isdigit() for char in content):
+            # Check for single word name (e.g., "Deepak")
+            words = content.split()
+            if len(words) == 1 and words[0][0].isalpha():
+                name = words[0].capitalize()
+                logger.info(f"Extracted single word name: {name}")
+                return name
+    
+    # Now look in AI messages for patterns like "Hello [name]"
+    ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
+    
+    for msg in reversed(ai_messages):
+        content = msg.content
+        
+        # Look for greeting patterns
+        greeting_match = re.search(r"(?:hello|hi|hey)\s+([A-Z][a-z]+)", content, re.IGNORECASE)
+        if greeting_match:
+            name = greeting_match.group(1).strip()
+            # Validate it's a name and not a generic term
+            if name.lower() not in ["there", "everyone", "friend", "all", "folks", "team"]:
+                logger.info(f"Extracted name from AI greeting: {name}")
+                return name
     
     return ""
 
