@@ -270,7 +270,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
         *   Uses an LLM to provide a contextual hint without giving away the solution.
     *   [x] Integrate this tool into the coding challenge flow (e.g., candidate can request a hint).
 *   **Task P2.4.4: Capture Code Evolution**
-    *   [ ] Modify `InterviewState` or logging to store snapshots of candidate's code at submission or hint requests.
+    *   [x] Modify `InterviewState` or logging to store snapshots of candidate's code at submission or hint requests.
 *   **Task P2.4.5: Job Role Specific Coding Challenge Initiation (Backend)**
     *   [x] Modify `AIInterviewer._determine_interview_stage` to accept `job_role` (or full `InterviewState`).
     *   [x] Implement logic in `_determine_interview_stage` to check if `job_role` requires coding before initiating a coding challenge.
