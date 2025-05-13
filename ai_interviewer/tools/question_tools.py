@@ -200,10 +200,12 @@ def analyze_candidate_response(
     response: str,
     job_role: str,
     skill_areas: Optional[List[str]] = None,
-    expected_topics: Optional[List[str]] = None
+    expected_topics: Optional[List[str]] = None,
+    experience_level: str = "intermediate"
 ) -> Dict[str, Any]:
     """
     Analyze a candidate's response to identify strengths, weaknesses, and potential follow-up areas.
+    Performs deep analysis of concept understanding and knowledge depth.
     
     Args:
         question: The question that was asked
@@ -211,9 +213,10 @@ def analyze_candidate_response(
         job_role: The job role for context
         skill_areas: Skills that were being evaluated
         expected_topics: Expected topics in a good answer
+        experience_level: Experience level of the candidate (beginner, intermediate, advanced)
         
     Returns:
-        Dictionary containing analysis results
+        Dictionary containing detailed analysis results
     """
     logger.info(f"Analyzing candidate response for job role: {job_role}")
     
@@ -229,35 +232,56 @@ def analyze_candidate_response(
         prompt = f"""
 You are an expert technical interviewer evaluating candidates for {job_role} positions.
 
-Analyze the following candidate response to the interview question.
+Analyze the following candidate response to the interview question. Focus on extracting key concepts and performing a deep analysis of the candidate's understanding.
 
 QUESTION: {question}
 
 CANDIDATE RESPONSE: {response}
 
 JOB ROLE: {job_role}
+EXPERIENCE LEVEL: {experience_level}
 {"SKILL AREAS: " + ", ".join(skill_areas) if skill_areas else ""}
 {"EXPECTED TOPICS: " + ", ".join(expected_topics) if expected_topics else ""}
 
 ANALYSIS TASKS:
 1. Identify the main points made by the candidate
-2. Evaluate how well the response addresses the question
-3. Assess technical accuracy and depth of knowledge
-4. Note any missing key concepts or topics
-5. Identify areas where follow-up questions would be valuable
-6. Determine strengths and weaknesses in the response
+2. Extract key concepts and technical terms used by the candidate
+3. Evaluate how well the response addresses the question
+4. Assess technical accuracy and depth of knowledge
+5. Evaluate the candidate's conceptual understanding (not just surface-level knowledge)
+6. Identify evidence of practical experience vs. theoretical knowledge
+7. Note any missing key concepts or topics that should have been addressed
+8. Assess problem-solving approach and critical thinking
+9. Identify areas where follow-up questions would be valuable
+10. Determine strengths and weaknesses in the response
+
+DEPTH OF UNDERSTANDING ASSESSMENT:
+- Consider whether the candidate explains underlying principles or just surface details
+- Look for connections made between different concepts
+- Assess whether the candidate can explain "why" not just "what" or "how"
+- Evaluate their ability to consider edge cases or limitations
+- Check for evidence of real-world application of knowledge
 
 RESPONSE FORMAT:
 Return your analysis as a valid JSON object with the following fields:
 - "main_points": List of main points made by the candidate
+- "key_concepts": List of key concepts or technical terms correctly used by the candidate
 - "relevance_score": 1-10 rating of how relevant the response was to the question
 - "technical_accuracy": 1-10 rating of technical accuracy
 - "depth_of_knowledge": 1-10 rating of knowledge depth
+- "conceptual_understanding": 1-10 rating of understanding of underlying concepts and principles
+- "practical_experience": 1-10 rating of evidence of practical experience
+- "problem_solving": 1-10 rating of demonstrated problem-solving ability
+- "misconceptions": List of any misconceptions or technical inaccuracies
 - "missing_topics": Key topics that were not addressed
 - "follow_up_areas": Areas that would benefit from follow-up questions
+- "concept_connections": How well the candidate connected different concepts (1-10)
+- "edge_case_awareness": How well they considered edge cases or limitations (1-10)
 - "strengths": List of strengths in the response
 - "weaknesses": List of weaknesses in the response
-- "recommended_follow_up_question": One specific follow-up question
+- "recommended_follow_up_question": One specific follow-up question designed to assess deeper understanding
+- "alternative_follow_up_questions": 2-3 additional follow-up questions focusing on different aspects
+- "depth_analysis": A paragraph explaining the candidate's depth of understanding
 """
         
         # Call the LLM
@@ -278,9 +302,27 @@ Return your analysis as a valid JSON object with the following fields:
         import json
         result = json.loads(response_content)
         
+        # Calculate a comprehensive understanding score
+        understanding_scores = [
+            result.get("technical_accuracy", 0),
+            result.get("depth_of_knowledge", 0),
+            result.get("conceptual_understanding", 0),
+            result.get("problem_solving", 0),
+            result.get("concept_connections", 0),
+            result.get("edge_case_awareness", 0)
+        ]
+        
+        # Filter out zero values and calculate average
+        valid_scores = [score for score in understanding_scores if score > 0]
+        if valid_scores:
+            result["comprehensive_understanding_score"] = sum(valid_scores) / len(valid_scores)
+        else:
+            result["comprehensive_understanding_score"] = 0
+        
         # Add metadata
         result["question"] = question
         result["job_role"] = job_role
+        result["experience_level"] = experience_level
         
         return result
     except Exception as e:
@@ -288,16 +330,31 @@ Return your analysis as a valid JSON object with the following fields:
         # Fallback return in case of errors
         return {
             "main_points": ["Unable to extract main points due to error"],
+            "key_concepts": [],
             "relevance_score": 5,
             "technical_accuracy": 5,
             "depth_of_knowledge": 5,
+            "conceptual_understanding": 5,
+            "practical_experience": 5,
+            "problem_solving": 5,
+            "misconceptions": ["Unable to determine misconceptions"],
             "missing_topics": ["Unable to determine missing topics"],
             "follow_up_areas": ["General clarification"],
+            "concept_connections": 5,
+            "edge_case_awareness": 5,
             "strengths": ["Unable to determine strengths"],
             "weaknesses": ["Unable to determine weaknesses"],
             "recommended_follow_up_question": "Could you elaborate more on your answer?",
+            "alternative_follow_up_questions": [
+                "Can you explain how this works in practice?",
+                "What are some challenges you might encounter with this approach?",
+                "How would you modify your approach for a different scenario?"
+            ],
+            "depth_analysis": "Unable to analyze depth of understanding due to an error in processing.",
+            "comprehensive_understanding_score": 5,
             "question": question,
             "job_role": job_role,
+            "experience_level": experience_level,
             "error": str(e),
             "generated_from_error": True
         } 
