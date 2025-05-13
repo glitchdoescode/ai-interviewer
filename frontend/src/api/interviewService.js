@@ -101,9 +101,11 @@ export const getUserSessions = async (userId, includeCompleted = false) => {
 export const transcribeAndRespond = async (audioBase64, userId, sessionId = null, jobRoleData = null) => {
   try {
     const requestBody = {
-      audio_data: audioBase64,
+      audio_base64: audioBase64,
       user_id: userId,
-      session_id: sessionId
+      session_id: sessionId,
+      sample_rate: 16000,  // Default sample rate
+      channels: 1          // Default channels
     };
     
     // Add job role data if provided
@@ -114,7 +116,11 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
       requestBody.job_description = jobRoleData.description;
     }
     
-    const response = await api.post('/voice', requestBody);
+    console.log('Sending audio transcription request:', requestBody);
+    
+    const response = await api.post('/audio/transcribe', requestBody);
+    console.log('Received audio transcription response:', response.data);
+    
     return response.data;
   } catch (error) {
     console.error('Error processing voice:', error);
@@ -128,8 +134,8 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
  */
 export const checkVoiceAvailability = async () => {
   try {
-    const response = await api.get('/voice/availability');
-    return response.data.available;
+    const response = await api.get('/health');
+    return response.data.voice_processing === 'available';
   } catch (error) {
     console.error('Error checking voice availability:', error);
     return false;
@@ -216,7 +222,7 @@ export const continueAfterCodingChallenge = async (message, sessionId, userId, c
  * Fetches available job roles for interviews
  * @returns {Promise<Array>} Array of job role objects
  */
-const getJobRoles = async () => {
+export const getJobRoles = async () => {
   try {
     const response = await api.get('/job-roles');
     return response.data;

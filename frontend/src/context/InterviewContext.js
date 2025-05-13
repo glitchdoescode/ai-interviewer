@@ -83,6 +83,7 @@ export const InterviewProvider = ({ children }) => {
   }, []);
   
   const addMessage = useCallback((message) => {
+    console.log('Adding message to context:', message);
     dispatch({ type: ACTIONS.ADD_MESSAGE, payload: message });
   }, []);
   

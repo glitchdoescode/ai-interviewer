@@ -567,7 +567,26 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         # Get session metadata if available
         metadata = {}
         if interviewer.session_manager:
+            # Verify session exists
             session = interviewer.session_manager.get_session(session_id)
+            if not session:
+                logger.error(f"Session {session_id} not found after run_interview. Creating backup session.")
+                # Create emergency backup session
+                try:
+                    interviewer.session_manager.create_session(
+                        user_id, 
+                        {
+                            "interview_stage": "introduction",
+                            "created_at": datetime.now().isoformat(),
+                            "last_active": datetime.now().isoformat(),
+                            "backup_created": True
+                        }
+                    )
+                    # Try to get session again
+                    session = interviewer.session_manager.get_session(session_id)
+                except Exception as e:
+                    logger.error(f"Error creating backup session: {e}")
+            
             if session and "metadata" in session:
                 metadata = session["metadata"]
         

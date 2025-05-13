@@ -218,6 +218,9 @@ const ChatInterface = ({ jobRoleData }) => {
         // Send audio for transcription and get response
         const response = await transcribeAndRespond(audioBase64, userId, sessionId, jobRoleData);
         
+        console.log('Audio response received:', response);
+        console.log('Audio URL:', response.audio_response_url);
+        
         // Update user message with transcription
         addMessage({
           role: 'user',
@@ -230,6 +233,7 @@ const ChatInterface = ({ jobRoleData }) => {
         }
         
         // Add AI response
+        console.log('Adding AI message with audio URL:', response.audio_response_url);
         addMessage({
           role: 'assistant',
           content: response.response,
@@ -411,7 +415,19 @@ const ChatInterface = ({ jobRoleData }) => {
             }
             
             // Regular message
-            return <ChatMessage key={index} message={message} />;
+            console.log('Rendering ChatMessage with:', { 
+              content: message.content, 
+              audioUrl: message.audioUrl,
+              fullMessage: message 
+            });
+            return <ChatMessage 
+              key={index} 
+              message={message.content || message.message || ''} 
+              sender={message.role || message.sender || 'assistant'} 
+              audioUrl={message.audioUrl || ''} 
+              isHint={message.isHint || false} 
+              isLoading={message.loading || false} 
+            />;
           })}
           
           {/* Loading indicator */}
