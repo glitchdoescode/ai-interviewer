@@ -137,7 +137,7 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - Hint system for candidates who get stuck
    - Language-specific validation
    - True human-in-the-loop functionality using LangGraph's interrupt/Command mechanisms
-   - Seamless context preservation when switching between interview and coding interface
+   - Seamless context preservation when switching bet9ween interview and coding interface
 
 8. **Enhanced CLI**: Improved the command-line interface with additional parameters and better state persistence.
    - Added voice-enabled CLI with natural speech interaction
