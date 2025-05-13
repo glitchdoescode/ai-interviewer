@@ -334,4 +334,50 @@ class SessionManager:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with proper cleanup."""
-        self.close() 
+        self.close()
+    
+    def update_session_messages(self, session_id: str, messages: List[Any]) -> bool:
+        """
+        Update the messages for a session.
+        
+        Args:
+            session_id: Session identifier
+            messages: List of message objects to save
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Convert messages to a serializable format if needed
+            serializable_messages = []
+            for msg in messages:
+                if hasattr(msg, 'dict') and callable(getattr(msg, 'dict')):
+                    # Handle Pydantic models or objects with dict method
+                    serializable_messages.append(msg.dict())
+                elif hasattr(msg, '__dict__'):
+                    # Handle custom objects with __dict__
+                    serializable_messages.append(msg.__dict__)
+                else:
+                    # Try direct serialization
+                    serializable_messages.append(msg)
+            
+            # Update the messages in the collection
+            result = self.collection.update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "messages": serializable_messages,
+                        "last_active": datetime.now()
+                    }
+                }
+            )
+            
+            if result.modified_count > 0 or result.matched_count > 0:
+                logger.info(f"Updated messages for session {session_id}, count: {len(serializable_messages)}")
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for messages update")
+                return False
+        except Exception as e:
+            logger.error(f"Error updating session messages: {e}")
+            return False 

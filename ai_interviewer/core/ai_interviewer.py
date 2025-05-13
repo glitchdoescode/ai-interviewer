@@ -494,6 +494,15 @@ class AIInterviewer:
                 if name_match:
                     candidate_name = name_match
                     logger.info(f"Extracted candidate name during model call: {candidate_name}")
+                    
+                    # Immediately update session metadata with the new candidate name
+                    if session_id and self.session_manager:
+                        session = self.session_manager.get_session(session_id)
+                        if session and "metadata" in session:
+                            metadata = session.get("metadata", {})
+                            metadata[CANDIDATE_NAME_KEY] = candidate_name
+                            self.session_manager.update_session_metadata(session_id, metadata)
+                            logger.info(f"Updated session metadata with candidate name: {candidate_name}")
             
             # Determine if we need to update the interview stage
             new_stage = self._determine_interview_stage(messages, ai_message, interview_stage)
@@ -645,6 +654,8 @@ class AIInterviewer:
                 candidate_name = metadata.get(CANDIDATE_NAME_KEY, "")
                 interview_stage = metadata.get(STAGE_KEY, InterviewStage.INTRODUCTION.value)
                 
+                logger.debug(f"Loaded existing session with candidate_name: '{candidate_name}'")
+                
                 # Set job role info if not in session but provided in this call
                 if job_role and "job_role" not in metadata:
                     metadata["job_role"] = job_role
@@ -706,6 +717,22 @@ class AIInterviewer:
         # Add the user message
         human_msg = HumanMessage(content=user_message)
         messages.append(human_msg)
+        
+        # Check for candidate name in the user message if not already known
+        if not candidate_name:
+            # First try with simple name patterns
+            name_match = extract_name_from_messages([human_msg])
+            if name_match:
+                candidate_name = name_match
+                logger.info(f"Extracted candidate name from new message: {candidate_name}")
+                
+                # Update metadata with the new name
+                metadata[CANDIDATE_NAME_KEY] = candidate_name
+                
+                # Immediately update session metadata with the new name
+                if self.session_manager:
+                    self.session_manager.update_session_metadata(session_id, metadata)
+                    logger.info(f"Updated session metadata with candidate name: {candidate_name}")
         
         # Add to transcript for later retrieval
         if "transcript" not in metadata:
@@ -1222,8 +1249,12 @@ def extract_name_from_messages(messages: List[BaseMessage]) -> str:
     name_patterns = [
         # "My name is John Doe"
         r"(?:my|the) name(?:'s| is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
+        # Case-insensitive version for "my name is Deepak"
+        r"(?i)(?:my|the) name(?:'s| is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Za-z][a-z]+(?: [A-Za-z][a-z]+){0,2})",
         # "I am John Doe"
         r"(?:i am|i'm|this is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Z][a-z]+(?: [A-Z][a-z]+){0,2})",
+        # Case-insensitive version for I am Deepak
+        r"(?i)(?:i am|i'm|this is) (?:mrs\.|ms\.|mr\.|dr\.)?\s*([A-Za-z][a-z]+(?: [A-Za-z][a-z]+){0,2})",
         # "John Doe here"
         r"([A-Z][a-z]+(?: [A-Z][a-z]+){0,2}) here",
         # "I'm John" (at start of message)
@@ -1233,18 +1264,37 @@ def extract_name_from_messages(messages: List[BaseMessage]) -> str:
     # First look for the most recent human messages, as they're most likely to contain the name
     human_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
     
+    # Special case: direct response "My name is Deepak"
+    # This is a higher-priority check
+    for msg in reversed(human_messages):
+        content = msg.content
+        # Direct name introduction pattern match with additional debug
+        direct_match = re.search(r"(?i)my name is ([A-Za-z][a-z]+)", content)
+        if direct_match:
+            name = direct_match.group(1).strip()
+            logger.info(f"Direct name match found: {name}")
+            
+            # Additional validation
+            if 2 <= len(name) <= 50 and not any(char.isdigit() for char in name):
+                # Ensure proper capitalization
+                name = name[0].upper() + name[1:]
+                return name
+    
     for msg in reversed(human_messages):  # Start with most recent messages
         content = msg.content
         
         # Check all patterns for a match
         for pattern in name_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
+            match = re.search(pattern, content)
             if match:
                 name = match.group(1).strip()
                 logger.info(f"Extracted name from message: {name}")
                 
                 # Additional validation
                 if 2 <= len(name) <= 50 and not any(char.isdigit() for char in name):
+                    # Ensure proper capitalization for case-insensitive matches
+                    if pattern.startswith('(?i)'):
+                        name = name[0].upper() + name[1:].lower()
                     return name
     
     # If no direct introduction found, look for the custom name cases in user messages
@@ -1258,7 +1308,12 @@ def extract_name_from_messages(messages: List[BaseMessage]) -> str:
             if len(words) == 1 and words[0][0].isalpha():
                 name = words[0].capitalize()
                 logger.info(f"Extracted single word name: {name}")
-                return name
+                
+                # Filter out common intro words and non-names
+                non_names = ["hello", "hi", "hey", "yes", "no", "okay", "ok", "sure", 
+                            "indeed", "thanks", "thank", "sorry", "please", "bye"]
+                if name.lower() not in non_names:
+                    return name
     
     # Now look in AI messages for patterns like "Hello [name]"
     ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
