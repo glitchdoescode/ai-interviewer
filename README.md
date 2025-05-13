@@ -117,3 +117,37 @@ This will start the React development server at http://localhost:3000. API reque
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Dynamic Question Generation
+
+The AI Interviewer platform now includes enhanced dynamic question generation with the following features:
+
+- **Context-Aware Questions**: Questions adapt based on previous candidate responses, creating a more natural conversation flow
+- **Difficulty Level Control**: Specify beginner, intermediate, or advanced difficulty levels to match candidate experience
+- **Skill-Specific Focus**: Target specific skill areas relevant to the job role (e.g., Python, React, Data Structures)
+- **Job Role Alignment**: Questions automatically align with job role requirements
+- **Follow-Up Generation**: Create targeted follow-up questions based on specific candidate answers
+- **Response Analysis**: Analyze candidate responses to identify strengths, weaknesses and follow-up areas
+
+These question generation features are available both through the LLM agent workflow and directly via API endpoints:
+
+```bash
+# Generate a question
+curl -X POST http://localhost:8000/api/questions/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_role": "Frontend Developer",
+    "skill_areas": ["JavaScript", "React", "CSS"],
+    "difficulty_level": "intermediate"
+  }'
+
+# Analyze a response
+curl -X POST http://localhost:8000/api/questions/analyze-response \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Explain the virtual DOM in React and why it is important.",
+    "response": "The virtual DOM is React's way of improving performance...",
+    "job_role": "Frontend Developer",
+    "skill_areas": ["React", "JavaScript"]
+  }'
+```
