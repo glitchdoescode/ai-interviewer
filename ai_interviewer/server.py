@@ -197,7 +197,7 @@ class SessionResponse(BaseModel):
 class AudioTranscriptionRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="User ID (generated if not provided)")
     session_id: Optional[str] = Field(None, description="Session ID (if continuing a session)")
-    audio_base64: str = Field(..., description="Base64-encoded audio data")
+    audio_data: str = Field(..., description="Base64-encoded audio data with data URI format")
     sample_rate: int = Field(16000, description="Audio sample rate in Hz")
     channels: int = Field(1, description="Number of audio channels")
     job_role: Optional[str] = Field(None, description="Job role for the interview")
@@ -521,15 +521,74 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         # Generate a user ID if not provided
         user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
         
-        # Decode base64 audio
-        audio_bytes = base64.b64decode(request_data.audio_base64)
+        # Enhanced logging for audio data debugging
+        logger.info(f"Processing audio transcription request from user: {user_id}")
+        logger.info(f"Audio data received, length: {len(request_data.audio_data)}")
         
-        # Transcribe the audio
-        transcription_result = await voice_handler.transcribe_audio_bytes(
-            audio_bytes,
-            sample_rate=request_data.sample_rate,
-            channels=request_data.channels
-        )
+        # Extract base64 data from data URI format
+        # Expected format: data:audio/wav;base64,BASE64_DATA
+        audio_data = request_data.audio_data
+        has_data_uri = "data:audio/" in audio_data
+        logger.info(f"Audio has data URI format: {has_data_uri}")
+        
+        if "base64," in audio_data:
+            parts = audio_data.split("base64,")
+            mime_type = parts[0].split("data:")[1].split(";")[0] if len(parts) > 1 and "data:" in parts[0] else "unknown"
+            audio_data = parts[1]
+            logger.info(f"Extracted base64 data, MIME type: {mime_type}, length: {len(audio_data)}")
+        
+        # Decode base64 audio
+        try:
+            audio_bytes = base64.b64decode(audio_data)
+            logger.info(f"Decoded audio bytes, size: {len(audio_bytes)} bytes")
+            
+            # Validate audio data is substantial enough
+            if len(audio_bytes) < 1000:
+                logger.warning(f"Audio data too small: {len(audio_bytes)} bytes, likely silent or corrupt")
+                raise HTTPException(status_code=422, detail="Audio data too small or empty")
+            
+            # Log audio format detection
+            if len(audio_bytes) >= 16:
+                header_hex = audio_bytes[:16].hex()
+                logger.info(f"Audio header (hex): {header_hex}")
+                
+                # Detect common audio formats
+                is_wav = header_hex.startswith("52494646")  # "RIFF"
+                is_webm = header_hex.startswith("1a45dfa3")
+                is_mp3 = header_hex.startswith("494433") or header_hex.startswith("fffb")
+                
+                logger.info(f"Audio format detection - WAV: {is_wav}, WebM: {is_webm}, MP3: {is_mp3}")
+            
+            # Save a sample for debugging
+            debug_sample_path = "/tmp/audio_debug_sample.raw"
+            with open(debug_sample_path, "wb") as f:
+                f.write(audio_bytes[:min(8000, len(audio_bytes))])
+            logger.info(f"Debug audio sample saved to {debug_sample_path}")
+            
+        except Exception as e:
+            logger.error(f"Error decoding base64 audio data: {e}")
+            raise HTTPException(status_code=422, detail=f"Invalid base64 audio data: {str(e)}")
+        
+        # Log transcription parameters
+        logger.info(f"Transcribing with sample_rate={request_data.sample_rate}, channels={request_data.channels}")
+        
+        # Transcribe the audio with error handling
+        try:
+            transcription_result = await voice_handler.transcribe_audio_bytes(
+                audio_bytes,
+                sample_rate=request_data.sample_rate,
+                channels=request_data.channels
+            )
+            
+            # Log detailed transcription results
+            logger.info(f"Transcription result type: {type(transcription_result)}")
+            if isinstance(transcription_result, dict):
+                logger.info(f"Transcription result dict: {transcription_result}")
+            else:
+                logger.info(f"Transcription result: '{transcription_result}'")
+        except Exception as e:
+            logger.error(f"Transcription service error: {e}")
+            raise HTTPException(status_code=500, detail=f"Transcription service failed: {str(e)}")
         
         # Handle different return types from transcribe_audio_bytes
         if isinstance(transcription_result, str):

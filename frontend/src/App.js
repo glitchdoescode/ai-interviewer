@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { Routes, Route } from 'react-router-dom';
 import { ChakraProvider, extendTheme } from '@chakra-ui/react';
 
 // Import pages
@@ -33,15 +33,13 @@ function App() {
   return (
     <ChakraProvider theme={theme}>
       <InterviewProvider>
-        <Router>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/interview" element={<Interview />} />
-            <Route path="/interview/:sessionId" element={<Interview />} />
-            <Route path="/history" element={<SessionHistory />} />
-            <Route path="/microphone-test" element={<MicrophoneTest />} />
-          </Routes>
-        </Router>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/interview" element={<Interview />} />
+          <Route path="/interview/:sessionId" element={<Interview />} />
+          <Route path="/history" element={<SessionHistory />} />
+          <Route path="/microphone-test" element={<MicrophoneTest />} />
+        </Routes>
       </InterviewProvider>
     </ChakraProvider>
   );

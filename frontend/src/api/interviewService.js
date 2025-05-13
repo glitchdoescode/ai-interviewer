@@ -146,16 +146,44 @@ export const getUserSessions = async (userId, includeCompleted = false) => {
 export const transcribeAndRespond = async (audioBase64, userId, sessionId = null, jobRoleData = null) => {
   try {
     if (!audioBase64) {
+      console.error('DEBUG: Audio data is missing or empty');
       throw new Error('Audio data is required');
     }
     
+    // Enhanced debugging for audio data
+    const isFullDataUri = audioBase64.startsWith('data:audio/');
+    const dataLength = audioBase64.length;
+    
+    console.log('DEBUG: Audio data stats:', {
+      totalLength: dataLength,
+      isDataUri: isFullDataUri,
+      prefix: audioBase64.substring(0, 30) + '...',
+      suffix: '...' + audioBase64.substring(audioBase64.length - 30)
+    });
+    
+    // Validate audio data format
+    if (!isFullDataUri && !audioBase64.match(/^[A-Za-z0-9+/=]+$/)) {
+      console.warn('DEBUG: Audio data does not appear to be valid base64 or data URI');
+    }
+    
+    // Ensure we use the full data URI for the backend
+    let formattedAudioData = audioBase64;
+    if (!isFullDataUri) {
+      // If we just got the base64 part, add the data URI prefix
+      console.log('DEBUG: Adding data URI prefix to raw base64 data');
+      formattedAudioData = `data:audio/wav;base64,${audioBase64}`;
+    }
+    
     const requestBody = {
-      audio_base64: audioBase64,
+      audio_data: formattedAudioData,
       user_id: userId || `anon-${Date.now()}`,
       session_id: sessionId,
       sample_rate: 16000,  // Default sample rate
       channels: 1          // Default channels
     };
+    
+    // Log request size for debugging
+    console.log(`DEBUG: Sending transcription request with ${Math.round(formattedAudioData.length/1024)}KB audio data`);
     
     // Add job role data if provided
     if (jobRoleData) {
@@ -165,19 +193,44 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
       requestBody.job_description = jobRoleData.description;
     }
     
-    console.log('Sending audio transcription request...');
+    console.log('DEBUG: Sending audio transcription request...');
     
-    const response = await api.post('/audio/transcribe', requestBody);
+    // Create a custom config for the axios request with longer timeout
+    const requestConfig = {
+      timeout: 60000, // 60 seconds for audio processing
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    };
     
-    // Validate response
-    if (!response.data || !response.data.transcription) {
-      throw new Error('Invalid response from transcription service');
+    try {
+      const response = await api.post('/audio/transcribe', requestBody, requestConfig);
+      
+      // Validate response
+      if (!response.data || !response.data.transcription) {
+        console.error('DEBUG: Invalid response structure:', response.data);
+        throw new Error('Invalid response from transcription service');
+      }
+      
+      console.log('DEBUG: Transcription successful:', response.data.transcription);
+      return response.data;
+    } catch (requestError) {
+      console.error('DEBUG: Transcription request failed:', requestError);
+      
+      // Capture response data if available
+      if (requestError.response) {
+        console.error('DEBUG: Server response:', {
+          status: requestError.response.status,
+          data: requestError.response.data
+        });
+      }
+      
+      throw requestError;
     }
-    
-    return response.data;
   } catch (error) {
     // Special handling for 501 Not Implemented - voice processing not available
     if (error.response && error.response.status === 501) {
+      console.error('DEBUG: Voice processing not available (501)');
       const enhancedError = new Error('Voice processing is not available on this server');
       enhancedError.isVoiceUnavailable = true;
       throw enhancedError;
@@ -185,6 +238,7 @@ export const transcribeAndRespond = async (audioBase64, userId, sessionId = null
     
     // Special handling for 422 Unprocessable Entity - no speech detected
     if (error.response && error.response.status === 422) {
+      console.error('DEBUG: No speech detected or transcription failed (422)');
       const enhancedError = new Error('No speech detected or audio could not be transcribed');
       enhancedError.isNoSpeech = true;
       throw enhancedError;
@@ -314,6 +368,120 @@ export const getJobRoles = async () => {
   }
 };
 
+/**
+ * Test audio transcription with a synthetic test tone
+ * This function creates a test audio file with a clear beep sound and attempts to transcribe it
+ * Useful for debugging if the transcription service is working properly
+ * @returns {Promise} Promise with test results
+ */
+export const testAudioTranscription = async () => {
+  console.log('DEBUG: Starting audio transcription test');
+  
+  try {
+    // Create a test audio context
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    const destination = audioContext.createMediaStreamDestination();
+    
+    // Set up a clear beep tone
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(440, audioContext.currentTime); // A4 note
+    gainNode.gain.setValueAtTime(0.8, audioContext.currentTime); // Loud enough to hear
+    
+    // Connect the nodes
+    oscillator.connect(gainNode);
+    gainNode.connect(destination);
+    
+    // Start the oscillator
+    oscillator.start();
+    
+    console.log('DEBUG: Created test tone generator');
+    
+    // Create a media recorder
+    const mediaRecorder = new MediaRecorder(destination.stream, {
+      mimeType: 'audio/webm',
+      audioBitsPerSecond: 128000
+    });
+    
+    const chunks = [];
+    mediaRecorder.ondataavailable = (e) => {
+      console.log('DEBUG: Test audio chunk received, size:', e.data.size);
+      chunks.push(e.data);
+    };
+    
+    // Record for 3 seconds
+    console.log('DEBUG: Recording test audio for 3 seconds');
+    
+    await new Promise((resolve) => {
+      mediaRecorder.onstop = resolve;
+      mediaRecorder.start();
+      
+      // Generate a sequence of tones for better recognition
+      setTimeout(() => oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime), 1000); // C5
+      setTimeout(() => oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime), 2000); // E5
+      
+      setTimeout(() => {
+        oscillator.stop();
+        mediaRecorder.stop();
+        console.log('DEBUG: Test audio recording completed');
+      }, 3000);
+    });
+    
+    // Create a blob from the chunks
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    console.log('DEBUG: Test audio blob created, size:', blob.size, 'bytes');
+    
+    // Convert the blob to base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    
+    console.log('DEBUG: Test audio converted to base64, length:', base64.length);
+    
+    // Create a temporary audio element for debugging
+    const audio = new Audio(URL.createObjectURL(blob));
+    console.log('DEBUG: Test audio available at temporary URL:', audio.src);
+    
+    // Try to transcribe the test audio
+    console.log('DEBUG: Sending test audio for transcription');
+    const userId = 'test-user-' + Date.now();
+    
+    try {
+      const result = await transcribeAndRespond(base64, userId);
+      console.log('DEBUG: Test transcription successful!', result);
+      return {
+        success: true,
+        transcription: result.transcription,
+        audioSize: blob.size,
+        base64Length: base64.length
+      };
+    } catch (transcribeError) {
+      console.error('DEBUG: Test transcription failed', transcribeError);
+      return {
+        success: false,
+        error: transcribeError.message,
+        errorData: transcribeError.serverData,
+        audioSize: blob.size,
+        base64Length: base64.length
+      };
+    } finally {
+      // Clean up
+      audioContext.close();
+    }
+  } catch (error) {
+    console.error('DEBUG: Error creating test audio:', error);
+    return {
+      success: false,
+      error: error.message,
+      stage: 'audio_creation'
+    };
+  }
+};
+
 // Set up a response interceptor for global error handling
 api.interceptors.response.use(
   response => response,
@@ -344,7 +512,8 @@ const interviewService = {
   submitChallengeCode,
   getChallengeHint,
   continueAfterCodingChallenge,
-  getJobRoles
+  getJobRoles,
+  testAudioTranscription
 };
 
 export default interviewService; 
