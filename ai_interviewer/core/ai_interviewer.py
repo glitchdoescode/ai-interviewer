@@ -35,7 +35,7 @@ from ai_interviewer.tools.pair_programming import (
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
 from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config
-from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content, format_conversation_for_llm
+from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content #, format_conversation_for_llm
 
 # Configure logging
 logging.basicConfig(
@@ -945,81 +945,6 @@ class AIInterviewer:
         except Exception as e:
             logger.error(f"Error in run_interview: {e}")
             return "I apologize, but I encountered an issue. Please try again.", session_id
-    
-    def resume_interview(self, user_id: str, session_id: str, query: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
-        """
-        Resume an existing interview session.
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            query: Optional query string
-            
-        Returns:
-            Tuple of (summary, session_data)
-        """
-        # Validate session exists
-        try:
-            if self.session_manager:
-                session_data = self.session_manager.get_session(session_id)
-                if not session_data:
-                    return f"Session {session_id} not found.", {}
-            else:
-                # Use in-memory storage
-                session_data = self.active_sessions.get(session_id)
-                if not session_data:
-                    return f"Session {session_id} not found.", {}
-        except Exception as e:
-            logger.error(f"Error retrieving session: {e}")
-            return "Error retrieving session information.", {}
-        
-        # Get session metadata
-        try:
-            if self.session_manager:
-                metadata = session_data.get("metadata", {})
-                transcript = metadata.get("transcript", [])
-                current_stage = metadata.get(STAGE_KEY, InterviewStage.INTRODUCTION.value)
-            else:
-                transcript = session_data.get("transcript", [])
-                current_stage = session_data.get(STAGE_KEY, InterviewStage.INTRODUCTION.value)
-        except Exception as e:
-            logger.error(f"Error getting session metadata: {e}")
-            transcript = []
-            current_stage = InterviewStage.INTRODUCTION.value
-        
-        # Build summary message
-        candidate_name = session_data.get("metadata", {}).get(CANDIDATE_NAME_KEY, "") if self.session_manager else session_data.get(CANDIDATE_NAME_KEY, "")
-        created_at = session_data.get("created_at", "")
-        
-        if isinstance(created_at, str):
-            try:
-                created_at = datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M:%S")
-            except (ValueError, TypeError):
-                pass
-                
-        # Get last few exchanges if available
-        last_exchanges = ""
-        if transcript:
-            last_n = min(3, len(transcript))
-            last_exchanges = "\n\n"
-            for i in range(-last_n, 0):
-                entry = transcript[i]
-                last_exchanges += f"You: {entry.get('user', '')}\n"
-                last_exchanges += f"Interviewer: {entry.get('ai', '')}\n\n"
-        
-        # Add stage information
-        stage_info = f"Interview stage: {current_stage.capitalize()}"
-        
-        summary = f"Resuming interview session {session_id}"
-        if candidate_name:
-            summary += f" with {candidate_name}"
-        if created_at:
-            summary += f", started at {created_at}"
-        summary += f". {stage_info}. This session has {len(transcript)} exchanges so far."
-        summary += last_exchanges
-        summary += "\nYou can continue the interview by typing your next response."
-        
-        return summary, session_data
     
     def _get_or_create_session(self, user_id: str) -> str:
         """
