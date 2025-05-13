@@ -265,12 +265,19 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.4.2: Enhance `SubmitCodeTool`**
     *   [ ] Replace placeholder logic with a call to `ExecuteCodeTool`.
 *   **Task P2.4.3: AI Pair Programming Assistant (Basic)**
-    *   [ ] Design `AIPairProgrammingHintTool`:
+    *   [x] Design `AIPairProgrammingHintTool`:
         *   `@tool async def get_coding_hint(problem_description: str, current_code: str, error_message: Optional[str]) -> str:`
         *   Uses an LLM to provide a contextual hint without giving away the solution.
-    *   [ ] Integrate this tool into the coding challenge flow (e.g., candidate can request a hint).
+    *   [x] Integrate this tool into the coding challenge flow (e.g., candidate can request a hint).
 *   **Task P2.4.4: Capture Code Evolution**
     *   [ ] Modify `InterviewState` or logging to store snapshots of candidate's code at submission or hint requests.
+*   **Task P2.4.5: Job Role Specific Coding Challenge Initiation (Backend)**
+    *   [ ] Modify `AIInterviewer._determine_interview_stage` to accept `job_role` (or full `InterviewState`).
+    *   [ ] Implement logic in `_determine_interview_stage` to check if `job_role` requires coding before initiating a coding challenge.
+    *   [ ] (Recommended) Add `requires_coding: bool` field to `JobRole` Pydantic model in `server.py` and update default job roles.
+*   **Task P2.4.6: Streamlined Coding Submission and AI Feedback Flow (Backend/Frontend Interface)**
+    *   [ ] Document and ensure frontend sends detailed coding evaluation results (summary from `/api/coding/submit`) within the `message` field of `ChallengeCompleteRequest` to `/api/interview/{session_id}/challenge-complete`.
+    *   [ ] Review and clarify the trigger for `CODING_CHALLENGE_WAITING` stage in `AIInterviewer` to primarily align with UI-driven submission confirmation rather than relying on user-typed messages.
 
 ### Iteration 6: Automated Problem Generation ("Magic Import")
 *   **Task P2.5.1: Design `ProblemGenerationFromJDTool`**
@@ -360,4 +367,3 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **[ ] Regular Refactoring:** Keep the codebase clean and maintainable.
 
 This checklist provides a roadmap. Tasks and priorities may be adjusted based on sprint reviews, feedback, and evolving requirements.
- 

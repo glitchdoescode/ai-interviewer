@@ -91,6 +91,9 @@ We have completed the initial implementation of the AI Interviewer platform's co
    - Allow specifying difficulty level and skill areas in questions
    - Improve response analysis to extract key concepts and assess depth of understanding
    - Refine interview_agent prompts for more natural transitions and empathetic responses
+   - Refine coding challenge initiation in `AIInterviewer._determine_interview_stage` to be job-role specific (requires passing job_role/state and adding logic to check if coding is appropriate for the role).
+   - Ensure a clear and robust flow for detailed coding challenge results to be passed from the frontend (after `/api/coding/submit`) into the `message` field of `ChallengeCompleteRequest` (for `/api/interview/{session_id}/challenge-complete`), so the AI receives them for specific feedback generation.
+   - Clarify and potentially refine state transitions for `CODING_CHALLENGE_WAITING` in `AIInterviewer` to better align with UI-driven submission and the AI's processing of evaluation results.
 
 2. Enhanced Coding Challenge Features (Phase 2, Iteration 4):
    - Implement a secure code execution sandbox using Docker containers
@@ -110,6 +113,8 @@ We have completed the initial implementation of the AI Interviewer platform's co
 3. Add unit tests for the code execution and feedback systems
 4. Consider adding support for more programming languages
 5. Optimize performance of code execution with timeouts and resource limits
+6. Review and implement explicit job role checks (potentially by adding `requires_coding: bool` to `JobRole` model in `server.py` and using it in `AIInterviewer._determine_interview_stage`) before initiating coding challenges.
+7. Solidify and document the data transfer mechanism: frontend must send detailed coding results (summary from `/api/coding/submit`) in the `message` field of `ChallengeCompleteRequest` to `AIInterviewer.continue_after_challenge` for the AI to provide specific, informed feedback.
 
 ### Implemented Features & Enhancements
 
