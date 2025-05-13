@@ -76,14 +76,37 @@ Current stage: {current_stage}
 Required skills: {required_skills}
 Job description: {job_description}
 
-Your role is to:
+CONVERSATION STYLE GUIDELINES:
+1. Be warm, personable, and empathetic while maintaining professionalism
+2. Use natural conversational transitions rather than formulaic responses
+3. Address the candidate by name occasionally but naturally
+4. Acknowledge and validate the candidate's feelings or concerns when expressed
+5. Vary your response style and length to create a more dynamic conversation
+6. Use appropriate conversational connectors (e.g., "That's interesting," "I see," "Thanks for sharing that")
+
+INTERVIEW APPROACH:
 1. Assess the candidate's technical skills and experience level
 2. Ask relevant technical questions based on the job requirements
 3. Provide a coding challenge if appropriate for the position
-4. Give the candidate feedback on their answers
-5. Make the interview conversational, professional, and engaging
+4. Evaluate both technical knowledge and problem-solving approach
+5. Give constructive feedback on responses when appropriate
 
-Remember the candidate's name and use it throughout the conversation.
+HANDLING SPECIAL SITUATIONS:
+- When the candidate asks for clarification: Provide helpful context without giving away answers
+- When the candidate struggles: Show patience and offer gentle prompts or hints
+- When the candidate digresses: Acknowledge their point and guide them back to relevant topics
+- When the candidate shares personal experiences: Show interest and connect it back to the role
+- When the candidate asks about the company/role: Provide encouraging, realistic information
+
+ADAPTING TO INTERVIEW STAGES:
+- Introduction: Focus on building rapport and understanding the candidate's background
+- Technical Questions: Assess depth of knowledge with progressive difficulty
+- Coding Challenge: Evaluate problem-solving process, not just the solution
+- Behavioral Questions: Look for evidence of soft skills and experience
+- Feedback: Be constructive, balanced, and specific
+- Conclusion: End on a positive note with clear next steps
+
+If unsure how to respond to something unusual, stay professional and steer the conversation back to relevant technical topics.
 """
 
 # Custom state that extends MessagesState to add interview-specific context
@@ -575,11 +598,30 @@ class AIInterviewer:
         Returns:
             New interview stage or current stage if no change
         """
-        # Count the number of human messages to track progress
-        human_message_count = len([m for m in messages if isinstance(m, HumanMessage)])
+        # Get human messages for better analysis
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+        human_message_count = len(human_messages)
         
-        # Check for coding challenge-related keywords in the latest AI message
+        # Get the latest human message (if any)
+        latest_human_message = human_messages[-1].content.lower() if human_messages else ""
+        
+        # Extract AI message content
         ai_content = ai_message.content.lower() if hasattr(ai_message, 'content') else ""
+        
+        # Check for digression or clarification patterns
+        clarification_patterns = [
+            "could you explain", "what do you mean", "can you clarify", 
+            "i'm not sure", "don't understand", "please explain", 
+            "what is", "how does", "could you elaborate"
+        ]
+        
+        # Is this a clarification or digression?
+        is_clarification = any(pattern in latest_human_message for pattern in clarification_patterns)
+        
+        # If this is a clarification, usually we don't want to change stages
+        if is_clarification and current_stage != InterviewStage.INTRODUCTION.value:
+            logger.info(f"Detected clarification request, maintaining {current_stage} stage")
+            return current_stage
         
         # Check for coding challenge triggers in AI message
         coding_keywords = [
@@ -589,29 +631,48 @@ class AIInterviewer:
         ]
         has_coding_trigger = any(keyword in ai_content for keyword in coding_keywords)
         
-        # Check if we're transitioning between stages
+        # Check for readiness to conclude the interview
+        conclusion_keywords = [
+            "conclude the interview", "conclude our interview", 
+            "finishing up", "wrapping up", "end of our interview",
+            "thank you for your time today"
+        ]
+        has_conclusion_trigger = any(keyword in ai_content for keyword in conclusion_keywords)
+        
+        if has_conclusion_trigger and current_stage not in [InterviewStage.INTRODUCTION.value, InterviewStage.CONCLUSION.value]:
+            logger.info(f"Transitioning from {current_stage} to CONCLUSION stage")
+            return InterviewStage.CONCLUSION.value
+        
+        # Handle stage-specific transitions
         if current_stage == InterviewStage.INTRODUCTION.value:
-            # After a few exchanges in the introduction, move to technical questions
-            if human_message_count >= 2:
+            # Start technical questions after introduction is complete
+            # More dynamic transition based on interaction quality, not just count
+            introduction_complete = self._is_introduction_complete(human_messages)
+            if introduction_complete:
                 logger.info("Transitioning from INTRODUCTION to TECHNICAL_QUESTIONS stage")
                 return InterviewStage.TECHNICAL_QUESTIONS.value
         
         elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-            # Check if we should transition to coding challenge based on content
+            # Check if we should transition to coding challenge based on AI suggestion
             if has_coding_trigger:
-                logger.info("Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage")
+                logger.info("Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage due to coding challenge prompt")
                 return InterviewStage.CODING_CHALLENGE.value
             
-            # If we've had many exchanges without going to coding, move to behavioral
-            if human_message_count >= 6:
-                logger.info("Transitioning from TECHNICAL_QUESTIONS to BEHAVIORAL_QUESTIONS stage")
-                return InterviewStage.BEHAVIORAL_QUESTIONS.value
+            # If we've had enough substantive technical exchanges, move to behavioral questions
+            # Use a combination of count and content analysis
+            if human_message_count >= 5 and not has_coding_trigger:
+                # Check if we've asked enough substantive technical questions
+                substantive_qa = self._count_substantive_exchanges(messages)
+                if substantive_qa >= 3:
+                    logger.info("Transitioning from TECHNICAL_QUESTIONS to BEHAVIORAL_QUESTIONS stage after substantive technical discussion")
+                    return InterviewStage.BEHAVIORAL_QUESTIONS.value
         
         elif current_stage == InterviewStage.CODING_CHALLENGE.value:
             # Check if the candidate has submitted a solution and we should transition
             submission_keywords = [
                 "submitted my solution", "finished the challenge", "completed the exercise",
-                "here's my solution", "my code is ready", "implemented the solution"
+                "here's my solution", "my code is ready", "implemented the solution",
+                "done with the challenge", "finished coding", "completed the task"
             ]
             has_submission = any(keyword in ' '.join([m.content.lower() for m in messages[-3:] if hasattr(m, 'content')]) for keyword in submission_keywords)
             
@@ -624,7 +685,7 @@ class AIInterviewer:
             # But we can check for evaluation completed keywords and move to next stage
             evaluation_keywords = [
                 "your solution was", "feedback on your code", "your implementation", 
-                "code review", "assessment of your solution"
+                "code review", "assessment of your solution", "evaluation of your code"
             ]
             has_evaluation = any(keyword in ai_content for keyword in evaluation_keywords)
             
@@ -633,23 +694,116 @@ class AIInterviewer:
                 return InterviewStage.FEEDBACK.value
         
         elif current_stage == InterviewStage.FEEDBACK.value:
-            # After receiving feedback, move to behavioral questions if not already done
-            if human_message_count >= 1:  # At least one response after feedback
+            # After providing feedback, transition to behavioral questions if not already done
+            behavioral_transition = any(keyword in ai_content for keyword in [
+                "let's talk about your experience", "tell me about a time", 
+                "describe a situation", "how do you handle", "what would you do if"
+            ])
+            
+            if behavioral_transition or human_message_count > 2:
                 logger.info("Transitioning from FEEDBACK to BEHAVIORAL_QUESTIONS stage")
                 return InterviewStage.BEHAVIORAL_QUESTIONS.value
         
         elif current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
-            # If we've had enough exchanges, wrap up
-            if human_message_count >= 10:
-                logger.info("Transitioning from BEHAVIORAL_QUESTIONS to CONCLUSION stage")
-                return InterviewStage.CONCLUSION.value
+            # After enough behavioral questions, move to conclusion
+            # Check if we have enough substantive behavioral exchanges or AI is ready to conclude
+            if has_conclusion_trigger or human_message_count >= 4:
+                conclusion_ready = self._is_ready_for_conclusion(messages)
+                if conclusion_ready:
+                    logger.info("Transitioning from BEHAVIORAL_QUESTIONS to CONCLUSION stage")
+                    return InterviewStage.CONCLUSION.value
         
         # By default, stay in the current stage
         return current_stage
     
+    def _is_introduction_complete(self, human_messages: List[BaseMessage]) -> bool:
+        """
+        Determine if the introduction phase is complete based on message content.
+        
+        Args:
+            human_messages: List of human messages in the conversation
+            
+        Returns:
+            Boolean indicating if introduction is complete
+        """
+        # If we have less than 2 exchanges, introduction is not complete
+        if len(human_messages) < 2:
+            return False
+        
+        # Check if candidate has shared their name, background, or experience
+        introduction_markers = [
+            "experience with", "background in", "worked with", "my name is",
+            "years of experience", "worked as", "skills in", "specialized in",
+            "i am a", "i'm a", "currently working"
+        ]
+        
+        # Combine all human messages and check for introduction markers
+        all_content = " ".join([m.content.lower() for m in human_messages if hasattr(m, 'content')])
+        has_introduction_info = any(marker in all_content for marker in introduction_markers)
+        
+        return has_introduction_info
+    
+    def _count_substantive_exchanges(self, messages: List[BaseMessage]) -> int:
+        """
+        Count the number of substantive question-answer exchanges in the conversation.
+        
+        Args:
+            messages: List of all messages in the conversation
+            
+        Returns:
+            Count of substantive Q&A exchanges
+        """
+        count = 0
+        
+        # Look for pairs of messages (AI question followed by human response)
+        for i in range(len(messages) - 1):
+            if isinstance(messages[i], AIMessage) and isinstance(messages[i+1], HumanMessage):
+                ai_content = messages[i].content.lower() if hasattr(messages[i], 'content') else ""
+                human_response = messages[i+1].content.lower() if hasattr(messages[i+1], 'content') else ""
+                
+                # Check if this is a substantive technical exchange
+                is_technical_question = any(kw in ai_content for kw in ["how", "what", "why", "explain", "describe"])
+                is_substantive_answer = len(human_response.split()) > 15  # Reasonable length for a substantive answer
+                
+                if is_technical_question and is_substantive_answer:
+                    count += 1
+        
+        return count
+    
+    def _is_ready_for_conclusion(self, messages: List[BaseMessage]) -> bool:
+        """
+        Determine if the interview is ready to conclude based on conversation flow.
+        
+        Args:
+            messages: List of all messages in the conversation
+            
+        Returns:
+            Boolean indicating if ready for conclusion
+        """
+        # Check if we've had sufficient conversation overall
+        if len(messages) < 10:  # Need a reasonable conversation length
+            return False
+        
+        # Check for signals that all question areas have been covered
+        ai_messages = [m.content.lower() for m in messages if isinstance(m, AIMessage) and hasattr(m, 'content')]
+        
+        # Look for phrases that suggest interview completeness
+        conclusion_signals = [
+            "covered all", "thank you for your time", "appreciate your answers",
+            "that concludes", "wrapping up", "final question", "is there anything else",
+            "do you have any questions"
+        ]
+        
+        # Check the last 3 AI messages for conclusion signals
+        recent_ai_content = " ".join(ai_messages[-3:]) if len(ai_messages) >= 3 else " ".join(ai_messages)
+        has_conclusion_signal = any(signal in recent_ai_content for signal in conclusion_signals)
+        
+        return has_conclusion_signal
+    
     async def run_interview(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
                            job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
-                           required_skills: Optional[List[str]] = None, job_description: Optional[str] = None) -> Tuple[str, str]:
+                           required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
+                           handle_digression: bool = True) -> Tuple[str, str]:
         """
         Run the interview with a user message, creating or continuing a session.
         
@@ -661,6 +815,7 @@ class AIInterviewer:
             seniority_level: Optional seniority level
             required_skills: Optional list of required skills
             job_description: Optional job description text
+            handle_digression: Whether to detect and handle digressions
             
         Returns:
             Tuple of (AI response, session_id)
@@ -775,6 +930,28 @@ class AIInterviewer:
                 STAGE_KEY: InterviewStage.INTRODUCTION.value,
             }
         
+        # Detect potential digression if enabled
+        if handle_digression and len(messages) > 2:
+            is_digression = self._detect_digression(user_message, messages, interview_stage)
+            
+            # If this is a digression, add a note in the message history for context
+            if is_digression:
+                logger.info(f"Detected potential digression: '{user_message}'")
+                
+                # Check if we've already marked this as a digression to avoid multiple markers
+                if not any("CONTEXT: Candidate is digressing" in m.content for m in messages[-3:] if isinstance(m, AIMessage) and hasattr(m, 'content')):
+                    # Add a system message noting the digression for better context
+                    digression_note = AIMessage(content=f"CONTEXT: Candidate is digressing from the interview topic. I'll acknowledge their point and gently guide the conversation back to relevant technical topics.")
+                    messages.append(digression_note)
+                    logger.info("Added digression context note to message history")
+                
+                # No need to update the interview stage for digressions
+                metadata["handling_digression"] = True
+            else:
+                # If previously handling a digression, clear the flag
+                if metadata.get("handling_digression"):
+                    metadata.pop("handling_digression")
+                
         # Add the user message
         human_msg = HumanMessage(content=user_message)
         messages.append(human_msg)
@@ -953,6 +1130,81 @@ class AIInterviewer:
         except Exception as e:
             logger.error(f"Error in run_interview: {e}")
             return "I apologize, but I encountered an issue. Please try again.", session_id
+    
+    def _detect_digression(self, user_message: str, messages: List[BaseMessage], current_stage: str) -> bool:
+        """
+        Detect if the user message is digressing from the interview context.
+        
+        Args:
+            user_message: The user's message
+            messages: Previous messages in the conversation
+            current_stage: Current interview stage
+            
+        Returns:
+            Boolean indicating if the message appears to be a digression
+        """
+        # Ignore digressions during introduction - people are just getting to know each other
+        if current_stage == InterviewStage.INTRODUCTION.value:
+            return False
+            
+        # If we have few messages, don't worry about digressions yet
+        if len(messages) < 4:
+            return False
+            
+        # Common interview-related terms that indicate the message is on-topic
+        interview_terms = [
+            "experience", "project", "skill", "work", "challenge", "problem", "solution",
+            "develop", "implement", "design", "code", "algorithm", "data", "system",
+            "architecture", "test", "debug", "optimize", "improve", "performance",
+            "team", "collaborate", "communicate", "learn", "technology", "framework",
+            "language", "database", "frontend", "backend", "api", "cloud", "devops"
+        ]
+        
+        # Personal context digressions
+        personal_digression = [
+            "family", "kids", "child", "vacation", "hobby", "weather", "traffic",
+            "lunch", "dinner", "breakfast", "weekend", "movie", "show", "music",
+            "sick", "illness", "sorry for", "apologies for", "excuse"
+        ]
+        
+        # Meta-interview digressions 
+        meta_interview = [
+            "interview process", "next steps", "salary", "compensation", "benefits",
+            "work hours", "remote work", "location", "when will I hear back",
+            "how many rounds", "dress code", "company culture", "team size"
+        ]
+        
+        # Lower-case the message for comparison
+        message_lower = user_message.lower()
+        
+        # Check for job-related content - this is expected and not a digression
+        has_interview_terms = any(term in message_lower for term in interview_terms)
+        
+        # Check for personal digressions
+        has_personal_digression = any(term in message_lower for term in personal_digression)
+        
+        # Check for meta-interview questions
+        has_meta_interview = any(term in message_lower for term in meta_interview)
+        
+        # Analyze message length - very short responses during technical questions 
+        # might indicate lack of engagement
+        is_very_short = len(message_lower.split()) < 5 and current_stage == InterviewStage.TECHNICAL_QUESTIONS.value
+        
+        # Get the last AI message to check context
+        last_ai_message = next((m.content.lower() for m in reversed(messages) 
+                               if isinstance(m, AIMessage) and hasattr(m, 'content')), "")
+        
+        # Check if the AI asked a question that the candidate isn't answering
+        ai_asked_question = any(q in last_ai_message for q in ["?", "explain", "describe", "tell me", "how would you"])
+        
+        # Only consider it a digression if it lacks interview terms AND has either
+        # personal digression markers or meta-interview questions
+        is_off_topic = (not has_interview_terms and (has_personal_digression or has_meta_interview))
+        
+        # Also consider it a digression if it's very short and doesn't address a question
+        is_non_responsive = is_very_short and ai_asked_question and not has_interview_terms
+        
+        return is_off_topic or is_non_responsive
     
     def _get_or_create_session(self, user_id: str) -> str:
         """
