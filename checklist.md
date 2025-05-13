@@ -257,13 +257,13 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Iteration 5: Interactive Coding Challenge - Execution & AI Assistance
 *   **Task P2.4.1: Secure Code Execution Sandbox**
-    *   [ ] Research and select a code execution sandbox solution (e.g., Docker containers with resource limits, a service like `judge0`, or `RestrictedPython`).
-    *   [ ] Implement `ExecuteCodeTool`:
+    *   [x] Research and select a code execution sandbox solution (e.g., Docker containers with resource limits, a service like `judge0`, or `RestrictedPython`).
+    *   [x] Implement `ExecuteCodeTool`:
         *   `@tool async def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:`
         *   Takes code and test cases, runs it in the sandbox.
         *   Returns results: `{"pass_count": N, "total_tests": M, "outputs": [...], "errors": "..."}`.
 *   **Task P2.4.2: Enhance `SubmitCodeTool`**
-    *   [ ] Replace placeholder logic with a call to `ExecuteCodeTool`.
+    *   [x] Replace placeholder logic with a call to `ExecuteCodeTool`.
 *   **Task P2.4.3: AI Pair Programming Assistant (Basic)**
     *   [x] Design `AIPairProgrammingHintTool`:
         *   `@tool async def get_coding_hint(problem_description: str, current_code: str, error_message: Optional[str]) -> str:`
