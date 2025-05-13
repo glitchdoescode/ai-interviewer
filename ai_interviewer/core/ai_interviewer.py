@@ -1394,29 +1394,49 @@ class AIInterviewer:
         Get all sessions for a user.
         
         Args:
-            user_id: User identifier
+            user_id: User ID to get sessions for
             include_completed: Whether to include completed sessions
             
         Returns:
-            List of session details
+            List of sessions with metadata
         """
-        try:
-            if self.session_manager:
-                # Get sessions from MongoDB
-                return self.session_manager.get_user_sessions(user_id, include_completed)
-            else:
-                # Get sessions from in-memory storage
-                sessions = []
-                
-                for session_id, session_data in self.active_sessions.items():
-                    if session_data.get("user_id") == user_id:
-                        sessions.append(session_data)
-                
-                return sessions
-        except Exception as e:
-            logger.error(f"Error getting user sessions: {e}")
+        return self.session_manager.get_user_sessions(user_id, include_completed)
+        
+    def get_code_snapshots(self, session_id: str, challenge_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get code evolution snapshots for a session.
+        
+        This method retrieves the code snapshots stored for a session, which track
+        the evolution of code during coding challenges. Optionally filter by challenge ID.
+        
+        Args:
+            session_id: Session ID to get snapshots for
+            challenge_id: Optional challenge ID to filter by
+            
+        Returns:
+            List of code snapshots with metadata, sorted by timestamp
+        """
+        if not self.session_manager:
+            logger.error("Session manager not available")
             return []
-    
+            
+        session = self.session_manager.get_session(session_id)
+        if not session:
+            logger.error(f"Session {session_id} not found")
+            return []
+            
+        metadata = session.get("metadata", {})
+        snapshots = metadata.get("code_snapshots", [])
+        
+        # Filter by challenge ID if provided
+        if challenge_id:
+            snapshots = [s for s in snapshots if s.get("challenge_id") == challenge_id]
+            
+        # Sort by timestamp
+        snapshots.sort(key=lambda s: s.get("timestamp", ""))
+        
+        return snapshots
+
     def cleanup(self):
         """Clean up resources."""
         if hasattr(self, 'checkpointer'):

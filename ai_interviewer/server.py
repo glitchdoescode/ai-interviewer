@@ -982,6 +982,7 @@ class CodingSubmissionRequest(BaseModel):
     code: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    timestamp: Optional[str] = Field(None, description="Timestamp of code submission (auto-generated if None)")
 
 class CodingHintRequest(BaseModel):
     challenge_id: str
@@ -989,6 +990,7 @@ class CodingHintRequest(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     error_message: Optional[str] = None
+    timestamp: Optional[str] = Field(None, description="Timestamp of hint request (auto-generated if None)")
 
 class CodingSubmissionResponse(BaseModel):
     status: str
@@ -1063,6 +1065,9 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
         CodingSubmissionResponse with evaluation results
     """
     try:
+        # Generate timestamp if not provided
+        timestamp = submission.timestamp or datetime.now().isoformat()
+        
         # Call the submit_code_for_challenge tool
         from ai_interviewer.tools.coding_tools import submit_code_for_challenge
         
@@ -1076,15 +1081,37 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
             session = interviewer.session_manager.get_session(submission.session_id)
             if session:
                 metadata = session.get("metadata", {})
+                
+                # Update completed challenges list
                 challenges = metadata.get("completed_challenges", [])
                 challenges.append({
                     "challenge_id": submission.challenge_id,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": timestamp,
                     "passed": result.get("evaluation", {}).get("passed", False)
                 })
                 metadata["completed_challenges"] = challenges
+                
+                # Store code snapshot for tracking code evolution
+                code_snapshots = metadata.get("code_snapshots", [])
+                code_snapshots.append({
+                    "challenge_id": submission.challenge_id,
+                    "code": submission.code,
+                    "timestamp": timestamp,
+                    "event_type": "submission",
+                    "execution_results": {
+                        "passed": result.get("evaluation", {}).get("passed", False),
+                        "pass_rate": result.get("evaluation", {}).get("pass_rate", 0),
+                        "execution_time": result.get("execution_results", {}).get("execution_time", 0)
+                    }
+                })
+                metadata["code_snapshots"] = code_snapshots
+                
+                # Update session
                 session["metadata"] = metadata
                 interviewer.session_manager.update_session(submission.session_id, session)
+                
+                # Log the code snapshot event
+                logger.info(f"Stored code snapshot for session {submission.session_id}, challenge {submission.challenge_id}")
         
         return result
     except Exception as e:
@@ -1116,6 +1143,9 @@ async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
         CodingHintResponse with hints
     """
     try:
+        # Generate timestamp if not provided
+        timestamp = hint_request.timestamp or datetime.now().isoformat()
+        
         # Call the get_coding_hint tool
         from ai_interviewer.tools.coding_tools import get_coding_hint
         
@@ -1124,6 +1154,31 @@ async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
             current_code=hint_request.code,
             error_message=hint_request.error_message
         )
+        
+        # If session ID is provided, store code snapshot for tracking hint requests
+        if hint_request.session_id and hint_request.user_id and interviewer.session_manager:
+            session = interviewer.session_manager.get_session(hint_request.session_id)
+            if session:
+                metadata = session.get("metadata", {})
+                
+                # Store code snapshot for hint request
+                code_snapshots = metadata.get("code_snapshots", [])
+                code_snapshots.append({
+                    "challenge_id": hint_request.challenge_id,
+                    "code": hint_request.code,
+                    "timestamp": timestamp,
+                    "event_type": "hint_request",
+                    "error_message": hint_request.error_message,
+                    "hints_provided": result.get("hints", [])
+                })
+                metadata["code_snapshots"] = code_snapshots
+                
+                # Update session
+                session["metadata"] = metadata
+                interviewer.session_manager.update_session(hint_request.session_id, session)
+                
+                # Log the hint request event
+                logger.info(f"Stored hint request snapshot for session {hint_request.session_id}, challenge {hint_request.challenge_id}")
         
         return result
     except Exception as e:
@@ -1356,6 +1411,73 @@ async def analyze_response(request: Request, req_data: ResponseAnalysisRequest):
         return result
     except Exception as e:
         logger.error(f"Error analyzing response: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add a Pydantic model for code snapshot responses
+class CodeSnapshotResponse(BaseModel):
+    challenge_id: str
+    code: str
+    timestamp: str
+    event_type: str
+    execution_results: Optional[Dict] = None
+    error_message: Optional[str] = None
+    hints_provided: Optional[List[str]] = None
+
+@app.get(
+    "/api/coding/snapshots/{session_id}",
+    response_model=List[CodeSnapshotResponse],
+    responses={
+        200: {"description": "Successfully retrieved code snapshots"},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_code_snapshots(
+    request: Request, 
+    session_id: str, 
+    challenge_id: Optional[str] = None,
+    user_id: Optional[str] = None
+):
+    """
+    Get code evolution snapshots for a session.
+    
+    This endpoint retrieves the history of code submissions and hint requests
+    for a session, showing how the candidate's code evolved over time.
+    
+    Args:
+        session_id: Session ID to get snapshots for
+        challenge_id: Optional challenge ID to filter by
+        user_id: Optional user ID for verification
+        
+    Returns:
+        List of code snapshots with metadata, sorted by timestamp
+    """
+    try:
+        # Verify session exists
+        if not interviewer.session_manager:
+            raise HTTPException(status_code=500, detail="Session manager not available")
+            
+        session = interviewer.session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        # If user_id is provided, verify it matches the session
+        if user_id and session.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="User ID does not match session")
+            
+        # Get code snapshots from AIInterviewer
+        snapshots = interviewer.get_code_snapshots(session_id, challenge_id)
+        
+        # Return snapshots
+        return snapshots
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving code snapshots: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
