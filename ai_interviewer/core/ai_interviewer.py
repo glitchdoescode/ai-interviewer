@@ -567,22 +567,75 @@ class AIInterviewer:
         Returns:
             New interview stage or current stage if no change
         """
-        # Check if we're in the introduction and have enough context to move on
+        # Count the number of human messages to track progress
+        human_message_count = len([m for m in messages if isinstance(m, HumanMessage)])
+        
+        # Check for coding challenge-related keywords in the latest AI message
+        ai_content = ai_message.content.lower() if hasattr(ai_message, 'content') else ""
+        
+        # Check for coding challenge triggers in AI message
+        coding_keywords = [
+            "coding challenge", "programming challenge", "write code", 
+            "implement a function", "solve this problem", "coding exercise",
+            "write a program", "implement an algorithm"
+        ]
+        has_coding_trigger = any(keyword in ai_content for keyword in coding_keywords)
+        
+        # Check if we're transitioning between stages
         if current_stage == InterviewStage.INTRODUCTION.value:
-            # After a few exchanges in the introduction, we can move to technical questions
-            if len([m for m in messages if isinstance(m, HumanMessage)]) >= 2:
+            # After a few exchanges in the introduction, move to technical questions
+            if human_message_count >= 2:
+                logger.info("Transitioning from INTRODUCTION to TECHNICAL_QUESTIONS stage")
                 return InterviewStage.TECHNICAL_QUESTIONS.value
-                
-        # If we're in technical questions and have had many exchanges, move to behavioral
-        if current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-            if len([m for m in messages if isinstance(m, HumanMessage)]) >= 6:
+        
+        elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+            # Check if we should transition to coding challenge based on content
+            if has_coding_trigger:
+                logger.info("Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage")
+                return InterviewStage.CODING_CHALLENGE.value
+            
+            # If we've had many exchanges without going to coding, move to behavioral
+            if human_message_count >= 6:
+                logger.info("Transitioning from TECHNICAL_QUESTIONS to BEHAVIORAL_QUESTIONS stage")
                 return InterviewStage.BEHAVIORAL_QUESTIONS.value
-                
-        # If we're in behavioral questions and have had enough exchanges, wrap up
-        if current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
-            if len([m for m in messages if isinstance(m, HumanMessage)]) >= 10:
+        
+        elif current_stage == InterviewStage.CODING_CHALLENGE.value:
+            # Check if the candidate has submitted a solution and we should transition
+            submission_keywords = [
+                "submitted my solution", "finished the challenge", "completed the exercise",
+                "here's my solution", "my code is ready", "implemented the solution"
+            ]
+            has_submission = any(keyword in ' '.join([m.content.lower() for m in messages[-3:] if hasattr(m, 'content')]) for keyword in submission_keywords)
+            
+            if has_submission:
+                logger.info("Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING stage")
+                return InterviewStage.CODING_CHALLENGE_WAITING.value
+        
+        elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
+            # This is usually handled by the continue_after_challenge method
+            # But we can check for evaluation completed keywords and move to next stage
+            evaluation_keywords = [
+                "your solution was", "feedback on your code", "your implementation", 
+                "code review", "assessment of your solution"
+            ]
+            has_evaluation = any(keyword in ai_content for keyword in evaluation_keywords)
+            
+            if has_evaluation:
+                logger.info("Transitioning from CODING_CHALLENGE_WAITING to FEEDBACK stage")
+                return InterviewStage.FEEDBACK.value
+        
+        elif current_stage == InterviewStage.FEEDBACK.value:
+            # After receiving feedback, move to behavioral questions if not already done
+            if human_message_count >= 1:  # At least one response after feedback
+                logger.info("Transitioning from FEEDBACK to BEHAVIORAL_QUESTIONS stage")
+                return InterviewStage.BEHAVIORAL_QUESTIONS.value
+        
+        elif current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
+            # If we've had enough exchanges, wrap up
+            if human_message_count >= 10:
+                logger.info("Transitioning from BEHAVIORAL_QUESTIONS to CONCLUSION stage")
                 return InterviewStage.CONCLUSION.value
-                
+        
         # By default, stay in the current stage
         return current_stage
     
@@ -1163,6 +1216,74 @@ class AIInterviewer:
         except Exception as e:
             logger.error(f"Error extracting candidate name: {e}")
             return ""
+    
+    async def continue_after_challenge(self, user_id: str, session_id: str, message: str, challenge_completed: bool = True) -> Tuple[str, Dict[str, Any]]:
+        """
+        Continue an interview after a coding challenge has been completed.
+        
+        Args:
+            user_id: User identifier
+            session_id: Session identifier
+            message: Message to include as context
+            challenge_completed: Whether the challenge was completed successfully
+            
+        Returns:
+            Tuple of (AI response, session data)
+        """
+        try:
+            # Get session data
+            if self.session_manager:
+                session = self.session_manager.get_session(session_id)
+                if not session:
+                    return f"Session {session_id} not found.", {}
+                
+                metadata = session.get("metadata", {})
+            else:
+                # Use in-memory storage
+                if session_id not in self.active_sessions:
+                    return f"Session {session_id} not found.", {}
+                
+                session = self.active_sessions[session_id]
+                metadata = session
+                
+            # Update session with challenge result and transition to appropriate stage
+            metadata["resuming_from_challenge"] = True
+            metadata["challenge_completed"] = challenge_completed
+            
+            # Choose next stage based on challenge completion
+            if challenge_completed:
+                # If completed successfully, move to feedback stage
+                next_stage = InterviewStage.FEEDBACK.value
+                logger.info(f"Challenge completed successfully, moving to {next_stage} stage")
+            else:
+                # If not completed, remain in coding challenge stage
+                next_stage = InterviewStage.CODING_CHALLENGE.value
+                logger.info(f"Challenge not completed, staying in {next_stage} stage")
+                
+            metadata[STAGE_KEY] = next_stage
+            
+            # Save metadata updates
+            if self.session_manager:
+                self.session_manager.update_session_metadata(session_id, metadata)
+            
+            # Prepare context message for continuing the interview
+            result = f"I've submitted my solution to the coding challenge. "
+            if challenge_completed:
+                result += "I believe I've completed it successfully."
+            else:
+                result += "I made some progress but couldn't fully complete it."
+                
+            # Add user's message if provided
+            if message:
+                result += f" {message}"
+                
+            # Run the interview with this context
+            response, _ = await self.run_interview(user_id, result, session_id)
+            
+            return response, session
+        except Exception as e:
+            logger.error(f"Error continuing after challenge: {e}")
+            return "I apologize, but I encountered an error processing your challenge submission. Let's continue with the interview.", {}
                 
     def __enter__(self):
         """Context manager entry."""
@@ -1173,64 +1294,7 @@ class AIInterviewer:
         self.cleanup()
 
 # Import for resume_interview method
-import asyncio 
-
-async def continue_after_challenge(self, user_id: str, session_id: str, message: str, challenge_completed: bool = True) -> Tuple[str, Dict[str, Any]]:
-    """
-    Continue an interview after a coding challenge has been completed.
-    
-    Args:
-        user_id: User identifier
-        session_id: Session identifier
-        message: Message to include as context
-        challenge_completed: Whether the challenge was completed successfully
-        
-    Returns:
-        Tuple of (AI response, session data)
-    """
-    try:
-        # Get session data
-        if self.session_manager:
-            session = self.session_manager.get_session(session_id)
-            if not session:
-                return f"Session {session_id} not found.", {}
-            
-            metadata = session.get("metadata", {})
-        else:
-            # Use in-memory storage
-            if session_id not in self.active_sessions:
-                return f"Session {session_id} not found.", {}
-            
-            session = self.active_sessions[session_id]
-            metadata = session
-            
-        # Update session with challenge result
-        metadata["resuming_from_challenge"] = True
-        metadata["challenge_completed"] = challenge_completed
-        metadata[STAGE_KEY] = InterviewStage.TECHNICAL_QUESTIONS.value if challenge_completed else InterviewStage.CODING_CHALLENGE.value
-        
-        # Save metadata updates
-        if self.session_manager:
-            self.session_manager.update_session_metadata(session_id, metadata)
-        
-        # Run the interview with the challenge results message
-        result = f"I've submitted my solution to the coding challenge. "
-        if challenge_completed:
-            result += "I believe I've completed it successfully."
-        else:
-            result += "I made some progress but couldn't fully complete it."
-            
-        # Add user's message if provided
-        if message:
-            result += f" {message}"
-            
-        # Run the interview with this context
-        response, _ = await self.run_interview(user_id, result, session_id)
-        
-        return response, session
-    except Exception as e:
-        logger.error(f"Error continuing after challenge: {e}")
-        return "I apologize, but I encountered an error processing your challenge submission. Let's continue with the interview.", {} 
+import asyncio
 
 def safe_extract_content(message: AIMessage) -> str:
     """
