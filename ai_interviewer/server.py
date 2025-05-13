@@ -119,6 +119,7 @@ class JobRole(BaseModel):
     seniority_level: str = Field("Mid-level", description="Seniority level (e.g., 'Junior', 'Mid-level', 'Senior')")
     required_skills: List[str] = Field(default_factory=list, description="List of required skills for the role")
     description: str = Field("", description="Detailed job description")
+    requires_coding: bool = Field(True, description="Whether this role requires coding challenges during the interview")
     
     class Config:
         schema_extra = {
@@ -126,7 +127,8 @@ class JobRole(BaseModel):
                 "role_name": "Frontend Developer",
                 "seniority_level": "Mid-level",
                 "required_skills": ["JavaScript", "React", "HTML/CSS", "UI/UX"],
-                "description": "We're looking for a Frontend Developer with strong React skills to join our team."
+                "description": "We're looking for a Frontend Developer with strong React skills to join our team.",
+                "requires_coding": True
             }
         }
 
@@ -137,6 +139,7 @@ class MessageRequest(BaseModel):
     seniority_level: Optional[str] = Field(None, description="Seniority level (e.g., 'Junior', 'Mid-level', 'Senior')")
     required_skills: Optional[List[str]] = Field(None, description="List of required skills for the role")
     job_description: Optional[str] = Field(None, description="Detailed job description")
+    requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
     
     class Config:
         schema_extra = {
@@ -146,7 +149,8 @@ class MessageRequest(BaseModel):
                 "job_role": "Frontend Developer",
                 "seniority_level": "Mid-level",
                 "required_skills": ["JavaScript", "React", "HTML/CSS"],
-                "job_description": "Looking for a developer with strong React skills."
+                "job_description": "Looking for a developer with strong React skills.",
+                "requires_coding": True
             }
         }
 
@@ -155,6 +159,7 @@ class MessageResponse(BaseModel):
     session_id: str = Field(..., description="Session ID for continuing the conversation")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
     job_role: Optional[str] = Field(None, description="Job role for the interview")
+    requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
     
     class Config:
         schema_extra = {
@@ -162,7 +167,8 @@ class MessageResponse(BaseModel):
                 "response": "Hello! Welcome to your technical interview for the Frontend Developer position. Could you please introduce yourself?",
                 "session_id": "sess-abc123",
                 "interview_stage": "introduction",
-                "job_role": "Frontend Developer"
+                "job_role": "Frontend Developer",
+                "requires_coding": True
             }
         }
 
@@ -184,6 +190,8 @@ class SessionResponse(BaseModel):
     created_at: str = Field(..., description="Session creation timestamp")
     last_active: str = Field(..., description="Last activity timestamp")
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
+    job_role: Optional[str] = Field(None, description="Job role for the interview")
+    requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
     
     class Config:
         schema_extra = {
@@ -192,7 +200,9 @@ class SessionResponse(BaseModel):
                 "user_id": "user-123",
                 "created_at": "2023-07-15T14:30:00.000Z",
                 "last_active": "2023-07-15T14:35:00.000Z",
-                "interview_stage": "technical_questions"
+                "interview_stage": "technical_questions",
+                "job_role": "Frontend Developer",
+                "requires_coding": True
             }
         }
 
@@ -206,6 +216,7 @@ class AudioTranscriptionRequest(BaseModel):
     seniority_level: Optional[str] = Field(None, description="Seniority level")
     required_skills: Optional[List[str]] = Field(None, description="List of required skills")
     job_description: Optional[str] = Field(None, description="Detailed job description")
+    requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
 
 class AudioTranscriptionResponse(BaseModel):
     transcription: str = Field(..., description="Transcribed text from audio")
@@ -214,6 +225,7 @@ class AudioTranscriptionResponse(BaseModel):
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
     audio_response_url: Optional[str] = Field(None, description="URL to audio response file")
     job_role: Optional[str] = Field(None, description="Job role for the interview")
+    requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
 
 class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Error details")
@@ -257,31 +269,57 @@ DEFAULT_JOB_ROLES = [
         role_name="Frontend Developer",
         seniority_level="Mid-level",
         required_skills=["JavaScript", "React", "HTML/CSS", "UI/UX", "Responsive Design"],
-        description="We're looking for a Frontend Developer with strong React skills to build responsive and interactive web applications."
+        description="We're looking for a Frontend Developer with strong React skills to build responsive and interactive web applications.",
+        requires_coding=True
     ),
     JobRole(
         role_name="Backend Developer",
         seniority_level="Mid-level",
         required_skills=["Python", "Node.js", "Databases", "API Design", "Server Architecture"],
-        description="Backend Developer responsible for server-side application logic, database management, and API development."
+        description="Backend Developer responsible for server-side application logic, database management, and API development.",
+        requires_coding=True
     ),
     JobRole(
         role_name="Full Stack Developer",
         seniority_level="Senior",
         required_skills=["JavaScript", "React", "Node.js", "Python", "Databases", "DevOps"],
-        description="Senior Full Stack Developer with experience across the entire web stack from frontend to backend."
+        description="Senior Full Stack Developer with experience across the entire web stack from frontend to backend.",
+        requires_coding=True
     ),
     JobRole(
         role_name="Data Scientist",
         seniority_level="Mid-level",
         required_skills=["Python", "Statistics", "Machine Learning", "Data Analysis", "SQL"],
-        description="Data Scientist with strong analytical skills to develop machine learning models and extract insights from data."
+        description="Data Scientist with strong analytical skills to develop machine learning models and extract insights from data.",
+        requires_coding=True
     ),
     JobRole(
         role_name="DevOps Engineer",
         seniority_level="Mid-level",
         required_skills=["CI/CD", "Docker", "Kubernetes", "Cloud Platforms", "Linux", "Scripting"],
-        description="DevOps Engineer to build and maintain CI/CD pipelines and cloud infrastructure."
+        description="DevOps Engineer to build and maintain CI/CD pipelines and cloud infrastructure.",
+        requires_coding=True
+    ),
+    JobRole(
+        role_name="Product Manager",
+        seniority_level="Senior",
+        required_skills=["Product Strategy", "User Research", "Agile Methodologies", "Roadmapping", "Stakeholder Management"],
+        description="Product Manager to lead product development, define requirements, and coordinate with engineering teams.",
+        requires_coding=False
+    ),
+    JobRole(
+        role_name="UX/UI Designer",
+        seniority_level="Mid-level",
+        required_skills=["User Experience Design", "Wireframing", "Prototyping", "User Research", "Visual Design"],
+        description="UX/UI Designer to create engaging and intuitive user interfaces and experiences for web and mobile applications.",
+        requires_coding=False
+    ),
+    JobRole(
+        role_name="Technical Project Manager",
+        seniority_level="Senior",
+        required_skills=["Project Management", "Agile Methodologies", "Technical Knowledge", "Risk Management", "Communication"],
+        description="Technical Project Manager to oversee software development projects, manage resources, and ensure timely delivery.",
+        requires_coding=False
     )
 ]
 
@@ -349,7 +387,8 @@ async def start_interview(request: Request, request_data: MessageRequest):
             job_role=request_data.job_role,
             seniority_level=request_data.seniority_level,
             required_skills=request_data.required_skills,
-            job_description=request_data.job_description
+            job_description=request_data.job_description,
+            requires_coding=request_data.requires_coding
         )
         
         # Get session metadata if available
@@ -363,7 +402,8 @@ async def start_interview(request: Request, request_data: MessageRequest):
             response=ai_response,
             session_id=session_id,
             interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role")
+            job_role=metadata.get("job_role"),
+            requires_coding=metadata.get("requires_coding")
         )
     except Exception as e:
         logger.error(f"Error starting interview: {e}")
@@ -409,7 +449,8 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
             job_role=request_data.job_role,
             seniority_level=request_data.seniority_level,
             required_skills=request_data.required_skills,
-            job_description=request_data.job_description
+            job_description=request_data.job_description,
+            requires_coding=request_data.requires_coding
         )
         
         # Get session metadata if available
@@ -423,7 +464,8 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
             response=ai_response,
             session_id=new_session_id,
             interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role")
+            job_role=metadata.get("job_role"),
+            requires_coding=metadata.get("requires_coding")
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -476,13 +518,18 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
             last_active_str = session["last_active"]
             if isinstance(last_active_str, datetime):
                 last_active_str = last_active_str.isoformat()
+                
+            # Get metadata from session if available
+            metadata = session.get("metadata", {})
 
             response.append(SessionResponse(
                 session_id=session["session_id"],
                 user_id=session["user_id"],
                 created_at=created_at_str,
                 last_active=last_active_str,
-                interview_stage=session.get("metadata", {}).get("interview_stage")
+                interview_stage=metadata.get("interview_stage"),
+                job_role=metadata.get("job_role"),
+                requires_coding=metadata.get("requires_coding", True)  # Default to True if not specified
             ))
         
         return response
@@ -640,7 +687,8 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             job_role=request_data.job_role,
             seniority_level=request_data.seniority_level,
             required_skills=request_data.required_skills,
-            job_description=request_data.job_description
+            job_description=request_data.job_description,
+            requires_coding=request_data.requires_coding
         )
         
         # Get session metadata if available
@@ -716,7 +764,8 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             session_id=session_id,
             interview_stage=metadata.get("interview_stage"),
             audio_response_url=audio_response_url,
-            job_role=metadata.get("job_role")
+            job_role=metadata.get("job_role"),
+            requires_coding=metadata.get("requires_coding")
         )
     except HTTPException:
         raise
@@ -822,7 +871,9 @@ async def upload_audio_file(
             response=ai_response,
             session_id=new_session_id,
             interview_stage=metadata.get("interview_stage"),
-            audio_response_url=audio_url
+            audio_response_url=audio_url,
+            job_role=metadata.get("job_role"),
+            requires_coding=metadata.get("requires_coding")
         )
     except Exception as e:
         logger.error(f"Error processing audio file: {e}")
@@ -1113,7 +1164,8 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
             response=ai_response,
             session_id=new_session_id,
             interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role")
+            job_role=metadata.get("job_role"),
+            requires_coding=metadata.get("requires_coding")
         )
     except ValueError as e:
         if "session" in str(e).lower():
