@@ -75,6 +75,7 @@ Current stage: {current_stage}
 
 Required skills: {required_skills}
 Job description: {job_description}
+Requires coding: {requires_coding}
 
 CONVERSATION STYLE GUIDELINES:
 1. Be warm, personable, and empathetic while maintaining professionalism
@@ -87,7 +88,7 @@ CONVERSATION STYLE GUIDELINES:
 INTERVIEW APPROACH:
 1. Assess the candidate's technical skills and experience level
 2. Ask relevant technical questions based on the job requirements
-3. Provide a coding challenge if appropriate for the position
+3. Provide a coding challenge if appropriate for the position. Only suggest coding challenges if the "Requires coding" flag is set to "True". If set to "False", focus on conceptual questions instead.
 4. Evaluate both technical knowledge and problem-solving approach
 5. Give constructive feedback on responses when appropriate
 
@@ -101,7 +102,7 @@ HANDLING SPECIAL SITUATIONS:
 ADAPTING TO INTERVIEW STAGES:
 - Introduction: Focus on building rapport and understanding the candidate's background
 - Technical Questions: Assess depth of knowledge with progressive difficulty
-- Coding Challenge: Evaluate problem-solving process, not just the solution
+- Coding Challenge: Evaluate problem-solving process, not just the solution. Only move to this stage if the role requires coding.
 - Behavioral Questions: Look for evidence of soft skills and experience
 - Feedback: Be constructive, balanced, and specific
 - Conclusion: End on a positive note with clear next steps
@@ -123,6 +124,7 @@ class InterviewState(MessagesState):
     seniority_level: str = ""
     required_skills: List[str] = []
     job_description: str = ""
+    requires_coding: bool = True
     
     # Interview progress
     interview_stage: str = InterviewStage.INTRODUCTION.value
@@ -138,6 +140,7 @@ class InterviewState(MessagesState):
                 seniority_level: str = "",
                 required_skills: Optional[List[str]] = None,
                 job_description: str = "",
+                requires_coding: bool = True,
                 interview_stage: str = "",
                 session_id: str = "",
                 user_id: str = ""):
@@ -151,6 +154,7 @@ class InterviewState(MessagesState):
             seniority_level: Seniority level for the position
             required_skills: List of required skills
             job_description: Job description text
+            requires_coding: Whether this role requires coding challenges
             interview_stage: Current interview stage
             session_id: Session identifier
             user_id: User identifier
@@ -164,6 +168,7 @@ class InterviewState(MessagesState):
         self.seniority_level = seniority_level
         self.required_skills = required_skills or []
         self.job_description = job_description
+        self.requires_coding = requires_coding
         self.interview_stage = interview_stage or InterviewStage.INTRODUCTION.value
         self.session_id = session_id
         self.user_id = user_id
@@ -182,6 +187,8 @@ class InterviewState(MessagesState):
             return self.required_skills
         elif key == "job_description":
             return self.job_description
+        elif key == "requires_coding":
+            return self.requires_coding
         elif key == "interview_stage":
             return self.interview_stage
         elif key == "session_id":
@@ -477,6 +484,8 @@ class AIInterviewer:
                 interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
                 session_id = state.get("session_id", "")
                 user_id = state.get("user_id", "")
+                # Default to True for requires_coding if not specified
+                requires_coding = state.get("requires_coding", True)
             else:
                 # Extract data from InterviewState object
                 messages = state.messages
@@ -488,6 +497,8 @@ class AIInterviewer:
                 interview_stage = state.interview_stage
                 session_id = state.session_id
                 user_id = state.user_id
+                # Default to True for requires_coding if not specified
+                requires_coding = getattr(state, "requires_coding", True)
             
             # Create or update system message with context
             system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
@@ -497,7 +508,8 @@ class AIInterviewer:
                 job_role=job_role,
                 seniority_level=seniority_level,
                 required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
-                job_description=job_description
+                job_description=job_description,
+                requires_coding=requires_coding
             )
             
             # Update system message if present, otherwise add it
@@ -655,8 +667,50 @@ class AIInterviewer:
         elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
             # Check if we should transition to coding challenge based on AI suggestion
             if has_coding_trigger:
-                logger.info("Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage due to coding challenge prompt")
-                return InterviewStage.CODING_CHALLENGE.value
+                # Get state information to check if job role requires coding
+                # Extract state from messages if available
+                job_role = None
+                for msg in messages:
+                    if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
+                        # Try to extract job role from system message
+                        match = re.search(r"job role: (.+?)[\n\.]", msg.content, re.IGNORECASE)
+                        if match:
+                            job_role = match.group(1).strip()
+                            break
+                
+                # Default job roles that should include coding challenges
+                coding_required_roles = [
+                    "software engineer", "developer", "programmer", "frontend developer", 
+                    "backend developer", "full stack developer", "web developer",
+                    "mobile developer", "app developer", "data scientist", "devops engineer"
+                ]
+                
+                # Check if the job role requires coding
+                job_role_requires_coding = False
+                if job_role:
+                    # Check if the job role contains any of our coding-required roles
+                    job_role_lower = job_role.lower()
+                    job_role_requires_coding = any(role in job_role_lower for role in coding_required_roles)
+                    
+                    # If we have a metadata field specifically for this, check that too
+                    # This would be set if a JobRole.requires_coding field was provided
+                    for msg in messages:
+                        if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
+                            if "requires coding: true" in msg.content.lower():
+                                job_role_requires_coding = True
+                                break
+                            elif "requires coding: false" in msg.content.lower():
+                                job_role_requires_coding = False
+                                break
+                else:
+                    # Default to requiring coding if we can't determine the job role
+                    job_role_requires_coding = True
+                
+                if job_role_requires_coding:
+                    logger.info(f"Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage for job role: {job_role}")
+                    return InterviewStage.CODING_CHALLENGE.value
+                else:
+                    logger.info(f"Skipping coding challenge for job role: {job_role} (coding not required)")
             
             # If we've had enough substantive technical exchanges, move to behavioral questions
             # Use a combination of count and content analysis
@@ -803,7 +857,7 @@ class AIInterviewer:
     async def run_interview(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
                            job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
                            required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
-                           handle_digression: bool = True) -> Tuple[str, str]:
+                           requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Tuple[str, str]:
         """
         Run the interview with a user message, creating or continuing a session.
         
@@ -815,6 +869,7 @@ class AIInterviewer:
             seniority_level: Optional seniority level
             required_skills: Optional list of required skills
             job_description: Optional job description text
+            requires_coding: Optional flag indicating if coding challenges should be included
             handle_digression: Whether to detect and handle digressions
             
         Returns:
@@ -833,6 +888,7 @@ class AIInterviewer:
         seniority_level_value = seniority_level or self.seniority_level
         required_skills_value = required_skills or self.required_skills
         job_description_value = job_description or self.job_description
+        requires_coding_value = requires_coding if requires_coding is not None else True
         
         # Try to load existing session if available
         try:
@@ -897,6 +953,12 @@ class AIInterviewer:
                 else:
                     job_description_value = metadata.get("job_description", self.job_description)
                 
+                if requires_coding is not None and "requires_coding" not in metadata:
+                    metadata["requires_coding"] = requires_coding
+                    requires_coding_value = requires_coding
+                else:
+                    requires_coding_value = metadata.get("requires_coding", True)
+                
                 # Convert list/dict messages to proper message objects if needed
                 messages = extract_messages_from_transcript(messages)
                 
@@ -908,6 +970,7 @@ class AIInterviewer:
                     "seniority_level": seniority_level or self.seniority_level,
                     "required_skills": required_skills or self.required_skills,
                     "job_description": job_description or self.job_description,
+                    "requires_coding": requires_coding if requires_coding is not None else True,
                     STAGE_KEY: InterviewStage.INTRODUCTION.value,
                 }
                 
@@ -927,6 +990,7 @@ class AIInterviewer:
                 "seniority_level": seniority_level or self.seniority_level,
                 "required_skills": required_skills or self.required_skills, 
                 "job_description": job_description or self.job_description,
+                "requires_coding": requires_coding if requires_coding is not None else True,
                 STAGE_KEY: InterviewStage.INTRODUCTION.value,
             }
         
@@ -984,7 +1048,8 @@ class AIInterviewer:
             job_role=job_role_value,
             seniority_level=seniority_level_value,
             required_skills=", ".join(required_skills_value) if isinstance(required_skills_value, list) else str(required_skills_value),
-            job_description=job_description_value
+            job_description=job_description_value,
+            requires_coding=requires_coding_value
         )
         
         # Prepend system message if not already present
@@ -1002,6 +1067,7 @@ class AIInterviewer:
             seniority_level=seniority_level_value,
             required_skills=required_skills_value,
             job_description=job_description_value,
+            requires_coding=requires_coding_value,
             interview_stage=interview_stage,
             session_id=session_id,
             user_id=user_id
