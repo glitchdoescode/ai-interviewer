@@ -45,29 +45,50 @@ The most recent implementation adds a secure Docker-based code execution sandbox
   - Added timestamp tracking to measure progress over time
   - Created API endpoint to retrieve code evolution history
   - Enabled analysis of candidate's problem-solving approach
+- ✅ Conducted comprehensive system analysis and identified key shortcomings
+  - Created detailed shortcomings.md document outlining issues
+  - Added prioritized tasks to checklist.md to address these issues
+  - Analyzed LangGraph implementation for memory and performance optimizations
+  - Researched LiveKit integration for real-time audio streaming
 
 ## Next Steps
 
-### Immediate Priorities
+### Immediate Priorities (Shortcomings Resolution)
+1. **Core State Management & Performance Improvements**:
+   - Enhance conversation state management for comprehensive memory
+   - Implement system name configurability
+   - Optimize LangGraph flow for better responsiveness
+
+2. **Voice Experience Enhancements**:
+   - Improve TTS naturalness with better prompt engineering and SSML
+   - Integrate LiveKit for real-time audio streaming
+
+3. **Security & Quality Improvements**:
+   - Enhance code execution sandbox security
+   - Strengthen error handling and resilience
+   - Expand test coverage
+   - Improve documentation and code comments
+
+### Future Enhancements
 1. **Automated Problem Generation**:
    - Design tools to generate coding challenges based on job description
    - Develop robust prompts for creating relevant test cases
 
-### Future Enhancements
-1. **Authentication & User Management**:
+2. **Authentication & User Management**:
    - Implement basic email/password authentication
    - Add OAuth integration for third-party login
    - Define user roles (candidate, interviewer, admin)
 
-2. **Production Deployment**:
+3. **Production Deployment**:
    - Finalize containerization with Docker Compose
    - Set up CI/CD pipeline for automated deployment
    - Implement comprehensive monitoring and logging
    - Perform security audit and penetration testing
 
 ## Technical Debt & Improvements
-1. ⚠️ Add more comprehensive error handling in evaluation tools
-2. ⚠️ Implement caching for LLM calls to improve performance
+1. ⚠️ Add more specific exception handling rather than generic `except Exception`
+2. ⚠️ Implement retry mechanisms with backoff for external API calls
 3. ⚠️ Add unit tests for the code execution and feedback systems
-4. ⚠️ Support more programming languages in code execution
-5. ⚠️ Optimize performance with timeouts and resource limits
+4. ⚠️ Optimize real-time streaming performance with LiveKit
+5. ⚠️ Enhance LangGraph memory mechanisms for better conversational context
+6. ⚠️ Ensure system name and voice characteristics are consistently configurable

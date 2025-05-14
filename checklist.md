@@ -307,6 +307,77 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [ ] Potentially add a node after the main agent that calls the supervisor.
     *   [ ] Implement re-work loop: if supervisor flags an issue, modify state and re-invoke main agent.
 
+## Addressing System Shortcomings (PRIORITY)
+
+### Iteration S1: Core State Management & Performance Improvements
+*   **Task S1.1: Enhanced Conversation State Management**
+    *   [ ] Review and enhance the `InterviewState` structure for comprehensive data capture
+    *   [ ] Implement advanced memory mechanisms in LangGraph (e.g., `ConversationBufferWindowMemory`)
+    *   [ ] Ensure proper loading/saving of all state components in `SessionManager`
+    *   [ ] Add verification testing for state persistence across complex interview flows
+    *   [ ] Update the LangGraph state transitions to handle extended context
+
+*   **Task S1.2: System Name Configurability**
+    *   [ ] Add `SYSTEM_NAME` and related variables to `ai_interviewer/utils/config.py`
+    *   [ ] Update all hardcoded system name references in prompts and UI
+    *   [ ] Create admin setting for changing system name
+    *   [ ] Test name changes propagate through the entire system
+
+*   **Task S1.3: Optimizing LangGraph Responsiveness**
+    *   [ ] Profile graph execution to identify bottlenecks
+    *   [ ] Optimize tool calls, especially slow ones like `execute_candidate_code`
+    *   [ ] Review and optimize conditional edges and transition logic
+    *   [ ] Implement asynchronous operations for I/O bound functions
+    *   [ ] Add streaming for intermediate steps to improve perceived responsiveness
+
+### Iteration S2: Voice Experience Enhancements
+*   **Task S2.1: TTS Naturalness Improvements**
+    *   [ ] Experiment with Deepgram voice options and settings
+    *   [ ] Refine prompts for more conversational LLM output
+    *   [ ] Implement SSML support for better speech synthesis control
+    *   [ ] Research and evaluate alternative TTS services if needed
+    *   [ ] Create A/B testing mechanism for voice quality comparison
+
+*   **Task S2.2: LiveKit Integration for Real-time Audio**
+    *   [ ] Set up LiveKit server and add required dependencies
+    *   [ ] Modify `server.py` to handle LiveKit room management and tokens
+    *   [ ] Implement real-time audio streaming:
+        *   [ ] Client-to-server audio via LiveKit
+        *   [ ] Server-to-Deepgram STT streaming
+        *   [ ] LLM-to-Deepgram TTS streaming
+        *   [ ] Server-to-client audio via LiveKit
+    *   [ ] Update frontend to use LiveKit client SDK
+    *   [ ] Measure and optimize latency in audio transmission
+
+### Iteration S3: Security & Quality Improvements
+*   **Task S3.1: Code Execution Sandbox Security**
+    *   [ ] Update Docker base images to latest secure versions
+    *   [ ] Add additional container restrictions (cap_drop, seccomp profiles)
+    *   [ ] Review and secure generated runner scripts
+    *   [ ] Implement more robust input sanitization
+    *   [ ] Phase out or restrict the legacy `CodeExecutor`
+
+*   **Task S3.2: Error Handling and Resilience**
+    *   [ ] Replace generic exception handling with specific exceptions
+    *   [ ] Implement retry mechanisms with backoff for external API calls
+    *   [ ] Define clear error responses for all API endpoints
+    *   [ ] Enhance logging for better debugging
+    *   [ ] Create recovery mechanisms for common failure scenarios
+
+*   **Task S3.3: Test Coverage Expansion**
+    *   [ ] Create unit tests for core utilities and tools
+    *   [ ] Implement integration tests for API endpoints
+    *   [ ] Add tests for LangGraph flow and state transitions
+    *   [ ] Create specific tests for Docker sandbox and code execution
+    *   [ ] Set up CI pipeline for automated testing
+
+*   **Task S3.4: Documentation and Comments**
+    *   [ ] Review and enhance inline comments for complex logic
+    *   [ ] Generate or create architecture diagrams
+    *   [ ] Update API documentation with more examples
+    *   [ ] Create developer onboarding documentation
+    *   [ ] Document common issues and their solutions
+
 ## Phase 3: Full System Integration & Production Readiness
 
 ### Iteration 1: Authentication & User Management
