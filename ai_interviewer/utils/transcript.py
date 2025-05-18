@@ -1,5 +1,5 @@
 """
-Transcript utilities for AI Interviewer.
+Transcript utilities for {SYSTEM_NAME}.
 
 This module provides functionality for working with interview transcripts,
 including saving, loading, and formatting.
@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Set up logging
 logging.basicConfig(

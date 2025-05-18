@@ -1,5 +1,5 @@
 """
-Speech utilities for AI Interviewer platform.
+Speech utilities for {SYSTEM_NAME} platform.
 
 This module provides speech-to-text (STT) and text-to-speech (TTS) 
 functionality using Deepgram's API.
@@ -17,6 +17,7 @@ import base64
 from pathlib import Path
 import json
 import time
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -527,7 +528,7 @@ class DeepgramTTS:
 
 class VoiceHandler:
     """
-    Class that combines STT and TTS functionality for AI Interviewer.
+    Class that combines STT and TTS functionality for {SYSTEM_NAME}.
     
     This class provides a unified interface for voice interactions.
     """

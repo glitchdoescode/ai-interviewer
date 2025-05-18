@@ -1,7 +1,7 @@
 """
-Configuration module for AI Interviewer.
+Configuration module for {SYSTEM_NAME}.
 
-This module provides configuration settings and utilities for the AI Interviewer.
+This module provides configuration settings and utilities for the {SYSTEM_NAME}.
 """
 import os
 import logging
@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file if it exists
 load_dotenv()
+# Get the absolute path to the project root directory
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENV_FILE_PATH = os.path.join(PROJECT_ROOT, ".env")
+
 
 # Set up logging
 logging.basicConfig(
@@ -40,6 +44,9 @@ SPEECH_SAMPLE_RATE = int(os.environ.get("SPEECH_SAMPLE_RATE", "16000"))
 SPEECH_TTS_VOICE = os.environ.get("SPEECH_TTS_VOICE", "nova")
 SPEECH_SILENCE_THRESHOLD = float(os.environ.get("SPEECH_SILENCE_THRESHOLD", "0.03"))  # Volume threshold to detect silence
 SPEECH_SILENCE_DURATION = float(os.environ.get("SPEECH_SILENCE_DURATION", "2.0"))  # Seconds of silence to stop recording
+
+# --- System Configuration ---
+SYSTEM_NAME = os.getenv("SYSTEM_NAME", "AI Interviewer")
 
 def get_db_config() -> Dict[str, str]:
     """

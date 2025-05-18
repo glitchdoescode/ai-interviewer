@@ -1,7 +1,8 @@
 """
-Setup script for the AI Interviewer package.
+Setup script for the {SYSTEM_NAME} package.
 """
 from setuptools import setup, find_packages
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Read the long description from README.md
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -10,7 +11,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="ai_interviewer",
     version="0.1.0",
-    author="AI Interviewer Team",
+    author=f"{SYSTEM_NAME} Team",
     author_email="example@example.com",
     description="An AI-powered technical interview platform",
     long_description=long_description,

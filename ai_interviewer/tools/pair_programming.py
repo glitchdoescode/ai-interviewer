@@ -1,5 +1,5 @@
 """
-AI Pair Programming tools for the AI Interviewer platform.
+AI Pair Programming tools for the {SYSTEM_NAME} platform.
 
 This module provides advanced pair programming support, including:
 - Context-aware code suggestions
@@ -17,6 +17,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import re
 
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)

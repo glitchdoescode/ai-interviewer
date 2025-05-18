@@ -1,5 +1,7 @@
 """
-Tests for the AI Interviewer workflow.
+Tests for the {SYSTEM_NAME} workflow.
+
+This module contains tests for the interview workflow and state management.
 """
 import pytest
 from unittest.mock import patch, MagicMock
@@ -9,6 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import MessagesState
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 
 def test_should_continue_with_tool_calls():

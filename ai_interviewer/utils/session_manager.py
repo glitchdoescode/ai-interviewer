@@ -1,5 +1,5 @@
 """
-Session manager for AI Interviewer sessions.
+Session manager for {SYSTEM_NAME} sessions.
 
 This module provides functionality for managing interview sessions,
 including creation, retrieval, and persistence.
@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 import pymongo
 from pymongo.mongo_client import MongoClient
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Set up logging
 logging.basicConfig(

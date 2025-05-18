@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Box, Flex, Text, Avatar, useColorModeValue, Badge, Button } from '@chakra-ui/react';
 import { FaPlay, FaStop } from 'react-icons/fa';
+import { useConfig } from '../context/ConfigContext';
 
 /**
  * Component for displaying a single chat message
@@ -16,6 +17,7 @@ const ChatMessage = ({ message, sender, isLoading = false, audioUrl, isHint = fa
   const audioRef = useRef(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [audioError, setAudioError] = React.useState(null);
+  const { systemName } = useConfig();
 
   const bgColor = useColorModeValue(
     isUser ? 'blue.50' : isHint ? 'purple.50' : 'gray.50',
@@ -132,7 +134,7 @@ const ChatMessage = ({ message, sender, isLoading = false, audioUrl, isHint = fa
       {!isUser && (
         <Avatar 
           size="sm" 
-          name="AI Interviewer" 
+          name={systemName} 
           bg={isHint ? "purple.500" : "brand.500"} 
           color="white" 
           mr={2} 

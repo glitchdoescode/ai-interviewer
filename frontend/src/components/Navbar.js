@@ -13,6 +13,7 @@ import {
   IconButton
 } from '@chakra-ui/react';
 import { FaMicrophone, FaMoon, FaSun } from 'react-icons/fa';
+import { useConfig } from '../context/ConfigContext';
 
 /**
  * Navbar component for site navigation
@@ -22,6 +23,27 @@ const Navbar = () => {
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
   const { colorMode, toggleColorMode } = useColorMode();
+  const { systemName, isLoading, error } = useConfig();
+
+  React.useEffect(() => {
+    console.log('Navbar Config:', { systemName, isLoading, error });
+  }, [systemName, isLoading, error]);
+
+  if (isLoading) {
+    return (
+      <Box as="nav" bg={bg} borderBottom="1px" borderBottomColor={borderColor} boxShadow="sm" position="sticky" top={0} zIndex={10} h={16} display="flex" alignItems="center" px={4}>
+        <Text>Loading Navbar...</Text>
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box as="nav" bg={bg} borderBottom="1px" borderBottomColor={borderColor} boxShadow="sm" position="sticky" top={0} zIndex={10} h={16} display="flex" alignItems="center" px={4}>
+        <Text color="red.500">Error loading Navbar config</Text>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -47,7 +69,7 @@ const Navbar = () => {
           <HStack spacing={2}>
             <FaMicrophone size={24} color="#00BCD4" />
             <Text fontWeight="bold" fontSize="xl" color="brand.700">
-              AI Interviewer
+              {systemName || 'Default Name'}
             </Text>
           </HStack>
         </Link>

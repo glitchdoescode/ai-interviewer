@@ -1,5 +1,5 @@
 """
-Coding challenge tools for the AI Interviewer platform.
+Coding challenge tools for the {SYSTEM_NAME} platform.
 
 This module implements tools for starting, interacting with, and evaluating coding challenges.
 """
@@ -13,6 +13,7 @@ from ai_interviewer.tools.code_quality import CodeQualityMetrics
 from ai_interviewer.tools.code_execution import CodeExecutor, SafetyChecker, execute_candidate_code
 from ai_interviewer.tools.code_feedback import CodeFeedbackGenerator
 from ai_interviewer.tools.pair_programming import HintGenerator
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -123,11 +124,11 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_leve
         ]
         
         # Execute the code using our secure Docker executor
-        execution_results = execute_candidate_code(
-            language=challenge.language.lower(),
-            code=candidate_code,
-            test_cases=test_cases
-        )
+        execution_results = execute_candidate_code.invoke({
+            "language": challenge.language.lower(),
+            "code": candidate_code,
+            "test_cases": test_cases
+        })
         
         # Generate detailed feedback
         feedback = CodeFeedbackGenerator.generate_feedback(

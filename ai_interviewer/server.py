@@ -1,7 +1,7 @@
 """
-FastAPI server for the AI Interviewer platform.
+FastAPI server for the {SYSTEM_NAME} platform.
 
-This module provides a REST API for interacting with the AI Interviewer.
+This module provides a REST API for interacting with the {SYSTEM_NAME}.
 """
 import os
 import uuid
@@ -26,8 +26,11 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
+from ai_interviewer.utils.config import SYSTEM_NAME
+from ai_interviewer.config_api import router as config_router
 from langgraph.types import interrupt, Command
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
+from langchain_core.tools import tool
 
 # Set up logging
 logging.basicConfig(
@@ -42,11 +45,11 @@ limiter = Limiter(key_func=get_remote_address)
 
 # Initialize FastAPI app with enhanced metadata for OpenAPI docs
 app = FastAPI(
-    title="AI Interviewer API",
-    description="""
-    REST API for the AI Technical Interviewer platform.
+    title=f"{SYSTEM_NAME} API",
+    description=f"""
+    REST API for the {SYSTEM_NAME} platform.
     
-    This API provides endpoints for conducting technical interviews with AI,
+    This API provides endpoints for conducting technical interviews with {SYSTEM_NAME},
     managing interview sessions, and processing audio for voice-based interviews.
     
     ## Features
@@ -78,8 +81,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize AI Interviewer instance
-interviewer = AIInterviewer()
+# Include the config router
+app.include_router(config_router)
+
+# Import the SYSTEM_NAME from config
+from ai_interviewer.utils.config import SYSTEM_NAME
+
+# Initialize {SYSTEM_NAME} instance with RAG configuration
+try:
+    from ai_interviewer.core.rag_session_manager import RAGSessionManager
+    from ai_interviewer.utils.session_manager import SessionManager
+    try:
+        # Try to initialize RAG with MongoDB
+        rag_manager = RAGSessionManager(
+            connection_uri="mongodb://localhost:27017",
+            database_name="ai_interviewer",
+            collection_name="interview_sessions",
+            persist_directory="./data/chroma_db"
+        )
+        # Initialize session manager
+        session_manager = SessionManager(
+            connection_uri="mongodb://localhost:27017",
+            database_name="ai_interviewer",
+            collection_name="interview_metadata"
+        )
+        interviewer = AIInterviewer(
+            use_mongodb=True, 
+            connection_uri="mongodb://localhost:27017", 
+            rag_manager=rag_manager,
+            session_manager=session_manager
+        )
+        logger.info("RAG system and session manager enabled with MongoDB persistence")
+    except Exception as mongo_error:
+        # If MongoDB fails, initialize without persistence
+        logger.warning(f"MongoDB connection failed, falling back to in-memory storage: {mongo_error}")
+        interviewer = AIInterviewer(use_mongodb=False)
+        session_manager = None
+        logger.info("Using in-memory storage for sessions")
+except Exception as e:
+    logger.warning(f"RAG system disabled: {e}")
+    interviewer = AIInterviewer(use_mongodb=False)
+    session_manager = None
+    logger.info("Using in-memory storage for sessions")
 
 # Initialize VoiceHandler for speech processing
 try:
@@ -391,7 +434,7 @@ async def start_interview(request: Request, request_data: MessageRequest):
             requires_coding=request_data.requires_coding
         )
         
-        # Get session metadata if available
+        # Get session metadata including stage
         metadata = {}
         if interviewer.session_manager:
             session = interviewer.session_manager.get_session(session_id)
@@ -502,29 +545,40 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
         List of SessionResponse objects containing session details
     """
     try:
-        sessions = interviewer.get_user_sessions(user_id, include_completed)
+        # Try to get sessions from MongoDB first
+        if session_manager:
+            sessions = session_manager.get_user_sessions(user_id, include_completed)
+            
+            # Convert MongoDB ObjectId to string for JSON serialization
+            for session in sessions:
+                if '_id' in session:
+                    del session['_id']
+        # Fallback to in-memory storage
+        else:
+            # Get sessions from AIInterviewer's in-memory storage
+            sessions = interviewer.get_user_sessions(user_id, include_completed)
+            
+            if not sessions:
+                sessions = []
         
-        if not sessions:
-            return []
-        
-        # Convert sessions to response format
-        response = []
+        # Format sessions for response
+        formatted_sessions = []
         for session in sessions:
             # Ensure datetime objects are converted to strings
-            created_at_str = session["created_at"]
+            created_at_str = session.get("created_at", "")
             if isinstance(created_at_str, datetime):
                 created_at_str = created_at_str.isoformat()
                 
-            last_active_str = session["last_active"]
+            last_active_str = session.get("last_active", "")
             if isinstance(last_active_str, datetime):
                 last_active_str = last_active_str.isoformat()
                 
             # Get metadata from session if available
             metadata = session.get("metadata", {})
-
-            response.append(SessionResponse(
-                session_id=session["session_id"],
-                user_id=session["user_id"],
+            
+            formatted_sessions.append(SessionResponse(
+                session_id=session.get("session_id", ""),
+                user_id=session.get("user_id", ""),
                 created_at=created_at_str,
                 last_active=last_active_str,
                 interview_stage=metadata.get("interview_stage"),
@@ -532,10 +586,22 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
                 requires_coding=metadata.get("requires_coding", True)  # Default to True if not specified
             ))
         
-        return response
+        if not formatted_sessions:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No sessions found for user {user_id}"
+            )
+            
+        return formatted_sessions
+        
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"Error getting user sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @app.post(
     "/api/audio/transcribe", 
@@ -933,7 +999,7 @@ async def health_check():
         Status of the service and its components
     """
     try:
-        # Check AI Interviewer is working
+        # Check {SYSTEM_NAME} is working
         session_count = len(interviewer.list_active_sessions())
         
         # Check voice handler if enabled
@@ -1478,6 +1544,56 @@ async def get_code_snapshots(
         raise
     except Exception as e:
         logger.error(f"Error retrieving code snapshots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add new Pydantic model for config response
+class ConfigResponse(BaseModel):
+    """Model for system configuration response."""
+    system_name: str = Field(..., description="Name of the AI interviewer system")
+    version: str = Field(..., description="API version")
+    voice_enabled: bool = Field(..., description="Whether voice processing is enabled")
+    features: Dict[str, bool] = Field(default_factory=dict, description="Available system features")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "system_name": SYSTEM_NAME,
+                "version": "1.0.0",
+                "voice_enabled": True,
+                "features": {
+                    "coding_challenges": True,
+                    "voice_interface": True,
+                    "session_management": session_manager is not None
+                }
+            }
+        }
+
+@app.get(
+    "/api/config",
+    response_model=ConfigResponse,
+    responses={
+        200: {"description": "Successfully retrieved system configuration"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("60/minute")
+async def get_system_config(request: Request):
+    """Get system configuration details."""
+    try:
+        return {
+            "system_name": SYSTEM_NAME,
+            "version": app.version,
+            "voice_enabled": voice_enabled,
+            "features": {
+                "coding_challenges": True,
+                "voice_interface": voice_enabled,
+                "session_management": session_manager is not None
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting system config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):

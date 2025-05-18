@@ -1,10 +1,11 @@
 """
-Rubric definitions for the AI Interviewer platform.
+Rubric definitions for the {SYSTEM_NAME} platform.
 
 This module defines the evaluation rubrics used to assess candidates during interviews.
 """
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 class EvaluationCriteria(BaseModel):
     """Base model for evaluation criteria."""

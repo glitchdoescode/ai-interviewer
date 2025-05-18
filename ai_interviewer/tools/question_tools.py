@@ -1,5 +1,5 @@
 """
-Dynamic question generation tools for the AI Interviewer platform.
+Dynamic question generation tools for the {SYSTEM_NAME} platform.
 
 This module implements tools for generating contextually-relevant, adaptive interview questions
 based on job role, candidate skill level, and previous responses. It implements the requirements
@@ -11,7 +11,7 @@ import re
 
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from ai_interviewer.utils.config import get_llm_config
+from ai_interviewer.utils.config import get_llm_config, SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -1,11 +1,12 @@
 """
-Coding Challenge definitions for the AI Interviewer platform.
+Coding Challenge definitions for the {SYSTEM_NAME} platform.
 
 This module defines the structure and sample data for coding challenges
 that can be presented to candidates during the interview process.
 """
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 
 class TestCase(BaseModel):

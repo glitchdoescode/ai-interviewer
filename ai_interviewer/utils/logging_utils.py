@@ -1,10 +1,16 @@
 """
-Logging utilities for the AI Interviewer platform.
+Logging utilities for the {SYSTEM_NAME} platform.
 
-This module provides logging setup and configuration for the application.
+This module provides enhanced logging capabilities for the platform.
 """
-import os
 import logging
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from ai_interviewer.utils.config import SYSTEM_NAME
 from logging.handlers import RotatingFileHandler
 
 def setup_logging(

@@ -1,5 +1,5 @@
 """
-Docker-based secure code execution sandbox for AI Interviewer platform.
+Docker-based secure code execution sandbox for {SYSTEM_NAME} platform.
 
 This module implements a secure sandbox for executing candidate code using Docker containers
 with appropriate resource limits and security constraints.
@@ -14,6 +14,7 @@ import shutil
 from typing import Dict, List, Optional, Any, Tuple
 import docker
 from docker.errors import DockerException, ImageNotFound, ContainerError
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)

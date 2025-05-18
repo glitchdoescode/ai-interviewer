@@ -22,9 +22,11 @@ var/
 
 # Virtual environments
 venv/
+Filtero-Gogizmo-master
 ENV/
 env/
 .env
+node_modules/
 
 # IDE
 .idea/

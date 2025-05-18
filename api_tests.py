@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-API testing script for the AI Interviewer FastAPI server.
+API testing script for the {SYSTEM_NAME} FastAPI server.
 
-This script tests the main API endpoints to ensure they are working correctly.
+This module provides tests for the REST API endpoints.
 """
 import os
 import sys
@@ -15,6 +15,7 @@ import requests
 from uuid import uuid4
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Load environment variables
 load_dotenv()
@@ -30,8 +31,8 @@ logger = logging.getLogger(__name__)
 # API URL
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
-class AIInterviewerAPITest(unittest.TestCase):
-    """Test case for the AI Interviewer API endpoints."""
+class TestInterviewAPI(unittest.TestCase):
+    """Test case for the {SYSTEM_NAME} API endpoints."""
     
     def setUp(self):
         """Set up test case."""

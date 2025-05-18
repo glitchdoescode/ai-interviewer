@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """
-Test script for running the AI Interviewer FastAPI server.
+Test script for running the {SYSTEM_NAME} FastAPI server.
 """
 import os
 import logging
 from ai_interviewer.server import start_server
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logging.basicConfig(
@@ -20,5 +21,5 @@ if __name__ == "__main__":
     if not api_key:
         logger.warning("DEEPGRAM_API_KEY environment variable not set. Voice features will be disabled.")
     
-    logger.info("Starting AI Interviewer API server...")
+    logger.info(f"Starting {SYSTEM_NAME} API server...")
     start_server(host="0.0.0.0", port=8000) 

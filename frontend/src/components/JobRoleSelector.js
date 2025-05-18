@@ -16,6 +16,7 @@ import {
   Skeleton,
 } from '@chakra-ui/react';
 import { getJobRoles } from '../api/interviewService';
+import { useConfig } from '../context/ConfigContext';
 
 /**
  * Component for selecting a job role before starting an interview
@@ -31,6 +32,7 @@ const JobRoleSelector = ({ onRoleSelect, onStartInterview, isLoading = false }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [customDescription, setCustomDescription] = useState('');
+  const { systemName } = useConfig();
   
   const toast = useToast();
 
@@ -133,7 +135,7 @@ const JobRoleSelector = ({ onRoleSelect, onStartInterview, isLoading = false }) 
       
       <Text mb={4} color="gray.600">
         Choose a job role to customize the interview questions and evaluation criteria. 
-        This helps the AI interviewer focus on relevant skills and experience.
+        This helps the {systemName} focus on relevant skills and experience.
       </Text>
       
       {loading ? (

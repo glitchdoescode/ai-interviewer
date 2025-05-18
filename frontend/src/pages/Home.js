@@ -16,6 +16,7 @@ import {
 import { FaMicrophone, FaRobot, FaCode, FaChartLine } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import { useInterview } from '../context/InterviewContext';
+import { useConfig } from '../context/ConfigContext';
 import { v4 as uuid } from 'uuid';
 
 /**
@@ -23,6 +24,7 @@ import { v4 as uuid } from 'uuid';
  */
 const Home = () => {
   const { userId, setUserId } = useInterview();
+  const { systemName } = useConfig();
   const navigate = useNavigate();
   const bgGradient = useColorModeValue(
     'linear(to-b, white, gray.50)',
@@ -98,7 +100,7 @@ const Home = () => {
             
             <FeatureCard
               icon={FaRobot}
-              title="AI Interviewer"
+              title={systemName}
               description="Advanced AI that adapts to your responses and provides personalized feedback."
             />
             

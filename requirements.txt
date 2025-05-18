@@ -35,3 +35,8 @@ slowapi>=0.1.9
 
 # Secure Code Execution
 docker>=7.0.0
+
+# RAG implementation
+chromadb>=0.4.22
+langchain-chroma>=0.1.0
+google-generativeai>=0.3.0

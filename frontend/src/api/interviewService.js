@@ -69,6 +69,7 @@ export const startInterview = async (message, userId = null, jobRoleData = null)
     }
     
     const response = await api.post('/interview', requestBody);
+    // Need to update interview stage from response
     return response.data;
   } catch (error) {
     return handleApiError(error, 'Failed to start interview');

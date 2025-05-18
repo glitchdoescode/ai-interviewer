@@ -1,5 +1,5 @@
 """
-Code execution utilities for AI Interviewer platform.
+Code execution utilities for {SYSTEM_NAME} platform.
 
 This module provides functionality for safely executing code submissions
 against test cases in a controlled environment.
@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Initialize Docker sandbox (will be lazily loaded)
 _docker_sandbox = None
+
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 def get_docker_sandbox() -> Optional[DockerSandbox]:
     """

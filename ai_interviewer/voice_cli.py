@@ -1,7 +1,7 @@
 """
-Voice-enabled CLI for the AI Interviewer platform.
+Voice-enabled CLI for the {SYSTEM_NAME} platform.
 
-This module provides a voice interface for interacting with the AI Interviewer
+This module provides a voice interface for interacting with the {SYSTEM_NAME}
 using speech-to-text and text-to-speech capabilities.
 """
 import os
@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 # Import the AIInterviewer class and speech utilities
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
-from ai_interviewer.utils.config import get_speech_config
+from ai_interviewer.utils.config import get_speech_config, SYSTEM_NAME
 
 
 class VoiceInterviewCLI:
-    """Voice-enabled CLI for interacting with the AI Interviewer."""
+    """Voice-enabled CLI for interacting with the {SYSTEM_NAME}."""
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -48,7 +48,7 @@ class VoiceInterviewCLI:
         # Initialize voice handler
         self.voice_handler = VoiceHandler(api_key=self.api_key)
         
-        # Initialize AI Interviewer
+        # Initialize {SYSTEM_NAME}
         self.interviewer = AIInterviewer()
         
         # Generate a random user ID
@@ -73,12 +73,12 @@ class VoiceInterviewCLI:
     
     async def start_interview(self):
         """Start an interactive voice-based interview session."""
-        print("\n🔊 AI Voice Interviewer - Technical Interview Simulator 🎙️\n")
-        print("Welcome to your voice-based technical interview simulation!")
+        print(f"\n🔊 {SYSTEM_NAME} Voice - Technical Interview Simulator 🎙️\n")
+        print(f"Welcome to your voice-based technical interview simulation with {SYSTEM_NAME}!")
         print("Speak after each prompt. Say 'exit' to end the interview.\n")
         
         # Initial greeting from the AI
-        print("\n🤖 AI Interviewer is introducing itself...")
+        print(f"\n🤖 {SYSTEM_NAME} is introducing itself...")
         
         # Get first response without user input (this starts the interview)
         ai_response, self.session_id = await self.interviewer.run_interview(
@@ -129,7 +129,7 @@ class VoiceInterviewCLI:
                 break
             
             # Process user input and get response
-            print("🤖 AI Interviewer is thinking...")
+            print(f"🤖 {SYSTEM_NAME} is thinking...")
             ai_response, self.session_id = await self.interviewer.run_interview(
                 self.user_id, user_input, self.session_id
             )
@@ -168,7 +168,7 @@ class VoiceInterviewCLI:
         
         try:
             with open(filename, "w") as f:
-                f.write("AI VOICE INTERVIEW TRANSCRIPT\n")
+                f.write(f"{SYSTEM_NAME} VOICE INTERVIEW TRANSCRIPT\n")
                 f.write("===========================\n\n")
                 
                 for entry in self.interview_history:
@@ -193,7 +193,7 @@ class VoiceInterviewCLI:
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="AI Voice Interviewer CLI")
+    parser = argparse.ArgumentParser(description=f"{SYSTEM_NAME} Voice Interviewer CLI")
     parser.add_argument(
         "--api-key", 
         type=str, 

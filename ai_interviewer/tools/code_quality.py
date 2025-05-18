@@ -1,5 +1,5 @@
 """
-Code quality analysis tools for the AI Interviewer platform.
+Code quality analysis tools for the {SYSTEM_NAME} platform.
 
 This module provides tools for analyzing code quality, including metrics
 for complexity, style, and best practices.
@@ -14,6 +14,7 @@ from radon.metrics import h_visit, mi_visit
 from radon.raw import analyze
 import pylint.lint
 from pylint.reporters import JSONReporter
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)

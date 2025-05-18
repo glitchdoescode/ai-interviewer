@@ -1,5 +1,5 @@
 """
-Core AI Interviewer class that encapsulates all LangGraph components.
+Core {SYSTEM_NAME} class that encapsulates all LangGraph components.
 
 This module follows the architecture pattern from gizomobot, providing a unified
 class that handles the entire interview process.
@@ -38,7 +38,7 @@ from ai_interviewer.tools.question_tools import (
 
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
-from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config
+from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config, SYSTEM_NAME
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content #, format_conversation_for_llm
 
 # Configure logging
@@ -67,7 +67,7 @@ METADATA_KEY = "metadata"  # Key for storing all metadata in the state
 
 # System prompt template
 INTERVIEW_SYSTEM_PROMPT = """
-You are an AI technical interviewer conducting a {job_role} interview for a {seniority_level} position.
+You are {system_name}, an AI technical interviewer conducting a {job_role} interview for a {seniority_level} position.
 
 Interview ID: {interview_id}
 Candidate: {candidate_name}
@@ -205,7 +205,7 @@ class InterviewState(MessagesState):
             return default
 
 class AIInterviewer:
-    """Main class that encapsulates the AI Interviewer functionality."""
+    """Main class that encapsulates the {SYSTEM_NAME} functionality."""
     
     def __init__(self, 
                 use_mongodb: bool = True, 
@@ -213,26 +213,57 @@ class AIInterviewer:
                 job_role: str = "Software Engineering",
                 seniority_level: str = "Mid-level",
                 required_skills: List[str] = None,
-                job_description: str = ""):
+                job_description: str = "",
+                rag_manager: Optional[Any] = None):
         """
-        Initialize the AI Interviewer with tools, model, and workflow.
+        Initialize the {SYSTEM_NAME} with the given configuration.
         
         Args:
-            use_mongodb: Whether to use MongoDB for persistence
-            connection_uri: MongoDB connection URI (if None, uses config)
-            job_role: The specific job role for the interview
-            seniority_level: The seniority level for the position
-            required_skills: List of required skills for the position
-            job_description: Detailed job description for context
+            use_mongodb: Whether to use MongoDB for session persistence
+            connection_uri: MongoDB connection URI (required if use_mongodb is True)
+            job_role: Default job role for interviews
+            seniority_level: Default seniority level
+            required_skills: Default required skills
+            job_description: Default job description
+            rag_manager: Optional RAG session manager for enhanced memory capabilities
         """
-        # Log configuration
-        log_config()
-        
-        # Store job role configuration
         self.job_role = job_role
         self.seniority_level = seniority_level
-        self.required_skills = required_skills or ["Programming", "Problem Solving", "Technical Knowledge"]
+        self.required_skills = required_skills or []
         self.job_description = job_description
+        self.rag_manager = rag_manager
+        
+        # Initialize session manager with fallback to in-memory
+        try:
+            if use_mongodb and connection_uri:
+                self.session_manager = SessionManager(
+                    connection_uri=connection_uri,
+                    database_name="ai_interviewer",
+                    collection_name="interview_metadata"
+                )
+                self.use_mongodb = True
+                logger.info("Using MongoDB for session persistence")
+            else:
+                raise ValueError("Using in-memory storage by choice")
+        except Exception as e:
+            logger.info(f"Using in-memory storage: {str(e)}")
+            self.session_manager = None
+            self.use_mongodb = False
+            # Initialize in-memory storage
+            self.active_sessions = {}
+            
+        # Initialize LLM
+        llm_config = get_llm_config()
+        self.llm = ChatGoogleGenerativeAI(
+            model=llm_config.get("model", "gemini-pro"),
+            temperature=llm_config.get("temperature", 0.7),
+            convert_system_message_to_human=True
+        )
+        
+        # Initialize the workflow
+        self.workflow = self._initialize_workflow()
+        
+        logger.info(f"Initialized {SYSTEM_NAME} with RAG: {rag_manager is not None}")
         
         # Set up tools
         self.tools = [
@@ -254,67 +285,8 @@ class AIInterviewer:
         # Create tool node with proper state handling
         self.tool_node = ToolNode(self.tools)
         
-        # Initialize LLM with tools
-        llm_config = get_llm_config()
-        self.model = ChatGoogleGenerativeAI(
-            model=llm_config["model"],
-            temperature=llm_config["temperature"]
-        ).bind_tools(self.tools)
-        
-        # Set up database connections if using MongoDB
-        if use_mongodb:
-            try:
-                # Get database config
-                db_config = get_db_config()
-                mongodb_uri = connection_uri or db_config["uri"]
-                
-                # Define the checkpoint namespace
-                checkpoint_namespace = "ai_interviewer"
-                
-                # Initialize MongoDB checkpointer using the official LangGraph implementation
-                logger.info(f"Initializing MongoDB checkpointer with URI {mongodb_uri}")
-                from pymongo import MongoClient
-                
-                # Create a MongoDB client
-                client = MongoClient(mongodb_uri)
-                
-                # Create the checkpointer instance directly
-                self.checkpointer = MongoDBSaver(
-                    client=client,
-                    db_name=db_config["database"], 
-                    collection_name=db_config["sessions_collection"]
-                )
-                
-                # Test MongoDB connection
-                try:
-                    # Simple connection test using the session manager
-                    self.session_manager = SessionManager(
-                        connection_uri=mongodb_uri,
-                        database_name=db_config["database"],
-                        collection_name=db_config["metadata_collection"],
-                    )
-                    logger.info("MongoDB connection successful!")
-                except Exception as e:
-                    raise ValueError(f"MongoDB connection test failed: {e}")
-                
-                logger.info("Using MongoDB for persistence")
-            except Exception as e:
-                # If there's an error with MongoDB, fall back to in-memory persistence
-                logger.warning(f"Failed to connect to MongoDB: {e}. Falling back to in-memory persistence.")
-                self.checkpointer = InMemorySaver()
-                self.session_manager = None
-                logger.info("Using in-memory persistence as fallback")
-        else:
-            # Use in-memory persistence
-            self.checkpointer = InMemorySaver()
-            self.session_manager = None
-            logger.info("Using in-memory persistence")
-        
         # Initialize workflow
         self.workflow = self._initialize_workflow()
-        
-        # Session tracking
-        self.active_sessions = {}
     
     def _initialize_workflow(self) -> StateGraph:
         """
@@ -502,6 +474,7 @@ class AIInterviewer:
             
             # Create or update system message with context
             system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+                system_name=SYSTEM_NAME,
                 candidate_name=candidate_name or "[Not provided yet]",
                 interview_id=session_id,
                 current_stage=interview_stage,
@@ -529,7 +502,7 @@ class AIInterviewer:
             
             # Call the model
             logger.debug(f"Calling model with {len(messages)} messages")
-            ai_message = self.model.invoke(messages, config=model_config)
+            ai_message = self.llm.invoke(messages, config=model_config)
             
             # Extract name from conversation if not already known
             if not candidate_name:
@@ -1063,6 +1036,7 @@ class AIInterviewer:
         
         # Create or update system message with context
         system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+            system_name=SYSTEM_NAME,
             candidate_name=candidate_name or "[Not provided yet]",
             interview_id=session_id,
             current_stage=interview_stage,
@@ -1400,7 +1374,24 @@ class AIInterviewer:
         Returns:
             List of sessions with metadata
         """
-        return self.session_manager.get_user_sessions(user_id, include_completed)
+        if self.session_manager:
+            return self.session_manager.get_user_sessions(user_id, include_completed)
+        else:
+            # Handle in-memory storage case
+            sessions = []
+            for session_id, session_data in self.active_sessions.items():
+                if session_data.get("user_id") == user_id:
+                    # Only include active sessions unless include_completed is True
+                    if include_completed or session_data.get("status", "active") == "active":
+                        sessions.append({
+                            "session_id": session_id,
+                            "user_id": user_id,
+                            "created_at": session_data.get("created_at", datetime.now()),
+                            "last_active": session_data.get("last_active", datetime.now()),
+                            "status": session_data.get("status", "active"),
+                            "metadata": session_data.get("metadata", {})
+                        })
+            return sessions
         
     def get_code_snapshots(self, session_id: str, challenge_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """

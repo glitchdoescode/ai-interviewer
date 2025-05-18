@@ -1,6 +1,8 @@
 import React from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { ChakraProvider, extendTheme } from '@chakra-ui/react';
+import { ConfigProvider, useConfig } from './context/ConfigContext';
+import DocumentTitle from './components/DocumentTitle';
 
 // Import pages
 import Home from './pages/Home';
@@ -29,20 +31,43 @@ const theme = extendTheme({
   },
 });
 
-function App() {
+// Main app content component
+const AppContent = () => {
+  const { systemName, isLoading, error } = useConfig();
+
+  if (isLoading) {
+    return <div>Loading configuration...</div>;
+  }
+
+  if (error) {
+    return <div>Error loading configuration: {error}</div>;
+  }
+
   return (
-    <ChakraProvider theme={theme}>
-      <InterviewProvider>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/interview" element={<Interview />} />
-          <Route path="/interview/:sessionId" element={<Interview />} />
-          <Route path="/history" element={<SessionHistory />} />
-          <Route path="/microphone-test" element={<MicrophoneTest />} />
-        </Routes>
-      </InterviewProvider>
-    </ChakraProvider>
+    <div className="App">
+      <DocumentTitle />
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/interview" element={<Interview />} />
+        <Route path="/interview/:sessionId" element={<Interview />} />
+        <Route path="/history" element={<SessionHistory />} />
+        <Route path="/microphone-test" element={<MicrophoneTest />} />
+      </Routes>
+    </div>
   );
-}
+};
+
+// Root app component
+const App = () => {
+  return (
+    <ConfigProvider>
+      <ChakraProvider theme={theme}>
+        <InterviewProvider>
+          <AppContent />
+        </InterviewProvider>
+      </ChakraProvider>
+    </ConfigProvider>
+  );
+};
 
 export default App; 

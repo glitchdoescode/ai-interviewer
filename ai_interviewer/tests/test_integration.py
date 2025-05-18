@@ -1,7 +1,7 @@
 """
-Integration tests for the AI Interviewer platform.
+Integration tests for the {SYSTEM_NAME} platform.
 
-Tests the interaction between different components and end-to-end workflows.
+This module contains integration tests for the platform.
 """
 import unittest
 import logging
@@ -19,6 +19,7 @@ from ai_interviewer.tools.pair_programming import (
     review_code_section
 )
 from ai_interviewer.models.coding_challenge import CodingChallenge
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -87,8 +88,13 @@ def solve_challenge(input_data):
         # Verify evaluation structure
         self.assertEqual(evaluation["status"], "submitted")
         self.assertIn("evaluation", evaluation)
-        self.assertIn("test_results", evaluation["evaluation"])
-        self.assertIn("quality_metrics", evaluation["evaluation"])
+        self.assertIn("passed", evaluation["evaluation"])
+        self.assertIn("pass_rate", evaluation["evaluation"])
+        self.assertIn("code_quality_score", evaluation["evaluation"])
+        self.assertIn("summary", evaluation["evaluation"])
+        self.assertIn("suggestions", evaluation["evaluation"])
+        self.assertIn("strengths", evaluation["evaluation"])
+        self.assertIn("areas_for_improvement", evaluation["evaluation"])
 
     def test_complete_challenge_workflow(self):
         """Test the complete challenge workflow."""
@@ -150,7 +156,13 @@ def solve_challenge(input_data):
         })
         self.assertEqual(evaluation["status"], "submitted")
         self.assertIn("evaluation", evaluation)
-        self.assertIn("test_results", evaluation["evaluation"])
+        self.assertIn("passed", evaluation["evaluation"])
+        self.assertIn("pass_rate", evaluation["evaluation"])
+        self.assertIn("code_quality_score", evaluation["evaluation"])
+        self.assertIn("summary", evaluation["evaluation"])
+        self.assertIn("suggestions", evaluation["evaluation"])
+        self.assertIn("strengths", evaluation["evaluation"])
+        self.assertIn("areas_for_improvement", evaluation["evaluation"])
         
         # Get code improvements
         improvements = suggest_code_improvements.invoke({"code": self.sample_solution})

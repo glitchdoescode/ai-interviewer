@@ -1,0 +1,248 @@
+Collecting chromadb
+  Downloading chromadb-1.0.9-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.9 kB)
+Collecting build>=1.0.3 (from chromadb)
+  Downloading build-1.2.2.post1-py3-none-any.whl.metadata (6.5 kB)
+Requirement already satisfied: pydantic>=1.9 in ./venv/lib/python3.12/site-packages (from chromadb) (2.11.4)
+Collecting fastapi==0.115.9 (from chromadb)
+  Downloading fastapi-0.115.9-py3-none-any.whl.metadata (27 kB)
+Requirement already satisfied: uvicorn>=0.18.3 in ./venv/lib/python3.12/site-packages (from uvicorn[standard]>=0.18.3->chromadb) (0.34.2)
+Requirement already satisfied: numpy>=1.22.5 in ./venv/lib/python3.12/site-packages (from chromadb) (2.2.5)
+Collecting posthog>=2.4.0 (from chromadb)
+  Downloading posthog-4.0.1-py2.py3-none-any.whl.metadata (3.0 kB)
+Requirement already satisfied: typing-extensions>=4.5.0 in ./venv/lib/python3.12/site-packages (from chromadb) (4.13.2)
+Collecting onnxruntime>=1.14.1 (from chromadb)
+  Downloading onnxruntime-1.22.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (4.8 kB)
+Collecting opentelemetry-api>=1.2.0 (from chromadb)
+  Downloading opentelemetry_api-1.33.0-py3-none-any.whl.metadata (1.6 kB)
+Collecting opentelemetry-exporter-otlp-proto-grpc>=1.2.0 (from chromadb)
+  Downloading opentelemetry_exporter_otlp_proto_grpc-1.33.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting opentelemetry-instrumentation-fastapi>=0.41b0 (from chromadb)
+  Downloading opentelemetry_instrumentation_fastapi-0.54b0-py3-none-any.whl.metadata (2.2 kB)
+Collecting opentelemetry-sdk>=1.2.0 (from chromadb)
+  Downloading opentelemetry_sdk-1.33.0-py3-none-any.whl.metadata (1.6 kB)
+Collecting tokenizers>=0.13.2 (from chromadb)
+  Downloading tokenizers-0.21.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.8 kB)
+Collecting pypika>=0.48.9 (from chromadb)
+  Downloading PyPika-0.48.9.tar.gz (67 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.3/67.3 kB 1.7 MB/s eta 0:00:00
+  Installing build dependencies: started
+  Installing build dependencies: still running...
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: tqdm>=4.65.0 in ./venv/lib/python3.12/site-packages (from chromadb) (4.67.1)
+Collecting overrides>=7.3.1 (from chromadb)
+  Downloading overrides-7.7.0-py3-none-any.whl.metadata (5.8 kB)
+Collecting importlib-resources (from chromadb)
+  Downloading importlib_resources-6.5.2-py3-none-any.whl.metadata (3.9 kB)
+Requirement already satisfied: grpcio>=1.58.0 in ./venv/lib/python3.12/site-packages (from chromadb) (1.71.0)
+Collecting bcrypt>=4.0.1 (from chromadb)
+  Downloading bcrypt-4.3.0-cp39-abi3-manylinux_2_34_x86_64.whl.metadata (10 kB)
+Collecting typer>=0.9.0 (from chromadb)
+  Downloading typer-0.15.4-py3-none-any.whl.metadata (15 kB)
+Collecting kubernetes>=28.1.0 (from chromadb)
+  Downloading kubernetes-32.0.1-py2.py3-none-any.whl.metadata (1.7 kB)
+Requirement already satisfied: tenacity>=8.2.3 in ./venv/lib/python3.12/site-packages (from chromadb) (9.1.2)
+Requirement already satisfied: pyyaml>=6.0.0 in ./venv/lib/python3.12/site-packages (from chromadb) (6.0.2)
+Collecting mmh3>=4.0.1 (from chromadb)
+  Downloading mmh3-5.1.0-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (16 kB)
+Requirement already satisfied: orjson>=3.9.12 in ./venv/lib/python3.12/site-packages (from chromadb) (3.10.18)
+Requirement already satisfied: httpx>=0.27.0 in ./venv/lib/python3.12/site-packages (from chromadb) (0.28.1)
+Collecting rich>=10.11.0 (from chromadb)
+  Downloading rich-14.0.0-py3-none-any.whl.metadata (18 kB)
+Collecting jsonschema>=4.19.0 (from chromadb)
+  Downloading jsonschema-4.23.0-py3-none-any.whl.metadata (7.9 kB)
+Collecting starlette<0.46.0,>=0.40.0 (from fastapi==0.115.9->chromadb)
+  Downloading starlette-0.45.3-py3-none-any.whl.metadata (6.3 kB)
+Requirement already satisfied: packaging>=19.1 in ./venv/lib/python3.12/site-packages (from build>=1.0.3->chromadb) (24.2)
+Collecting pyproject_hooks (from build>=1.0.3->chromadb)
+  Downloading pyproject_hooks-1.2.0-py3-none-any.whl.metadata (1.3 kB)
+Requirement already satisfied: anyio in ./venv/lib/python3.12/site-packages (from httpx>=0.27.0->chromadb) (4.9.0)
+Requirement already satisfied: certifi in ./venv/lib/python3.12/site-packages (from httpx>=0.27.0->chromadb) (2025.4.26)
+Requirement already satisfied: httpcore==1.* in ./venv/lib/python3.12/site-packages (from httpx>=0.27.0->chromadb) (1.0.9)
+Requirement already satisfied: idna in ./venv/lib/python3.12/site-packages (from httpx>=0.27.0->chromadb) (3.10)
+Requirement already satisfied: h11>=0.16 in ./venv/lib/python3.12/site-packages (from httpcore==1.*->httpx>=0.27.0->chromadb) (0.16.0)
+Requirement already satisfied: attrs>=22.2.0 in ./venv/lib/python3.12/site-packages (from jsonschema>=4.19.0->chromadb) (25.3.0)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema>=4.19.0->chromadb)
+  Downloading jsonschema_specifications-2025.4.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema>=4.19.0->chromadb)
+  Downloading referencing-0.36.2-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.7.1 (from jsonschema>=4.19.0->chromadb)
+  Downloading rpds_py-0.25.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Requirement already satisfied: six>=1.9.0 in ./venv/lib/python3.12/site-packages (from kubernetes>=28.1.0->chromadb) (1.17.0)
+Collecting python-dateutil>=2.5.3 (from kubernetes>=28.1.0->chromadb)
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Requirement already satisfied: google-auth>=1.0.1 in ./venv/lib/python3.12/site-packages (from kubernetes>=28.1.0->chromadb) (2.40.1)
+Collecting websocket-client!=0.40.0,!=0.41.*,!=0.42.*,>=0.32.0 (from kubernetes>=28.1.0->chromadb)
+  Downloading websocket_client-1.8.0-py3-none-any.whl.metadata (8.0 kB)
+Requirement already satisfied: requests in ./venv/lib/python3.12/site-packages (from kubernetes>=28.1.0->chromadb) (2.32.3)
+Collecting requests-oauthlib (from kubernetes>=28.1.0->chromadb)
+  Downloading requests_oauthlib-2.0.0-py2.py3-none-any.whl.metadata (11 kB)
+Collecting oauthlib>=3.2.2 (from kubernetes>=28.1.0->chromadb)
+  Downloading oauthlib-3.2.2-py3-none-any.whl.metadata (7.5 kB)
+Requirement already satisfied: urllib3>=1.24.2 in ./venv/lib/python3.12/site-packages (from kubernetes>=28.1.0->chromadb) (2.4.0)
+Collecting durationpy>=0.7 (from kubernetes>=28.1.0->chromadb)
+  Downloading durationpy-0.9-py3-none-any.whl.metadata (338 bytes)
+Collecting coloredlogs (from onnxruntime>=1.14.1->chromadb)
+  Downloading coloredlogs-15.0.1-py2.py3-none-any.whl.metadata (12 kB)
+Collecting flatbuffers (from onnxruntime>=1.14.1->chromadb)
+  Downloading flatbuffers-25.2.10-py2.py3-none-any.whl.metadata (875 bytes)
+Requirement already satisfied: protobuf in ./venv/lib/python3.12/site-packages (from onnxruntime>=1.14.1->chromadb) (5.29.4)
+Collecting sympy (from onnxruntime>=1.14.1->chromadb)
+  Downloading sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+Requirement already satisfied: deprecated>=1.2.6 in ./venv/lib/python3.12/site-packages (from opentelemetry-api>=1.2.0->chromadb) (1.2.18)
+Collecting importlib-metadata<8.7.0,>=6.0 (from opentelemetry-api>=1.2.0->chromadb)
+  Downloading importlib_metadata-8.6.1-py3-none-any.whl.metadata (4.7 kB)
+Requirement already satisfied: googleapis-common-protos~=1.52 in ./venv/lib/python3.12/site-packages (from opentelemetry-exporter-otlp-proto-grpc>=1.2.0->chromadb) (1.70.0)
+Collecting opentelemetry-exporter-otlp-proto-common==1.33.0 (from opentelemetry-exporter-otlp-proto-grpc>=1.2.0->chromadb)
+  Downloading opentelemetry_exporter_otlp_proto_common-1.33.0-py3-none-any.whl.metadata (1.9 kB)
+Collecting opentelemetry-proto==1.33.0 (from opentelemetry-exporter-otlp-proto-grpc>=1.2.0->chromadb)
+  Downloading opentelemetry_proto-1.33.0-py3-none-any.whl.metadata (2.4 kB)
+Collecting opentelemetry-instrumentation-asgi==0.54b0 (from opentelemetry-instrumentation-fastapi>=0.41b0->chromadb)
+  Downloading opentelemetry_instrumentation_asgi-0.54b0-py3-none-any.whl.metadata (2.1 kB)
+Collecting opentelemetry-instrumentation==0.54b0 (from opentelemetry-instrumentation-fastapi>=0.41b0->chromadb)
+  Downloading opentelemetry_instrumentation-0.54b0-py3-none-any.whl.metadata (6.8 kB)
+Collecting opentelemetry-semantic-conventions==0.54b0 (from opentelemetry-instrumentation-fastapi>=0.41b0->chromadb)
+  Downloading opentelemetry_semantic_conventions-0.54b0-py3-none-any.whl.metadata (2.5 kB)
+Collecting opentelemetry-util-http==0.54b0 (from opentelemetry-instrumentation-fastapi>=0.41b0->chromadb)
+  Downloading opentelemetry_util_http-0.54b0-py3-none-any.whl.metadata (2.6 kB)
+Requirement already satisfied: wrapt<2.0.0,>=1.0.0 in ./venv/lib/python3.12/site-packages (from opentelemetry-instrumentation==0.54b0->opentelemetry-instrumentation-fastapi>=0.41b0->chromadb) (1.17.2)
+Collecting asgiref~=3.0 (from opentelemetry-instrumentation-asgi==0.54b0->opentelemetry-instrumentation-fastapi>=0.41b0->chromadb)
+  Downloading asgiref-3.8.1-py3-none-any.whl.metadata (9.3 kB)
+Collecting backoff>=1.10.0 (from posthog>=2.4.0->chromadb)
+  Downloading backoff-2.2.1-py3-none-any.whl.metadata (14 kB)
+Requirement already satisfied: distro>=1.5.0 in ./venv/lib/python3.12/site-packages (from posthog>=2.4.0->chromadb) (1.9.0)
+Requirement already satisfied: annotated-types>=0.6.0 in ./venv/lib/python3.12/site-packages (from pydantic>=1.9->chromadb) (0.7.0)
+Requirement already satisfied: pydantic-core==2.33.2 in ./venv/lib/python3.12/site-packages (from pydantic>=1.9->chromadb) (2.33.2)
+Requirement already satisfied: typing-inspection>=0.4.0 in ./venv/lib/python3.12/site-packages (from pydantic>=1.9->chromadb) (0.4.0)
+Collecting markdown-it-py>=2.2.0 (from rich>=10.11.0->chromadb)
+  Downloading markdown_it_py-3.0.0-py3-none-any.whl.metadata (6.9 kB)
+Collecting pygments<3.0.0,>=2.13.0 (from rich>=10.11.0->chromadb)
+  Downloading pygments-2.19.1-py3-none-any.whl.metadata (2.5 kB)
+Collecting huggingface-hub<1.0,>=0.16.4 (from tokenizers>=0.13.2->chromadb)
+  Downloading huggingface_hub-0.31.2-py3-none-any.whl.metadata (13 kB)
+Collecting click<8.2,>=8.0.0 (from typer>=0.9.0->chromadb)
+  Downloading click-8.1.8-py3-none-any.whl.metadata (2.3 kB)
+Collecting shellingham>=1.3.0 (from typer>=0.9.0->chromadb)
+  Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+Collecting httptools>=0.6.3 (from uvicorn[standard]>=0.18.3->chromadb)
+  Downloading httptools-0.6.4-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.6 kB)
+Requirement already satisfied: python-dotenv>=0.13 in ./venv/lib/python3.12/site-packages (from uvicorn[standard]>=0.18.3->chromadb) (1.1.0)
+Collecting uvloop!=0.15.0,!=0.15.1,>=0.14.0 (from uvicorn[standard]>=0.18.3->chromadb)
+  Downloading uvloop-0.21.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+Collecting watchfiles>=0.13 (from uvicorn[standard]>=0.18.3->chromadb)
+  Downloading watchfiles-1.0.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+Requirement already satisfied: websockets>=10.4 in ./venv/lib/python3.12/site-packages (from uvicorn[standard]>=0.18.3->chromadb) (15.0.1)
+Requirement already satisfied: cachetools<6.0,>=2.0.0 in ./venv/lib/python3.12/site-packages (from google-auth>=1.0.1->kubernetes>=28.1.0->chromadb) (5.5.2)
+Requirement already satisfied: pyasn1-modules>=0.2.1 in ./venv/lib/python3.12/site-packages (from google-auth>=1.0.1->kubernetes>=28.1.0->chromadb) (0.4.2)
+Requirement already satisfied: rsa<5,>=3.1.4 in ./venv/lib/python3.12/site-packages (from google-auth>=1.0.1->kubernetes>=28.1.0->chromadb) (4.9.1)
+Collecting filelock (from huggingface-hub<1.0,>=0.16.4->tokenizers>=0.13.2->chromadb)
+  Downloading filelock-3.18.0-py3-none-any.whl.metadata (2.9 kB)
+Collecting fsspec>=2023.5.0 (from huggingface-hub<1.0,>=0.16.4->tokenizers>=0.13.2->chromadb)
+  Downloading fsspec-2025.3.2-py3-none-any.whl.metadata (11 kB)
+Collecting zipp>=3.20 (from importlib-metadata<8.7.0,>=6.0->opentelemetry-api>=1.2.0->chromadb)
+  Downloading zipp-3.21.0-py3-none-any.whl.metadata (3.7 kB)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=10.11.0->chromadb)
+  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Requirement already satisfied: charset-normalizer<4,>=2 in ./venv/lib/python3.12/site-packages (from requests->kubernetes>=28.1.0->chromadb) (3.4.2)
+Requirement already satisfied: sniffio>=1.1 in ./venv/lib/python3.12/site-packages (from anyio->httpx>=0.27.0->chromadb) (1.3.1)
+Collecting humanfriendly>=9.1 (from coloredlogs->onnxruntime>=1.14.1->chromadb)
+  Downloading humanfriendly-10.0-py2.py3-none-any.whl.metadata (9.2 kB)
+Collecting mpmath<1.4,>=1.1.0 (from sympy->onnxruntime>=1.14.1->chromadb)
+  Downloading mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+Requirement already satisfied: pyasn1<0.7.0,>=0.6.1 in ./venv/lib/python3.12/site-packages (from pyasn1-modules>=0.2.1->google-auth>=1.0.1->kubernetes>=28.1.0->chromadb) (0.6.1)
+Downloading chromadb-1.0.9-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (18.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.9/18.9 MB 4.0 MB/s eta 0:00:00
+Downloading fastapi-0.115.9-py3-none-any.whl (94 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 94.9/94.9 kB 3.8 MB/s eta 0:00:00
+Downloading bcrypt-4.3.0-cp39-abi3-manylinux_2_34_x86_64.whl (284 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 284.2/284.2 kB 13.2 MB/s eta 0:00:00
+Downloading build-1.2.2.post1-py3-none-any.whl (22 kB)
+Downloading jsonschema-4.23.0-py3-none-any.whl (88 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 88.5/88.5 kB 9.2 MB/s eta 0:00:00
+Downloading kubernetes-32.0.1-py2.py3-none-any.whl (2.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 4.9 MB/s eta 0:00:00
+Downloading mmh3-5.1.0-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (101 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 101.7/101.7 kB 3.5 MB/s eta 0:00:00
+Downloading onnxruntime-1.22.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.4/16.4 MB 4.0 MB/s eta 0:00:00
+Downloading opentelemetry_api-1.33.0-py3-none-any.whl (65 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65.8/65.8 kB 3.6 MB/s eta 0:00:00
+Downloading opentelemetry_exporter_otlp_proto_grpc-1.33.0-py3-none-any.whl (18 kB)
+Downloading opentelemetry_exporter_otlp_proto_common-1.33.0-py3-none-any.whl (18 kB)
+Downloading opentelemetry_proto-1.33.0-py3-none-any.whl (55 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 55.9/55.9 kB 2.5 MB/s eta 0:00:00
+Downloading opentelemetry_instrumentation_fastapi-0.54b0-py3-none-any.whl (12 kB)
+Downloading opentelemetry_instrumentation-0.54b0-py3-none-any.whl (31 kB)
+Downloading opentelemetry_instrumentation_asgi-0.54b0-py3-none-any.whl (16 kB)
+Downloading opentelemetry_semantic_conventions-0.54b0-py3-none-any.whl (194 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 194.9/194.9 kB 10.1 MB/s eta 0:00:00
+Downloading opentelemetry_util_http-0.54b0-py3-none-any.whl (7.3 kB)
+Downloading opentelemetry_sdk-1.33.0-py3-none-any.whl (118 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 118.9/118.9 kB 9.1 MB/s eta 0:00:00
+Downloading overrides-7.7.0-py3-none-any.whl (17 kB)
+Downloading posthog-4.0.1-py2.py3-none-any.whl (92 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 92.0/92.0 kB 7.1 MB/s eta 0:00:00
+Downloading rich-14.0.0-py3-none-any.whl (243 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 243.2/243.2 kB 14.2 MB/s eta 0:00:00
+Downloading tokenizers-0.21.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.0/3.0 MB 4.6 MB/s eta 0:00:00
+Downloading typer-0.15.4-py3-none-any.whl (45 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.3/45.3 kB 2.4 MB/s eta 0:00:00
+Downloading importlib_resources-6.5.2-py3-none-any.whl (37 kB)
+Downloading backoff-2.2.1-py3-none-any.whl (15 kB)
+Downloading click-8.1.8-py3-none-any.whl (98 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 98.2/98.2 kB 5.6 MB/s eta 0:00:00
+Downloading durationpy-0.9-py3-none-any.whl (3.5 kB)
+Downloading httptools-0.6.4-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (510 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 510.8/510.8 kB 12.7 MB/s eta 0:00:00
+Downloading huggingface_hub-0.31.2-py3-none-any.whl (484 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 484.2/484.2 kB 5.9 MB/s eta 0:00:00
+Downloading importlib_metadata-8.6.1-py3-none-any.whl (26 kB)
+Downloading jsonschema_specifications-2025.4.1-py3-none-any.whl (18 kB)
+Downloading markdown_it_py-3.0.0-py3-none-any.whl (87 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.5/87.5 kB 7.0 MB/s eta 0:00:00
+Downloading oauthlib-3.2.2-py3-none-any.whl (151 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 151.7/151.7 kB 9.7 MB/s eta 0:00:00
+Downloading pygments-2.19.1-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 5.7 MB/s eta 0:00:00
+Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 229.9/229.9 kB 4.4 MB/s eta 0:00:00
+Downloading referencing-0.36.2-py3-none-any.whl (26 kB)
+Downloading rpds_py-0.25.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (391 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 391.3/391.3 kB 15.0 MB/s eta 0:00:00
+Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+Downloading starlette-0.45.3-py3-none-any.whl (71 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 71.5/71.5 kB 5.3 MB/s eta 0:00:00
+Downloading uvloop-0.21.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (4.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 4.4 MB/s eta 0:00:00
+Downloading watchfiles-1.0.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (454 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 454.5/454.5 kB 6.7 MB/s eta 0:00:00
+Downloading websocket_client-1.8.0-py3-none-any.whl (58 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 58.8/58.8 kB 4.4 MB/s eta 0:00:00
+Downloading coloredlogs-15.0.1-py2.py3-none-any.whl (46 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 46.0/46.0 kB 2.1 MB/s eta 0:00:00
+Downloading flatbuffers-25.2.10-py2.py3-none-any.whl (30 kB)
+Downloading pyproject_hooks-1.2.0-py3-none-any.whl (10 kB)
+Downloading requests_oauthlib-2.0.0-py2.py3-none-any.whl (24 kB)
+Downloading sympy-1.14.0-py3-none-any.whl (6.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.3/6.3 MB 4.3 MB/s eta 0:00:00
+Downloading asgiref-3.8.1-py3-none-any.whl (23 kB)
+Downloading fsspec-2025.3.2-py3-none-any.whl (194 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 194.4/194.4 kB 3.5 MB/s eta 0:00:00
+Downloading humanfriendly-10.0-py2.py3-none-any.whl (86 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 86.8/86.8 kB 4.5 MB/s eta 0:00:00
+Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Downloading mpmath-1.3.0-py3-none-any.whl (536 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 536.2/536.2 kB 10.7 MB/s eta 0:00:00
+Downloading zipp-3.21.0-py3-none-any.whl (9.6 kB)
+Downloading filelock-3.18.0-py3-none-any.whl (16 kB)
+Building wheels for collected packages: pypika
+  Building wheel for pypika (pyproject.toml): started
+  Building wheel for pypika (pyproject.toml): finished with status 'done'
+  Created wheel for pypika: filename=pypika-0.48.9-py2.py3-none-any.whl size=53801 sha256=e7ccfe19cafd7e6bad81dfde54ccd0799946085096ddc6ce78b466788f4a6fab
+  Stored in directory: /home/rot/.cache/pip/wheels/d5/3d/69/8d68d249cd3de2584f226e27fd431d6344f7d70fd856ebd01b
+Successfully built pypika
+Installing collected packages: pypika, mpmath, flatbuffers, durationpy, zipp, websocket-client, uvloop, sympy, shellingham, rpds-py, python-dateutil, pyproject_hooks, pygments, overrides, opentelemetry-util-http, opentelemetry-proto, oauthlib, mmh3, mdurl, importlib-resources, humanfriendly, httptools, fsspec, filelock, click, bcrypt, backoff, asgiref, watchfiles, starlette, requests-oauthlib, referencing, posthog, opentelemetry-exporter-otlp-proto-common, markdown-it-py, importlib-metadata, huggingface-hub, coloredlogs, build, tokenizers, rich, opentelemetry-api, onnxruntime, kubernetes, jsonschema-specifications, fastapi, typer, opentelemetry-semantic-conventions, jsonschema, opentelemetry-sdk, opentelemetry-instrumentation, opentelemetry-instrumentation-asgi, opentelemetry-exporter-otlp-proto-grpc, opentelemetry-instrumentation-fastapi, chromadb

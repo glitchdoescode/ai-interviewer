@@ -27,6 +27,7 @@ import ChatInterface from '../components/ChatInterface';
 import { useInterview } from '../context/InterviewContext';
 import { checkVoiceAvailability } from '../api/interviewService';
 import JobRoleSelector from '../components/JobRoleSelector';
+import { useConfig } from '../context/ConfigContext';
 
 /**
  * Interview page component
@@ -54,6 +55,7 @@ const Interview = () => {
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
   const [showJobSelector, setShowJobSelector] = useState(!urlSessionId);
   const [selectedJobRole, setSelectedJobRole] = useState(null);
+  const { systemName } = useConfig();
 
   // Check if the requested session ID should be loaded
   useEffect(() => {
@@ -306,11 +308,11 @@ const Interview = () => {
       <Modal isOpen={isOpen} onClose={onClose} size="lg">
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader color="brand.700">How AI Interviewer Works</ModalHeader>
+          <ModalHeader color="brand.700">How {systemName} Works</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
             <Text mb={4}>
-              The AI Interviewer conducts technical interviews simulating real-world scenarios. Here's what to expect:
+              The {systemName} conducts technical interviews simulating real-world scenarios. Here's what to expect:
             </Text>
             
             <Box mb={4}>

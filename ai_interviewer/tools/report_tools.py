@@ -1,5 +1,5 @@
 """
-Report generation tools for the AI Interviewer platform.
+Report generation tools for the {SYSTEM_NAME} platform.
 
 This module implements tools for generating interview reports in various formats.
 """
@@ -17,6 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
 from ai_interviewer.models.rubric import InterviewEvaluation
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ def _generate_pdf_report(
     content = []
     
     # Title
-    content.append(Paragraph("AI Interviewer - Interview Report", title_style))
+    content.append(Paragraph(f"{SYSTEM_NAME} - Interview Report", title_style))
     content.append(Spacer(1, 12))
     
     # Interview Details

@@ -1,5 +1,5 @@
 """
-Code feedback generation for AI Interviewer platform.
+Code feedback generation for {SYSTEM_NAME} platform.
 
 This module provides utilities for generating detailed feedback on code submissions,
 including specific improvement suggestions and performance analysis.
@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 import re
 
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """
-Command Line Interface for the AI Interviewer platform.
+Command Line Interface for the {SYSTEM_NAME} platform.
 
-This module provides a CLI for interacting with the AI Interviewer.
+This module provides a CLI for interacting with the {SYSTEM_NAME}.
 """
 import os
 import sys
@@ -22,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 # Import the AIInterviewer class
 from ai_interviewer.core.ai_interviewer import AIInterviewer
+from ai_interviewer.utils.config import SYSTEM_NAME
 
 class InterviewCLI:
-    """Command Line Interface for interacting with the AI Interviewer."""
+    """Command Line Interface for interacting with the {SYSTEM_NAME}."""
     
     def __init__(self):
         """Initialize the CLI with an AIInterviewer instance."""
@@ -34,8 +35,8 @@ class InterviewCLI:
     
     async def start_interview(self):
         """Start an interactive interview session."""
-        print("\n🤖 AI Interviewer - Technical Interview Simulator 🤖\n")
-        print("Welcome to your technical interview simulation!")
+        print(f"\n🤖 {SYSTEM_NAME} - Technical Interview Simulator 🤖\n")
+        print(f"Welcome to your technical interview simulation with {SYSTEM_NAME}!")
         print("Type your responses after each question. Type 'exit' to end the interview.\n")
         
         while True:
@@ -79,7 +80,7 @@ class InterviewCLI:
         
         try:
             with open(filename, "w") as f:
-                f.write("AI INTERVIEW TRANSCRIPT\n")
+                f.write(f"{SYSTEM_NAME} INTERVIEW TRANSCRIPT\n")
                 f.write("======================\n\n")
                 
                 for entry in self.interview_history:
@@ -94,7 +95,7 @@ class InterviewCLI:
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="AI Technical Interviewer CLI")
+    parser = argparse.ArgumentParser(description=f"{SYSTEM_NAME} Technical Interviewer CLI")
     parser.add_argument("--save", type=str, help="Save interview transcript to the specified file")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser.parse_args()

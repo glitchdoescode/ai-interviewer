@@ -26,6 +26,7 @@ import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode } from 'react-icons/fa'
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
 import { submitChallengeCode } from '../api/interviewService';
+import { useConfig } from '../context/ConfigContext';
 
 /**
  * CodingChallenge component for handling coding challenge interactions
@@ -44,6 +45,7 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
   const toast = useToast();
   
   const { setInterviewStage } = useInterview();
+  const { systemName } = useConfig();
   
   // Set the interview stage to coding challenge
   useEffect(() => {
@@ -127,7 +129,7 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
     toast({
       title: isWaitingForUser ? 'Resuming Interview' : 'Paused for Coding',
       description: isWaitingForUser 
-        ? 'Returning control to the AI interviewer.' 
+        ? `Returning control to the ${systemName}.` 
         : 'Take your time to solve the challenge. The AI will wait.',
       status: 'info',
       duration: 3000,
