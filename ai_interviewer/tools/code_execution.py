@@ -17,6 +17,8 @@ from langchain_core.tools import tool
 
 # Import docker sandbox
 from ai_interviewer.tools.docker_sandbox import DockerSandbox
+# Import profiling utilities
+from ai_interviewer.utils.profiling import timer, timed_function
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ def get_docker_sandbox() -> Optional[DockerSandbox]:
     return _docker_sandbox
 
 @tool
+@timed_function(log_level=logging.INFO)
 def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:
     """
     Execute candidate code in a secure sandbox with resource limits.
@@ -74,11 +77,12 @@ def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> 
         if sandbox is not None:
             # Execute code in Docker sandbox
             logger.info("Using Docker sandbox for secure execution")
-            results = sandbox.execute_code(
-                language=language,
-                code=code,
-                test_cases=test_cases
-            )
+            with timer("docker_sandbox_execution", log_level=logging.INFO):
+                results = sandbox.execute_code(
+                    language=language,
+                    code=code,
+                    test_cases=test_cases
+                )
             
             # Format results for consumption by the interviewer agent
             return {
@@ -94,7 +98,8 @@ def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> 
             logger.warning("Docker not available, falling back to legacy CodeExecutor")
             
             if language.lower() == "python":
-                results = CodeExecutor.execute_python_code(code, test_cases)
+                with timer("legacy_python_execution", log_level=logging.INFO):
+                    results = CodeExecutor.execute_python_code(code, test_cases)
                 return {
                     "status": results.get("status", "error"),
                     "pass_count": results.get("passed", 0),

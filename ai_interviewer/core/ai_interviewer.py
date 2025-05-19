@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Any, Literal, Union, Tuple
 from datetime import datetime
 from enum import Enum
 import re
+import time
+import asyncio
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -39,7 +41,8 @@ from ai_interviewer.tools.question_tools import (
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
 from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config, SYSTEM_NAME
-from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content #, format_conversation_for_llm
+from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
+from ai_interviewer.utils.profiling import timer, timed_function, LangGraphProfiler
 
 # Configure logging
 logging.basicConfig(
@@ -252,13 +255,30 @@ class AIInterviewer:
             # Initialize in-memory storage
             self.active_sessions = {}
             
-        # Initialize LLM
+        # Initialize LLM with optimized settings
         llm_config = get_llm_config()
-        self.llm = ChatGoogleGenerativeAI(
-            model=llm_config.get("model", "gemini-pro"),
-            temperature=llm_config.get("temperature", 0.7),
-            convert_system_message_to_human=True
-        )
+        try:
+            self.llm = ChatGoogleGenerativeAI(
+                model=llm_config.get("model", "gemini-pro"),
+                temperature=llm_config.get("temperature", 0.7),
+                convert_system_message_to_human=True,  # Convert system messages since Gemini handles them differently
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=1024,
+                cache=False,  # Disable caching to avoid the cache error
+            )
+            # Test the model connection
+            test_response = self.llm.invoke([HumanMessage(content="Test connection")])
+            logger.info("Successfully connected to LLM")
+        except Exception as e:
+            logger.error(f"Error initializing LLM: {e}")
+            # Fallback to a more stable configuration
+            self.llm = ChatGoogleGenerativeAI(
+                model="gemini-pro",
+                temperature=0.7,
+                convert_system_message_to_human=True,
+                cache=False
+            )
         
         # Initialize the workflow
         self.workflow = self._initialize_workflow()
@@ -288,6 +308,7 @@ class AIInterviewer:
         # Initialize workflow
         self.workflow = self._initialize_workflow()
     
+    @timed_function(log_level=logging.INFO)
     def _initialize_workflow(self) -> StateGraph:
         """
         Initialize the LangGraph workflow with the model and tools.
@@ -297,11 +318,14 @@ class AIInterviewer:
         """
         logger.info("Initializing LangGraph workflow")
         
+        # Initialize the profiler for tracking graph performance
+        self.graph_profiler = LangGraphProfiler(graph_name="interview_workflow")
+        
         # Use our custom InterviewState instead of MessagesState
         workflow = StateGraph(InterviewState)
         
         # Define custom wrapper for the tool node to ensure proper state handling
-        def tools_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
+        async def tools_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
             """
             Wrapper for ToolNode that ensures proper state handling.
             
@@ -312,6 +336,9 @@ class AIInterviewer:
                 Updated state with tool results
             """
             try:
+                # Start profiling this node
+                self.graph_profiler.start_node("tools_node")
+                
                 # Check if state is a dictionary or InterviewState object
                 if isinstance(state, dict):
                     # Extract messages from dictionary
@@ -319,7 +346,8 @@ class AIInterviewer:
                     candidate_name = state.get("candidate_name", "")
                     
                     # Execute tools using the ToolNode with messages
-                    tool_result = self.tool_node.invoke({"messages": messages})
+                    with timer("tool_node_invoke", log_level=logging.INFO):
+                        tool_result = await self.tool_node.ainvoke({"messages": messages})
                     
                     # Create a new dictionary with updated values
                     updated_state = dict(state)
@@ -334,6 +362,8 @@ class AIInterviewer:
                             updated_state["candidate_name"] = name_match
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
                     
+                    # End profiling this node
+                    self.graph_profiler.end_node("tools_node")
                     return updated_state
                 else:
                     # Extract messages from InterviewState
@@ -341,7 +371,8 @@ class AIInterviewer:
                     candidate_name = state.candidate_name
                     
                     # Execute tools using the ToolNode with messages
-                    tool_result = self.tool_node.invoke({"messages": messages})
+                    with timer("tool_node_invoke", log_level=logging.INFO):
+                        tool_result = await self.tool_node.ainvoke({"messages": messages})
                     
                     # Get updated messages
                     updated_messages = state.messages + tool_result.get("messages", [])
@@ -354,7 +385,7 @@ class AIInterviewer:
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
                     
                     # Create a new InterviewState with updated values
-                    return InterviewState(
+                    result = InterviewState(
                         messages=updated_messages,
                         candidate_name=candidate_name,
                         job_role=state.job_role,
@@ -365,8 +396,14 @@ class AIInterviewer:
                         session_id=state.session_id,
                         user_id=state.user_id
                     )
+                    
+                    # End profiling this node
+                    self.graph_profiler.end_node("tools_node")
+                    return result
             except Exception as e:
                 logger.error(f"Error in tools_node: {e}")
+                # End profiling even on error
+                self.graph_profiler.end_node("tools_node")
                 # Return original state on error
                 return state
         
@@ -397,6 +434,7 @@ class AIInterviewer:
         return compiled_workflow
         
     @staticmethod
+    @timed_function(log_level=logging.INFO)
     def should_continue(state: Union[Dict, InterviewState]) -> Literal["tools", "end"]:
         """
         Determine whether to continue to tools or end the workflow.
@@ -433,131 +471,112 @@ class AIInterviewer:
         # No AI messages found
         return "end"
     
-    def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
+    async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
         """
         Call the model to generate a response based on the current state.
-        
-        Args:
-            state: Current state with messages and interview context (dict or InterviewState)
-            
-        Returns:
-            Updated state with new AI message
+        Uses async operations internally but presents a synchronous interface for LangGraph.
         """
         try:
-            # Check if state is a dictionary or InterviewState object
-            if isinstance(state, dict):
-                # Extract data from dictionary
-                messages = state.get("messages", [])
-                candidate_name = state.get("candidate_name", "")
-                job_role = state.get("job_role", self.job_role)
-                seniority_level = state.get("seniority_level", self.seniority_level)
-                required_skills = state.get("required_skills", self.required_skills)
-                job_description = state.get("job_description", self.job_description)
-                interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
-                session_id = state.get("session_id", "")
-                user_id = state.get("user_id", "")
-                # Default to True for requires_coding if not specified
-                requires_coding = state.get("requires_coding", True)
-            else:
-                # Extract data from InterviewState object
-                messages = state.messages
-                candidate_name = state.candidate_name
-                job_role = state.job_role
-                seniority_level = state.seniority_level
-                required_skills = state.required_skills
-                job_description = state.job_description
-                interview_stage = state.interview_stage
-                session_id = state.session_id
-                user_id = state.user_id
-                # Default to True for requires_coding if not specified
-                requires_coding = getattr(state, "requires_coding", True)
+            # Start profiling this node
+            self.graph_profiler.start_node("call_model")
+            start_time = time.time()
             
-            # Create or update system message with context
+            # Extract state data efficiently using a helper method
+            state_data = self._extract_state_data(state)
+            
+            # Create system prompt
             system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
                 system_name=SYSTEM_NAME,
-                candidate_name=candidate_name or "[Not provided yet]",
-                interview_id=session_id,
-                current_stage=interview_stage,
-                job_role=job_role,
-                seniority_level=seniority_level,
-                required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
-                job_description=job_description,
-                requires_coding=requires_coding
+                candidate_name=state_data["candidate_name"] or "[Not provided yet]",
+                interview_id=state_data["session_id"],
+                current_stage=state_data["interview_stage"],
+                job_role=state_data["job_role"],
+                seniority_level=state_data["seniority_level"],
+                required_skills=", ".join(state_data["required_skills"]) if isinstance(state_data["required_skills"], list) else str(state_data["required_skills"]),
+                job_description=state_data["job_description"],
+                requires_coding=state_data["requires_coding"]
             )
             
-            # Update system message if present, otherwise add it
-            if messages and isinstance(messages[0], SystemMessage):
-                messages[0] = SystemMessage(content=system_prompt)
-            else:
-                messages = [SystemMessage(content=system_prompt)] + messages
+            # Prepare messages with system prompt
+            messages = self._prepare_messages(state_data["messages"], system_prompt)
             
             # Include metadata for model tracing/context
             model_config = {
                 "metadata": {
-                    "interview_id": session_id,
-                    "candidate_name": candidate_name,
-                    "interview_stage": interview_stage
+                    "interview_id": state_data["session_id"],
+                    "candidate_name": state_data["candidate_name"],
+                    "interview_stage": state_data["interview_stage"]
                 }
             }
             
-            # Call the model
-            logger.debug(f"Calling model with {len(messages)} messages")
-            ai_message = self.llm.invoke(messages, config=model_config)
+            # Call the model with retries
+            max_retries = 3
+            retry_count = 0
+            last_error = None
             
-            # Extract name from conversation if not already known
-            if not candidate_name:
+            while retry_count < max_retries:
+                try:
+                    logger.debug(f"Calling model with {len(messages)} messages (attempt {retry_count + 1})")
+                    llm_start_time = time.time()
+                    ai_message = await self.llm.ainvoke(messages)
+                    llm_elapsed = time.time() - llm_start_time
+                    logger.info(f"LLM call completed in {llm_elapsed:.2f} seconds")
+                    break
+                except Exception as e:
+                    last_error = e
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"LLM call failed (attempt {retry_count}): {str(e)}")
+                        await asyncio.sleep(1)  # Wait before retrying
+                    else:
+                        logger.error(f"All LLM retries failed: {str(e)}")
+                        raise
+            
+            # Process name extraction if needed
+            if not state_data["candidate_name"]:
                 name_match = self._extract_candidate_name(messages + [ai_message])
                 if name_match:
-                    candidate_name = name_match
-                    logger.info(f"Extracted candidate name during model call: {candidate_name}")
-                    
-                    # Immediately update session metadata with the new candidate name
-                    if session_id and self.session_manager:
-                        session = self.session_manager.get_session(session_id)
-                        if session and "metadata" in session:
-                            metadata = session.get("metadata", {})
-                            metadata[CANDIDATE_NAME_KEY] = candidate_name
-                            self.session_manager.update_session_metadata(session_id, metadata)
-                            logger.info(f"Updated session metadata with candidate name: {candidate_name}")
+                    state_data["candidate_name"] = name_match
+                    logger.info(f"Extracted candidate name: {name_match}")
             
-            # Determine if we need to update the interview stage
-            new_stage = self._determine_interview_stage(messages, ai_message, interview_stage)
+            # Determine next stage
+            new_stage = await self._determine_interview_stage(messages, ai_message, state_data["interview_stage"])
             
-            # Return the appropriate state type based on input
+            # Create the final state
             if isinstance(state, dict):
-                # Return a dictionary with updated values
                 updated_state = dict(state)
                 updated_state["messages"] = messages + [ai_message]
-                updated_state["candidate_name"] = candidate_name
-                updated_state["interview_stage"] = new_stage if new_stage != interview_stage else interview_stage
-                return updated_state
+                updated_state["candidate_name"] = state_data["candidate_name"]
+                updated_state["interview_stage"] = new_stage
+                result = updated_state
             else:
-                # Return a new InterviewState object
-                return InterviewState(
+                result = InterviewState(
                     messages=messages + [ai_message],
-                    candidate_name=candidate_name,
-                    job_role=job_role,
-                    seniority_level=seniority_level,
-                    required_skills=required_skills,
-                    job_description=job_description,
-                    interview_stage=new_stage if new_stage != interview_stage else interview_stage,
-                    session_id=session_id,
-                    user_id=user_id
+                    candidate_name=state_data["candidate_name"],
+                    job_role=state_data["job_role"],
+                    seniority_level=state_data["seniority_level"],
+                    required_skills=state_data["required_skills"],
+                    job_description=state_data["job_description"],
+                    interview_stage=new_stage,
+                    session_id=state_data["session_id"],
+                    user_id=state_data["user_id"]
                 )
             
-        except Exception as e:
-            logger.error(f"Error calling model: {e}")
-            # Create error message
-            error_message = AIMessage(content="I apologize, but I encountered an issue. Please try again.")
+            # End profiling this node
+            total_elapsed = time.time() - start_time
+            logger.info(f"Total call_model execution time: {total_elapsed:.2f} seconds")
+            self.graph_profiler.end_node("call_model")
+            return result
             
-            # Return appropriate state type
+        except Exception as e:
+            logger.error(f"Error in call_model: {str(e)}")
+            # End profiling even on error
+            self.graph_profiler.end_node("call_model")
+            # Return error state with more informative message
+            error_message = AIMessage(content=f"I apologize, but I encountered a technical issue. Please try again in a moment.")
             if isinstance(state, dict):
-                updated_state = dict(state)
-                if "messages" in updated_state:
-                    updated_state["messages"] = updated_state["messages"] + [error_message]
-                else:
-                    updated_state["messages"] = [error_message]
-                return updated_state
+                state["messages"] = state.get("messages", []) + [error_message]
+                return state
             else:
                 return InterviewState(
                     messages=state.messages + [error_message] if hasattr(state, "messages") else [error_message],
@@ -571,287 +590,10 @@ class AIInterviewer:
                     user_id=state.user_id if hasattr(state, "user_id") else ""
                 )
     
-    def _determine_interview_stage(self, messages: List[BaseMessage], ai_message: AIMessage, current_stage: str) -> str:
-        """
-        Determine the next interview stage based on the conversation context.
-        
-        Args:
-            messages: List of all messages in the conversation
-            ai_message: The latest AI message
-            current_stage: Current interview stage
-            
-        Returns:
-            New interview stage or current stage if no change
-        """
-        # Get human messages for better analysis
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        human_message_count = len(human_messages)
-        
-        # Get the latest human message (if any)
-        latest_human_message = human_messages[-1].content.lower() if human_messages else ""
-        
-        # Extract AI message content
-        ai_content = ai_message.content.lower() if hasattr(ai_message, 'content') else ""
-        
-        # Check for digression or clarification patterns
-        clarification_patterns = [
-            "could you explain", "what do you mean", "can you clarify", 
-            "i'm not sure", "don't understand", "please explain", 
-            "what is", "how does", "could you elaborate"
-        ]
-        
-        # Is this a clarification or digression?
-        is_clarification = any(pattern in latest_human_message for pattern in clarification_patterns)
-        
-        # If this is a clarification, usually we don't want to change stages
-        if is_clarification and current_stage != InterviewStage.INTRODUCTION.value:
-            logger.info(f"Detected clarification request, maintaining {current_stage} stage")
-            return current_stage
-        
-        # Check for coding challenge triggers in AI message
-        coding_keywords = [
-            "coding challenge", "programming challenge", "write code", 
-            "implement a function", "solve this problem", "coding exercise",
-            "write a program", "implement an algorithm"
-        ]
-        has_coding_trigger = any(keyword in ai_content for keyword in coding_keywords)
-        
-        # Check for readiness to conclude the interview
-        conclusion_keywords = [
-            "conclude the interview", "conclude our interview", 
-            "finishing up", "wrapping up", "end of our interview",
-            "thank you for your time today"
-        ]
-        has_conclusion_trigger = any(keyword in ai_content for keyword in conclusion_keywords)
-        
-        if has_conclusion_trigger and current_stage not in [InterviewStage.INTRODUCTION.value, InterviewStage.CONCLUSION.value]:
-            logger.info(f"Transitioning from {current_stage} to CONCLUSION stage")
-            return InterviewStage.CONCLUSION.value
-        
-        # Handle stage-specific transitions
-        if current_stage == InterviewStage.INTRODUCTION.value:
-            # Start technical questions after introduction is complete
-            # More dynamic transition based on interaction quality, not just count
-            introduction_complete = self._is_introduction_complete(human_messages)
-            if introduction_complete:
-                logger.info("Transitioning from INTRODUCTION to TECHNICAL_QUESTIONS stage")
-                return InterviewStage.TECHNICAL_QUESTIONS.value
-        
-        elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-            # Check if we should transition to coding challenge based on AI suggestion
-            if has_coding_trigger:
-                # Get state information to check if job role requires coding
-                # Extract state from messages if available
-                job_role = None
-                for msg in messages:
-                    if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
-                        # Try to extract job role from system message
-                        match = re.search(r"job role: (.+?)[\n\.]", msg.content, re.IGNORECASE)
-                        if match:
-                            job_role = match.group(1).strip()
-                            break
-                
-                # Default job roles that should include coding challenges
-                coding_required_roles = [
-                    "software engineer", "developer", "programmer", "frontend developer", 
-                    "backend developer", "full stack developer", "web developer",
-                    "mobile developer", "app developer", "data scientist", "devops engineer"
-                ]
-                
-                # Check if the job role requires coding
-                job_role_requires_coding = False
-                if job_role:
-                    # Check if the job role contains any of our coding-required roles
-                    job_role_lower = job_role.lower()
-                    job_role_requires_coding = any(role in job_role_lower for role in coding_required_roles)
-                    
-                    # If we have a metadata field specifically for this, check that too
-                    # This would be set if a JobRole.requires_coding field was provided
-                    for msg in messages:
-                        if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
-                            if "requires coding: true" in msg.content.lower():
-                                job_role_requires_coding = True
-                                break
-                            elif "requires coding: false" in msg.content.lower():
-                                job_role_requires_coding = False
-                                break
-                else:
-                    # Default to requiring coding if we can't determine the job role
-                    job_role_requires_coding = True
-                
-                if job_role_requires_coding:
-                    logger.info(f"Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage for job role: {job_role}")
-                    return InterviewStage.CODING_CHALLENGE.value
-                else:
-                    logger.info(f"Skipping coding challenge for job role: {job_role} (coding not required)")
-            
-            # If we've had enough substantive technical exchanges, move to behavioral questions
-            # Use a combination of count and content analysis
-            if human_message_count >= 5 and not has_coding_trigger:
-                # Check if we've asked enough substantive technical questions
-                substantive_qa = self._count_substantive_exchanges(messages)
-                if substantive_qa >= 3:
-                    logger.info("Transitioning from TECHNICAL_QUESTIONS to BEHAVIORAL_QUESTIONS stage after substantive technical discussion")
-                    return InterviewStage.BEHAVIORAL_QUESTIONS.value
-        
-        elif current_stage == InterviewStage.CODING_CHALLENGE.value:
-            # Check if the candidate has submitted a solution and we should transition
-            submission_keywords = [
-                "submitted my solution", "finished the challenge", "completed the exercise",
-                "here's my solution", "my code is ready", "implemented the solution",
-                "done with the challenge", "finished coding", "completed the task"
-            ]
-            has_submission = any(keyword in ' '.join([m.content.lower() for m in messages[-3:] if hasattr(m, 'content')]) for keyword in submission_keywords)
-            
-            # Also check metadata for manual transition triggered by frontend submission
-            # This typically happens via the continue_after_challenge API endpoint
-            metadata_transition = False
-            for msg in messages:
-                if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
-                    if "resuming_from_challenge: true" in msg.content.lower():
-                        metadata_transition = True
-                        break
-            
-            if has_submission or metadata_transition:
-                logger.info(f"Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING stage (triggered by{'metadata' if metadata_transition else 'message content'})")
-                return InterviewStage.CODING_CHALLENGE_WAITING.value
-        
-        elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
-            # This stage is primarily a UI-driven state that indicates we're waiting for the frontend
-            # to complete the coding challenge submission flow and call the challenge-complete endpoint.
-            # The actual transition to FEEDBACK is typically handled by the continue_after_challenge method.
-            
-            # However, we provide a backup detection mechanism here for text-based interfaces
-            # by checking for evaluation language in the AI's response
-            evaluation_keywords = [
-                "your solution was", "feedback on your code", "your implementation", 
-                "code review", "assessment of your solution", "evaluation of your code"
-            ]
-            has_evaluation = any(keyword in ai_content for keyword in evaluation_keywords)
-            
-            # Also check recent history for coding evaluation data in the metadata
-            has_evaluation_data = False
-            for msg in messages[-5:]:
-                if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
-                    if "coding_evaluation:" in msg.content.lower():
-                        has_evaluation_data = True
-                        break
-            
-            if has_evaluation or has_evaluation_data:
-                logger.info(f"Transitioning from CODING_CHALLENGE_WAITING to FEEDBACK stage (triggered by{'evaluation data' if has_evaluation_data else 'evaluation keywords'})")
-                return InterviewStage.FEEDBACK.value
-        
-        elif current_stage == InterviewStage.FEEDBACK.value:
-            # After providing feedback, transition to behavioral questions if not already done
-            behavioral_transition = any(keyword in ai_content for keyword in [
-                "let's talk about your experience", "tell me about a time", 
-                "describe a situation", "how do you handle", "what would you do if"
-            ])
-            
-            if behavioral_transition or human_message_count > 2:
-                logger.info("Transitioning from FEEDBACK to BEHAVIORAL_QUESTIONS stage")
-                return InterviewStage.BEHAVIORAL_QUESTIONS.value
-        
-        elif current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
-            # After enough behavioral questions, move to conclusion
-            # Check if we have enough substantive behavioral exchanges or AI is ready to conclude
-            if has_conclusion_trigger or human_message_count >= 4:
-                conclusion_ready = self._is_ready_for_conclusion(messages)
-                if conclusion_ready:
-                    logger.info("Transitioning from BEHAVIORAL_QUESTIONS to CONCLUSION stage")
-                    return InterviewStage.CONCLUSION.value
-        
-        # By default, stay in the current stage
-        return current_stage
-    
-    def _is_introduction_complete(self, human_messages: List[BaseMessage]) -> bool:
-        """
-        Determine if the introduction phase is complete based on message content.
-        
-        Args:
-            human_messages: List of human messages in the conversation
-            
-        Returns:
-            Boolean indicating if introduction is complete
-        """
-        # If we have less than 2 exchanges, introduction is not complete
-        if len(human_messages) < 2:
-            return False
-        
-        # Check if candidate has shared their name, background, or experience
-        introduction_markers = [
-            "experience with", "background in", "worked with", "my name is",
-            "years of experience", "worked as", "skills in", "specialized in",
-            "i am a", "i'm a", "currently working"
-        ]
-        
-        # Combine all human messages and check for introduction markers
-        all_content = " ".join([m.content.lower() for m in human_messages if hasattr(m, 'content')])
-        has_introduction_info = any(marker in all_content for marker in introduction_markers)
-        
-        return has_introduction_info
-    
-    def _count_substantive_exchanges(self, messages: List[BaseMessage]) -> int:
-        """
-        Count the number of substantive question-answer exchanges in the conversation.
-        
-        Args:
-            messages: List of all messages in the conversation
-            
-        Returns:
-            Count of substantive Q&A exchanges
-        """
-        count = 0
-        
-        # Look for pairs of messages (AI question followed by human response)
-        for i in range(len(messages) - 1):
-            if isinstance(messages[i], AIMessage) and isinstance(messages[i+1], HumanMessage):
-                ai_content = messages[i].content.lower() if hasattr(messages[i], 'content') else ""
-                human_response = messages[i+1].content.lower() if hasattr(messages[i+1], 'content') else ""
-                
-                # Check if this is a substantive technical exchange
-                is_technical_question = any(kw in ai_content for kw in ["how", "what", "why", "explain", "describe"])
-                is_substantive_answer = len(human_response.split()) > 15  # Reasonable length for a substantive answer
-                
-                if is_technical_question and is_substantive_answer:
-                    count += 1
-        
-        return count
-    
-    def _is_ready_for_conclusion(self, messages: List[BaseMessage]) -> bool:
-        """
-        Determine if the interview is ready to conclude based on conversation flow.
-        
-        Args:
-            messages: List of all messages in the conversation
-            
-        Returns:
-            Boolean indicating if ready for conclusion
-        """
-        # Check if we've had sufficient conversation overall
-        if len(messages) < 10:  # Need a reasonable conversation length
-            return False
-        
-        # Check for signals that all question areas have been covered
-        ai_messages = [m.content.lower() for m in messages if isinstance(m, AIMessage) and hasattr(m, 'content')]
-        
-        # Look for phrases that suggest interview completeness
-        conclusion_signals = [
-            "covered all", "thank you for your time", "appreciate your answers",
-            "that concludes", "wrapping up", "final question", "is there anything else",
-            "do you have any questions"
-        ]
-        
-        # Check the last 3 AI messages for conclusion signals
-        recent_ai_content = " ".join(ai_messages[-3:]) if len(ai_messages) >= 3 else " ".join(ai_messages)
-        has_conclusion_signal = any(signal in recent_ai_content for signal in conclusion_signals)
-        
-        return has_conclusion_signal
-    
     async def run_interview(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
-                           job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
-                           required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
-                           requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Tuple[str, str]:
+                          job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
+                          required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
+                          requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Tuple[str, str]:
         """
         Run the interview with a user message, creating or continuing a session.
         
@@ -888,7 +630,7 @@ class AIInterviewer:
         try:
             # Check if the session exists
             if self.session_manager:
-                session = self.session_manager.get_session(session_id)
+                session = await self.session_manager.get_session(session_id)
             else:
                 # Use in-memory storage
                 session = self.active_sessions.get(session_id)
@@ -896,14 +638,14 @@ class AIInterviewer:
             if not session and self.session_manager:
                 # Create a new session if it doesn't exist but session_id was provided
                 logger.warning(f"Session {session_id} not found, creating new")
-                self.session_manager.create_session(user_id, session_id=session_id)
-                session = self.session_manager.get_session(session_id)
+                await self.session_manager.create_session(user_id, session_id=session_id)
+                session = await self.session_manager.get_session(session_id)
                 
                 # Add default interview stage
                 if session and self.session_manager:
                     metadata = session.get("metadata", {})
                     metadata[STAGE_KEY] = InterviewStage.INTRODUCTION.value
-                    self.session_manager.update_session_metadata(session_id, metadata)
+                    await self.session_manager.update_session_metadata(session_id, metadata)
                 
             # Extract messages and metadata
             if session:
@@ -969,7 +711,7 @@ class AIInterviewer:
                 }
                 
                 if self.session_manager:
-                    self.session_manager.update_session_metadata(session_id, metadata)
+                    await self.session_manager.update_session_metadata(session_id, metadata)
                 else:
                     # Store in memory
                     self.active_sessions[session_id] = metadata
@@ -990,7 +732,7 @@ class AIInterviewer:
         
         # Detect potential digression if enabled
         if handle_digression and len(messages) > 2:
-            is_digression = self._detect_digression(user_message, messages, interview_stage)
+            is_digression = await self._detect_digression(user_message, messages, interview_stage)
             
             # If this is a digression, add a note in the message history for context
             if is_digression:
@@ -1027,7 +769,7 @@ class AIInterviewer:
                 
                 # Immediately update session metadata with the new name
                 if self.session_manager:
-                    self.session_manager.update_session_metadata(session_id, metadata)
+                    await self.session_manager.update_session_metadata(session_id, metadata)
                     logger.info(f"Updated session metadata with candidate name: {candidate_name}")
         
         # Add to transcript for later retrieval
@@ -1082,7 +824,7 @@ class AIInterviewer:
             logger.info(f"Running workflow for session {session_id}")
             
             # Use runnable protocol with config
-            output = self.workflow.invoke(state, config=config)
+            output = await self.workflow.ainvoke(state, config=config)
             
             # Extract response from output
             if not output:
@@ -1136,7 +878,7 @@ class AIInterviewer:
             try:
                 if self.session_manager:
                     # Update metadata including transcript
-                    self.session_manager.update_session_metadata(session_id, metadata)
+                    await self.session_manager.update_session_metadata(session_id, metadata)
                     
                     # Update session with the updated messages
                     # Transcript includes all messages
@@ -1155,13 +897,13 @@ class AIInterviewer:
                             "timestamp": datetime.now().isoformat()
                         })
                         
-                        self.session_manager.update_session_metadata(session_id, metadata)
+                        await self.session_manager.update_session_metadata(session_id, metadata)
                     
                     # Update activity timestamp
-                    self.session_manager.update_session_activity(session_id)
+                    await self.session_manager.update_session_activity(session_id)
                     
                     # Save all messages
-                    self.session_manager.update_session_messages(session_id, all_messages)
+                    await self.session_manager.update_session_messages(session_id, all_messages)
                 else:
                     # In-memory storage
                     self.active_sessions[session_id].update(metadata)
@@ -1186,6 +928,10 @@ class AIInterviewer:
                     self.active_sessions[session_id]["last_active"] = datetime.now().isoformat()
             except Exception as e:
                 logger.error(f"Error saving session {session_id}: {e}")
+            
+            # Print performance summary if we have enough data
+            if hasattr(self, 'graph_profiler') and len(self.graph_profiler.node_timings) > 0:
+                self.graph_profiler.print_summary()
             
             return ai_message_content, session_id
         except Exception as e:
@@ -1550,7 +1296,7 @@ class AIInterviewer:
             
             # Save metadata updates
             if self.session_manager:
-                self.session_manager.update_session_metadata(session_id, metadata)
+                await self.session_manager.update_session_metadata(session_id, metadata)
             
             # Prepare context message for continuing the interview
             feedback_context = ""
@@ -1607,6 +1353,97 @@ class AIInterviewer:
         """Context manager exit."""
         self.cleanup()
 
+    def _extract_state_data(self, state: Union[Dict, InterviewState]) -> Dict[str, Any]:
+        """Extract data from either a dictionary or InterviewState object."""
+        if isinstance(state, dict):
+            return {
+                "messages": state.get("messages", []),
+                "candidate_name": state.get("candidate_name", ""),
+                "job_role": state.get("job_role", self.job_role),
+                "seniority_level": state.get("seniority_level", self.seniority_level),
+                "required_skills": state.get("required_skills", self.required_skills),
+                "job_description": state.get("job_description", self.job_description),
+                "interview_stage": state.get("interview_stage", InterviewStage.INTRODUCTION.value),
+                "session_id": state.get("session_id", ""),
+                "user_id": state.get("user_id", ""),
+                "requires_coding": state.get("requires_coding", True)
+            }
+        else:
+            return {
+                "messages": state.messages,
+                "candidate_name": state.candidate_name,
+                "job_role": state.job_role,
+                "seniority_level": state.seniority_level,
+                "required_skills": state.required_skills,
+                "job_description": state.job_description,
+                "interview_stage": state.interview_stage,
+                "session_id": state.session_id,
+                "user_id": state.user_id,
+                "requires_coding": getattr(state, "requires_coding", True)
+            }
+
+    def _prepare_messages(self, messages: List[BaseMessage], system_prompt: str) -> List[BaseMessage]:
+        """Prepare messages with system prompt."""
+        if messages and isinstance(messages[0], SystemMessage):
+            messages[0] = SystemMessage(content=system_prompt)
+        else:
+            messages = [SystemMessage(content=system_prompt)] + messages
+        return messages
+
+    async def _determine_interview_stage(self, messages: List[BaseMessage], ai_message: AIMessage, current_stage: str) -> str:
+        """
+        Determine the next interview stage based on conversation context.
+        
+        Args:
+            messages: Previous messages in the conversation
+            ai_message: Latest AI message
+            current_stage: Current interview stage
+            
+        Returns:
+            Next interview stage
+        """
+        # Don't change stage if we're handling a digression
+        if any("CONTEXT: Candidate is digressing" in m.content 
+               for m in messages[-3:] 
+               if isinstance(m, AIMessage) and hasattr(m, 'content')):
+            return current_stage
+        
+        # Extract content from messages for analysis
+        recent_content = " ".join([
+            m.content for m in messages[-3:] 
+            if hasattr(m, 'content')
+        ] + [ai_message.content])
+        
+        # Stage transition patterns
+        transitions = {
+            InterviewStage.INTRODUCTION.value: {
+                "patterns": ["tell me about your experience", "background", "what brings you here"],
+                "next": InterviewStage.TECHNICAL_QUESTIONS.value
+            },
+            InterviewStage.TECHNICAL_QUESTIONS.value: {
+                "patterns": ["let's move on to a coding challenge", "I'd like you to solve", "implement"],
+                "next": InterviewStage.CODING_CHALLENGE.value
+            },
+            InterviewStage.CODING_CHALLENGE.value: {
+                "patterns": ["great solution", "well done", "let's discuss", "behavioral question"],
+                "next": InterviewStage.BEHAVIORAL_QUESTIONS.value
+            },
+            InterviewStage.BEHAVIORAL_QUESTIONS.value: {
+                "patterns": ["do you have any questions", "would you like to ask"],
+                "next": InterviewStage.CONCLUSION.value
+            }
+        }
+        
+        # Check for stage transition
+        if current_stage in transitions:
+            patterns = transitions[current_stage]["patterns"]
+            if any(pattern.lower() in recent_content.lower() for pattern in patterns):
+                logger.info(f"Transitioning from {current_stage} to {transitions[current_stage]['next']}")
+                return transitions[current_stage]["next"]
+        
+        # Stay in current stage if no transition patterns matched
+        return current_stage
+
 # Import for resume_interview method
 import asyncio
 
@@ -1623,4 +1460,143 @@ def safe_extract_content(message: AIMessage) -> str:
     try:
         return message.content or "I apologize, but I encountered an issue. Please try again."
     except Exception:
-        return "I apologize, but I encountered an issue. Please try again." 
+        return "I apologize, but I encountered an issue. Please try again."
+
+async def _get_cached_system_prompt(self, candidate_name: str, session_id: str, 
+                                  interview_stage: str, job_role: str, 
+                                  seniority_level: str, required_skills: List[str],
+                                  job_description: str, requires_coding: bool) -> str:
+    """Get system prompt with caching for performance."""
+    cache_key = f"{session_id}:{interview_stage}:{candidate_name}"
+    
+    # Check cache first
+    if hasattr(self, '_prompt_cache') and cache_key in self._prompt_cache:
+        return self._prompt_cache[cache_key]
+    
+    # Create prompt
+    system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+        system_name=SYSTEM_NAME,
+        candidate_name=candidate_name or "[Not provided yet]",
+        interview_id=session_id,
+        current_stage=interview_stage,
+        job_role=job_role,
+        seniority_level=seniority_level,
+        required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
+        job_description=job_description,
+        requires_coding=requires_coding
+    )
+    
+    # Cache the result
+    if not hasattr(self, '_prompt_cache'):
+        self._prompt_cache = {}
+    self._prompt_cache[cache_key] = system_prompt
+    
+    return system_prompt
+
+async def _extract_candidate_name_async(self, messages: List[BaseMessage]) -> str:
+    """Asynchronous version of name extraction."""
+    if len(messages) < 3:
+        return ""
+    
+    extract_prompt = [
+        SystemMessage(content="You are a helpful assistant. Your task is to extract the candidate's name from the conversation, if mentioned. Respond with just the name, or 'Unknown' if no name is found."),
+        HumanMessage(content=f"Extract the candidate's name from this conversation: {', '.join([m.content for m in messages if hasattr(m, 'content')])}")
+    ]
+    
+    try:
+        # Use the same model but with no tools and minimal temperature
+        raw_model = ChatGoogleGenerativeAI(
+            model=get_llm_config()["model"],
+            temperature=0.0,
+            max_output_tokens=128  # Keep it small for speed
+        )
+        
+        response = await raw_model.ainvoke(extract_prompt)
+        
+        name = response.content.strip()
+        if name.lower() in ["unknown", "not mentioned", "no name found", "none"]:
+            return ""
+            
+        name = name.replace("Name:", "").replace("Candidate name:", "").strip()
+        logger.info(f"Extracted candidate name: {name}")
+        return name
+    except Exception as e:
+        logger.error(f"Error extracting candidate name: {e}")
+        return ""
+
+async def _determine_interview_stage_async(self, messages: List[BaseMessage], 
+                                         ai_message: AIMessage, 
+                                         current_stage: str) -> str:
+    """Asynchronous version of interview stage determination."""
+    # Most of the logic can be reused from _determine_interview_stage
+    # but we'll make it more efficient
+    return self._determine_interview_stage(messages, ai_message, current_stage)
+
+async def _update_session_metadata_async(self, session_id: str, key: str, value: Any):
+    """Asynchronously update session metadata."""
+    try:
+        if self.session_manager:
+            session = self.session_manager.get_session(session_id)
+            if session and "metadata" in session:
+                metadata = session.get("metadata", {})
+                metadata[key] = value
+                await self.session_manager.update_session_metadata(session_id, metadata)
+                logger.info(f"Updated session metadata {key}: {value}")
+    except Exception as e:
+        logger.error(f"Error updating session metadata: {e}")
+
+async def _create_updated_state(self, original_state: Union[Dict, InterviewState], 
+                              state_data: Dict[str, Any],
+                              ai_message: AIMessage,
+                              new_stage: str) -> Union[Dict, InterviewState]:
+    """Create updated state object."""
+    messages = state_data["messages"] + [ai_message]
+    interview_stage = new_stage if new_stage != state_data["interview_stage"] else state_data["interview_stage"]
+    
+    if isinstance(original_state, dict):
+        updated_state = dict(original_state)
+        updated_state["messages"] = messages
+        updated_state["candidate_name"] = state_data["candidate_name"]
+        updated_state["interview_stage"] = interview_stage
+        result = updated_state
+    else:
+        result = InterviewState(
+            messages=messages,
+            candidate_name=state_data["candidate_name"],
+            job_role=state_data["job_role"],
+            seniority_level=state_data["seniority_level"],
+            required_skills=state_data["required_skills"],
+            job_description=state_data["job_description"],
+            interview_stage=interview_stage,
+            session_id=state_data["session_id"],
+            user_id=state_data["user_id"]
+        )
+        
+    # Update stage in result
+    result["interview_stage"] = interview_stage
+    
+    return result
+
+async def _handle_model_error(self, state: Union[Dict, InterviewState], error: Exception) -> Union[Dict, InterviewState]:
+    """Handle model errors consistently."""
+    error_message = AIMessage(content="I apologize, but I encountered an issue. Please try again.")
+    
+    if isinstance(state, dict):
+        updated_state = dict(state)
+        if "messages" in updated_state:
+            updated_state["messages"] = updated_state["messages"] + [error_message]
+        else:
+            updated_state["messages"] = [error_message]
+        return updated_state
+    else:
+        return InterviewState(
+            messages=state.messages + [error_message] if hasattr(state, "messages") else [error_message],
+            candidate_name=state.candidate_name if hasattr(state, "candidate_name") else "",
+            job_role=state.job_role if hasattr(state, "job_role") else self.job_role,
+            seniority_level=state.seniority_level if hasattr(state, "seniority_level") else self.seniority_level,
+            required_skills=state.required_skills if hasattr(state, "required_skills") else self.required_skills,
+            job_description=state.job_description if hasattr(state, "job_description") else self.job_description,
+            interview_stage=state.interview_stage if hasattr(state, "interview_stage") else InterviewStage.INTRODUCTION.value,
+            session_id=state.session_id if hasattr(state, "session_id") else "",
+            user_id=state.user_id if hasattr(state, "user_id") else ""
+        ) 

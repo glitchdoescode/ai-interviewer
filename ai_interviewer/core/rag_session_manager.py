@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import logging
 import os
+import asyncio
 from langchain_core.vectorstores import VectorStore
 from langchain_core.embeddings import Embeddings
 from langchain_chroma import Chroma
@@ -46,6 +47,173 @@ class RAGSessionManager:
         )
         
         logger.info(f"Initialized RAG session manager with vector store at {self.persist_directory}")
+    
+    async def add_to_memory(self, session_id: str, text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Add text to the vector store memory.
+        
+        Args:
+            session_id: Session identifier
+            text: Text to add to memory
+            metadata: Optional metadata to store with the text
+            
+        Returns:
+            Document ID
+        """
+        try:
+            # Add metadata if not provided
+            if metadata is None:
+                metadata = {}
+            metadata["session_id"] = session_id
+            metadata["timestamp"] = datetime.now().isoformat()
+            
+            # Add to vector store
+            doc_ids = await self.vector_store.aadd_texts(
+                texts=[text],
+                metadatas=[metadata]
+            )
+            
+            logger.info(f"Added text to memory for session {session_id}")
+            return doc_ids[0]
+        except Exception as e:
+            logger.error(f"Error adding to memory: {e}")
+            raise
+    
+    async def search_memory(
+        self, 
+        session_id: str,
+        query: str,
+        k: int = 5,
+        filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search the vector store memory.
+        
+        Args:
+            session_id: Session identifier
+            query: Search query
+            k: Number of results to return
+            filter_metadata: Optional metadata filter
+            
+        Returns:
+            List of relevant documents with scores
+        """
+        try:
+            # Add session filter if not provided
+            if filter_metadata is None:
+                filter_metadata = {}
+            filter_metadata["session_id"] = session_id
+            
+            # Search vector store
+            results = await self.vector_store.asimilarity_search_with_score(
+                query=query,
+                k=k,
+                filter=filter_metadata
+            )
+            
+            # Format results
+            formatted_results = []
+            for doc, score in results:
+                formatted_results.append({
+                    "content": doc.page_content,
+                    "metadata": doc.metadata,
+                    "score": score
+                })
+            
+            logger.info(f"Found {len(formatted_results)} memory matches for session {session_id}")
+            return formatted_results
+        except Exception as e:
+            logger.error(f"Error searching memory: {e}")
+            return []
+    
+    async def get_session_memory(
+        self,
+        session_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all memory entries for a session.
+        
+        Args:
+            session_id: Session identifier
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+            limit: Optional limit on number of results
+            
+        Returns:
+            List of memory entries
+        """
+        try:
+            # Prepare filter
+            filter_metadata = {"session_id": session_id}
+            
+            if start_time:
+                filter_metadata["timestamp"] = {"$gte": start_time.isoformat()}
+            if end_time:
+                if "timestamp" in filter_metadata:
+                    filter_metadata["timestamp"]["$lte"] = end_time.isoformat()
+                else:
+                    filter_metadata["timestamp"] = {"$lte": end_time.isoformat()}
+            
+            # Get all documents for session
+            results = await self.vector_store.aget(
+                where=filter_metadata,
+                limit=limit
+            )
+            
+            # Format results
+            formatted_results = []
+            for doc in results:
+                formatted_results.append({
+                    "content": doc.page_content,
+                    "metadata": doc.metadata
+                })
+            
+            logger.info(f"Retrieved {len(formatted_results)} memory entries for session {session_id}")
+            return formatted_results
+        except Exception as e:
+            logger.error(f"Error getting session memory: {e}")
+            return []
+    
+    async def delete_session_memory(self, session_id: str) -> bool:
+        """
+        Delete all memory entries for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Delete documents for session
+            await self.vector_store.adelete(
+                where={"session_id": session_id}
+            )
+            
+            logger.info(f"Deleted memory for session {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting session memory: {e}")
+            return False
+    
+    async def close(self):
+        """Close connections and persist data."""
+        try:
+            await self.vector_store.apersist()
+            logger.info("Persisted vector store data")
+        except Exception as e:
+            logger.error(f"Error closing RAG session manager: {e}")
+    
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit with proper cleanup."""
+        await self.close()
     
     def create_session(
         self,

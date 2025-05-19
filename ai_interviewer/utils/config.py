@@ -30,7 +30,7 @@ MONGODB_SESSIONS_COLLECTION = os.environ.get("MONGODB_SESSIONS_COLLECTION", "int
 MONGODB_METADATA_COLLECTION = os.environ.get("MONGODB_METADATA_COLLECTION", "interview_metadata")
 
 # LLM configuration
-LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-1.5-pro-latest")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-pro")
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 
 # Session configuration

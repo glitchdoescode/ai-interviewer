@@ -18,6 +18,8 @@ import re
 
 from ai_interviewer.tools.code_quality import CodeQualityMetrics
 from ai_interviewer.utils.config import SYSTEM_NAME
+# Import profiling utilities
+from ai_interviewer.utils.profiling import timer, timed_function
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -409,252 +411,258 @@ class CodeAnalyzer:
         return list(set(patterns))  # Remove duplicates
 
 @tool
+@timed_function(log_level=logging.INFO)
 def suggest_code_improvements(code: str, context: Optional[Dict] = None) -> Dict:
     """
     Suggest improvements for the candidate's code.
     
     Args:
         code: The code to analyze
-        context: Optional contextual information
+        context: Optional context about the code, challenge, etc.
         
     Returns:
-        Dictionary with improvement suggestions
+        Dictionary containing suggestions and quality metrics
     """
-    try:
-        # Validate parameters
-        if not code or not isinstance(code, str):
-            return {
-                "status": "error",
-                "message": "Invalid code provided. Please submit a valid code snippet."
-            }
-        
-        # Log request details
-        logger.info(f"Suggesting improvements for code snippet ({len(code)} chars)")
-        
-        # For MVP, we'll return generic improvement suggestions based on code patterns
-        suggestions = []
-        
-        # Check for basic code patterns and suggest improvements
-        # 1. Missing docstrings
-        if not _has_docstrings(code):
-            suggestions.append("Consider adding docstrings to functions and classes for better documentation.")
-        
-        # 2. Long functions
-        if _has_long_functions(code):
-            suggestions.append("Break down long functions into smaller, more focused functions for better readability and maintainability.")
-        
-        # 3. Variable naming
-        if _has_poor_variable_names(code):
-            suggestions.append("Use more descriptive variable names to improve code readability.")
-        
-        # 4. Error handling
-        if not _has_error_handling(code):
-            suggestions.append("Add error handling (try-except blocks) to make your code more robust.")
-        
-        # 5. Comments
-        if not _has_comments(code):
-            suggestions.append("Add comments to explain complex logic and the reasoning behind your implementation.")
-        
-        # 6. Code organization
-        suggestions.append("Consider organizing your code into logical sections with clear separation of concerns.")
-        
-        # 7. Testing suggestions
-        suggestions.append("Consider adding test cases to verify your solution works as expected.")
-        
-        # If context includes a challenge, add challenge-specific suggestions
-        if context and "challenge" in context:
-            challenge = context["challenge"]
-            
-            # Extraction of challenge title/description
-            challenge_title = challenge.get("title", "")
-            challenge_desc = challenge.get("description", "")
-            
-            # Add challenge-specific suggestions based on its difficulty
-            difficulty = challenge.get("difficulty", "medium").lower()
-            if difficulty == "easy":
-                suggestions.append("For easy challenges, focus on code clarity and simplicity over optimization.")
-            elif difficulty == "medium":
-                suggestions.append("For medium difficulty challenges, balance between performance and readability.")
-            elif difficulty == "hard":
-                suggestions.append("For hard challenges, pay special attention to efficiency and algorithm choice.")
-                
-            # If error message provided, add specific suggestions
-            if "error_message" in context and context["error_message"]:
-                error_msg = context["error_message"]
-                
-                if "index" in error_msg.lower() and "out of" in error_msg.lower():
-                    suggestions.append("Add bounds checking to prevent index out of range errors.")
-                elif "type" in error_msg.lower():
-                    suggestions.append("Add type checking or conversion to handle different data types.")
-                elif "memory" in error_msg.lower():
-                    suggestions.append("Consider optimizing your algorithm to reduce memory usage.")
-                elif "time" in error_msg.lower() and "limit" in error_msg.lower():
-                    suggestions.append("Consider a more efficient algorithm to meet time constraints.")
-        
-        # Use the LLM to generate context-aware suggestions
-        if context:
-            try:
-                # Call LLM for more specific suggestions
-                llm_suggestions = _generate_context_aware_suggestions(code, context)
-                if llm_suggestions:
-                    suggestions.extend(llm_suggestions)
-            except Exception as e:
-                logger.error(f"Error generating context-aware suggestions: {e}")
-        
-        # Return suggestions
-        return {
-            "status": "success",
-            "suggestions": suggestions
-        }
-    except Exception as e:
-        logger.error(f"Error suggesting code improvements: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-@tool
-def complete_code(code: str, context: Optional[str] = None) -> Dict:
-    """
-    Provide completion for partially written code.
+    logger.info("Generating code improvement suggestions")
     
-    Args:
-        code: The partial code to complete
-        context: Optional description of what the completion should achieve
-        
-    Returns:
-        Dictionary with code completion
-    """
     try:
-        # Validate parameters
-        if not code or not isinstance(code, str):
-            return {
-                "status": "error",
-                "message": "Invalid code provided. Please submit a valid code snippet."
-            }
-        
-        # Log request details
-        logger.info(f"Completing code snippet ({len(code)} chars)")
-        
-        # Detect the language
+        # Extract language
         language = _determine_language(code)
         logger.info(f"Detected language: {language}")
         
-        # Determine what kind of completion is needed based on code analysis
-        completion = ""
+        # Get quality metrics
+        with timer("code_quality_metrics", log_level=logging.INFO):
+            quality_metrics = CodeQualityMetrics.analyze_code(code, language)
         
-        if language == "python":
-            # Check for various Python structures
-            if "def " in code and ":" in code:
-                # Function definition
-                completion = _complete_python_function(code, context)
-            elif "class " in code and ":" in code:
-                # Class definition
-                completion = _complete_python_class(code, context)
-            elif "if " in code and ":" in code:
-                # If statement
-                completion = _complete_python_if_statement(code, context)
-            elif "for " in code and ":" in code:
-                # For loop
-                completion = _complete_python_loop(code, context, "for")
-            elif "while " in code and ":" in code:
-                # While loop
-                completion = _complete_python_loop(code, context, "while")
-            else:
-                # General Python code
-                completion = _complete_general_python(code, context)
-        elif language == "javascript":
-            # JavaScript completion
-            completion = _complete_javascript(code, context)
-        else:
-            # Generic completion
-            completion = f"# Unable to provide completion for unknown language\n# Here's your code:\n{code}"
+        # Generate general suggestions
+        suggestions = []
+        
+        # Add language-specific suggestions
+        if language.lower() == "python":
+            # Check if code has docstrings
+            if not _has_docstrings(code):
+                suggestions.append("Add docstrings to functions to clarify their purpose and parameters")
+                
+            # Check if code has long functions
+            if _has_long_functions(code):
+                suggestions.append("Consider breaking down long functions into smaller, focused ones")
+                
+            # Check if code has proper error handling
+            if not _has_error_handling(code):
+                suggestions.append("Add error handling for robust code (try/except blocks)")
+                
+            # Check for poor variable names
+            if _has_poor_variable_names(code):
+                suggestions.append("Use more descriptive variable names to improve readability")
             
-        # Use an LLM to generate a more accurate completion
-        llm_completion = _generate_llm_completion(code, context, language)
-        if llm_completion:
-            completion = llm_completion
+            # Check for comments
+            if not _has_comments(code):
+                suggestions.append("Add comments to explain complex logic or algorithms")
+        
+        # Add context-aware suggestions
+        if context:
+            with timer("context_aware_suggestions", log_level=logging.INFO):
+                context_suggestions = _generate_context_aware_suggestions(code, context)
+                suggestions.extend(context_suggestions)
+        
+        # If no specific suggestions, get LLM-based suggestions
+        if len(suggestions) < 3:
+            with timer("llm_improvement_suggestions", log_level=logging.INFO):
+                llm_config = {}  # Add LLM config if needed
+                model = ChatGoogleGenerativeAI(
+                    model="gemini-pro",
+                    temperature=0.2
+                )
+                
+                prompt = ChatPromptTemplate.from_messages([
+                    SystemMessage(content="You are an expert code reviewer helping to improve code quality."),
+                    HumanMessage(content=f"""
+                    Analyze this {language} code and suggest 3-5 concrete, actionable improvements:
+                    
+                    ```{language}
+                    {code}
+                    ```
+                    
+                    Focus on:
+                    1. Code organization
+                    2. Algorithm efficiency
+                    3. Best practices
+                    4. Readability
+                    
+                    Provide specific, actionable suggestions, not general advice.
+                    List each suggestion as a separate item.
+                    """)
+                ])
+                
+                response = model.invoke(prompt)
+                
+                # Extract suggestions (one per line)
+                llm_suggestions = response.content.split('\n')
+                # Clean up and filter suggestions
+                llm_suggestions = [s.strip() for s in llm_suggestions if s.strip() and not s.startswith("```")]
+                # Remove numbered prefixes like "1. " or "- "
+                llm_suggestions = [re.sub(r'^(\d+\.\s*|\-\s*)', '', s) for s in llm_suggestions]
+                # Limit to 5 suggestions
+                llm_suggestions = [s for s in llm_suggestions if len(s) > 10][:5]
+                
+                suggestions.extend(llm_suggestions)
+        
+        # Return a limited number of unique suggestions
+        unique_suggestions = list(set(suggestions))
         
         return {
-            "status": "success",
-            "completion": completion
+            "suggestions": unique_suggestions[:5],  # Limit to 5 suggestions
+            "quality_metrics": quality_metrics,
+            "language": language
         }
+        
+    except Exception as e:
+        logger.error(f"Error generating code improvements: {e}")
+        return {
+            "suggestions": ["Break your code into smaller, more manageable functions",
+                            "Add comments to explain your approach",
+                            "Check edge cases in your solution"],
+            "quality_metrics": {"error": str(e)},
+            "language": "unknown"
+        }
+
+@tool
+@timed_function(log_level=logging.INFO)
+def complete_code(code: str, context: Optional[str] = None) -> Dict:
+    """
+    Complete partially written code based on context and patterns.
+    
+    Args:
+        code: Partial code to complete
+        context: Optional context about what the code should do
+        
+    Returns:
+        Dictionary containing completed code and confidence level
+    """
+    logger.info("Generating code completion")
+    
+    try:
+        # Determine the language
+        language = _determine_language(code)
+        logger.info(f"Detected language: {language}")
+        
+        # Generate completion
+        with timer("llm_code_completion", log_level=logging.INFO):
+            completed_code = _generate_llm_completion(code, context, language)
+        
+        # If LLM completion is empty, fall back to rule-based completion
+        if not completed_code:
+            logger.warning("LLM completion failed, falling back to rule-based")
+            if language.lower() == "python":
+                # Analyze what kind of Python code needs completion
+                if "def " in code and "return" not in code:
+                    completed_code = _complete_python_function(code, context)
+                elif "class " in code:
+                    completed_code = _complete_python_class(code, context)
+                elif "if " in code and ":" in code:
+                    completed_code = _complete_python_if_statement(code, context)
+                elif "for " in code or "while " in code:
+                    loop_type = "for" if "for " in code else "while"
+                    completed_code = _complete_python_loop(code, context, loop_type)
+                else:
+                    completed_code = _complete_general_python(code, context)
+            else:
+                # For other languages, use a more generic approach
+                completed_code = _complete_javascript(code, context)
+        
+        return {
+            "completed_code": completed_code,
+            "language": language,
+            "confidence": "high" if len(completed_code) > len(code) * 1.5 else "medium"
+        }
+        
     except Exception as e:
         logger.error(f"Error completing code: {e}")
         return {
-            "status": "error",
-            "message": str(e)
+            "completed_code": code + "\n# Unable to generate completion\n",
+            "language": "unknown",
+            "confidence": "low",
+            "error": str(e)
         }
 
 @tool
+@timed_function(log_level=logging.INFO)
 def review_code_section(code: str, section: Optional[str] = None) -> Dict:
     """
-    Provide focused review of a specific section of code.
+    Review a specific section of code and provide targeted feedback.
     
     Args:
-        code: The code to review
-        section: Optional specific section to focus on
+        code: Code to review
+        section: Optional section specifier (e.g., "error handling", "algorithm", "performance")
         
     Returns:
-        Dictionary with review comments
+        Dictionary containing review comments organized by category
     """
+    logger.info(f"Reviewing code{' section: ' + section if section else ''}")
+    
     try:
-        # Validate parameters
-        if not code or not isinstance(code, str):
-            return {
-                "status": "error",
-                "message": "Invalid code provided. Please submit a valid code snippet."
-            }
-        
-        # Log request details
-        logger.info(f"Reviewing code section{': ' + section if section else ''}")
-        
-        # Detect language
+        # Determine the language
         language = _determine_language(code)
         logger.info(f"Detected language: {language}")
         
-        # Get review comments based on language
+        # Get initial review comments
         review_comments = []
         
-        if language == "python":
-            review_comments = _review_python_code(code, section)
-        elif language == "javascript":
-            review_comments = _review_javascript_code(code, section)
-        else:
-            review_comments = _review_generic_code(code, section)
+        # Generate language-specific reviews
+        with timer("generate_code_review", log_level=logging.INFO):
+            if language.lower() == "python":
+                review_comments = _review_python_code(code, section)
+            elif language.lower() in ["javascript", "js"]:
+                review_comments = _review_javascript_code(code, section)
+            else:
+                review_comments = _review_generic_code(code, section)
             
-        # Use code quality metrics for more detailed review
-        try:
-            quality_metrics = CodeQualityMetrics.analyze_code(code, language)
-            if quality_metrics.get("status") == "success":
-                # Add quality-based review comments
-                metrics = quality_metrics.get("metrics", {})
-                
-                if "complexity" in metrics and metrics["complexity"] > 10:
-                    review_comments.append("This code has high cyclomatic complexity. Consider simplifying the logic.")
-                    
-                if "maintainability" in metrics and metrics["maintainability"] < 65:
-                    review_comments.append("The maintainability index is low. Consider refactoring for better maintainability.")
-                    
-                if "comment_ratio" in metrics and metrics["comment_ratio"] < 0.1:
-                    review_comments.append("The code has limited comments. Adding more documentation would improve readability.")
-        except Exception as e:
-            logger.error(f"Error analyzing code quality: {e}")
-            
-        # Generate LLM-based review
-        llm_review = _generate_llm_code_review(code, section, language)
-        if llm_review:
-            review_comments.extend(llm_review)
-            
-        return {
-            "status": "success",
-            "review_comments": review_comments
+            # If we have very few comments, get LLM-based review
+            if len(review_comments) < 3:
+                llm_review = _generate_llm_code_review(code, section, language)
+                review_comments.extend(llm_review)
+        
+        # Categorize comments
+        categorized = {
+            "style": [],
+            "logic": [],
+            "performance": [],
+            "security": [],
+            "general": []
         }
+        
+        # Basic categorization
+        for comment in review_comments:
+            if any(kw in comment.lower() for kw in ["format", "naming", "indent", "whitespace", "style"]):
+                categorized["style"].append(comment)
+            elif any(kw in comment.lower() for kw in ["algorithm", "logic", "condition", "bug", "error"]):
+                categorized["logic"].append(comment)
+            elif any(kw in comment.lower() for kw in ["performance", "efficient", "complex", "slow", "optimization"]):
+                categorized["performance"].append(comment)
+            elif any(kw in comment.lower() for kw in ["security", "injection", "validation", "sanitize"]):
+                categorized["security"].append(comment)
+            else:
+                categorized["general"].append(comment)
+        
+        # Get quality metrics
+        quality_metrics = CodeQualityMetrics.analyze_code(code, language)
+        
+        return {
+            "comments": review_comments,
+            "categorized": {k: v for k, v in categorized.items() if v},  # Only include non-empty categories
+            "language": language,
+            "quality_metrics": quality_metrics
+        }
+        
     except Exception as e:
         logger.error(f"Error reviewing code: {e}")
         return {
-            "status": "error",
-            "message": str(e)
+            "comments": ["Check for proper syntax and structure", 
+                         "Ensure your logic handles all cases"],
+            "categorized": {"general": ["Check for proper syntax and structure",
+                                       "Ensure your logic handles all cases"]},
+            "language": "unknown",
+            "error": str(e)
         }
 
 # Helper functions

@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Any
 import pymongo
 from pymongo.mongo_client import MongoClient
 from ai_interviewer.utils.config import SYSTEM_NAME
+import asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Set up logging
 logging.basicConfig(
@@ -42,18 +44,22 @@ class SessionManager:
         self.collection_name = collection_name
         
         # Initialize MongoDB connection
-        self.client = MongoClient(connection_uri)
+        self.client = AsyncIOMotorClient(connection_uri)
         self.db = self.client[database_name]
         self.collection = self.db[collection_name]
         
         # Create indexes
-        self.collection.create_index([("session_id", pymongo.ASCENDING)], unique=True)
-        self.collection.create_index([("user_id", pymongo.ASCENDING)])
-        self.collection.create_index([("last_active", pymongo.DESCENDING)])
+        asyncio.create_task(self._create_indexes())
         
         logger.info(f"Session manager initialized with {connection_uri}")
     
-    def create_session(self, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+    async def _create_indexes(self):
+        """Create necessary indexes for the collection."""
+        await self.collection.create_index([("session_id", pymongo.ASCENDING)], unique=True)
+        await self.collection.create_index([("user_id", pymongo.ASCENDING)])
+        await self.collection.create_index([("last_active", pymongo.DESCENDING)])
+    
+    async def create_session(self, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """
         Create a new interview session.
         
@@ -79,14 +85,14 @@ class SessionManager:
         
         # Insert into MongoDB
         try:
-            self.collection.insert_one(document)
+            await self.collection.insert_one(document)
             logger.info(f"Created new session {session_id} for user {user_id}")
             return session_id
         except Exception as e:
             logger.error(f"Error creating session: {e}")
             raise
     
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
         Get session details by ID.
         
@@ -97,13 +103,13 @@ class SessionManager:
             Session details or None if not found
         """
         try:
-            session = self.collection.find_one({"session_id": session_id})
+            session = await self.collection.find_one({"session_id": session_id})
             return session
         except Exception as e:
             logger.error(f"Error retrieving session {session_id}: {e}")
             return None
     
-    def get_user_sessions(self, user_id: str, include_completed: bool = False) -> List[Dict[str, Any]]:
+    async def get_user_sessions(self, user_id: str, include_completed: bool = False) -> List[Dict[str, Any]]:
         """
         Get all sessions for a user.
         
@@ -120,10 +126,12 @@ class SessionManager:
             if not include_completed:
                 query["status"] = "active"
                 
-            sessions = list(self.collection.find(
+            cursor = self.collection.find(
                 query,
                 sort=[("last_active", pymongo.DESCENDING)]
-            ))
+            )
+            
+            sessions = await cursor.to_list(length=None)
             
             logger.info(f"Found {len(sessions)} sessions for user {user_id}")
             return sessions
@@ -131,7 +139,7 @@ class SessionManager:
             logger.error(f"Error retrieving sessions for user {user_id}: {e}")
             return []
     
-    def update_session_activity(self, session_id: str) -> bool:
+    async def update_session_activity(self, session_id: str) -> bool:
         """
         Update the last activity timestamp for a session.
         
@@ -142,7 +150,7 @@ class SessionManager:
             True if successful, False otherwise
         """
         try:
-            result = self.collection.update_one(
+            result = await self.collection.update_one(
                 {"session_id": session_id},
                 {"$set": {"last_active": datetime.now()}}
             )
@@ -157,7 +165,7 @@ class SessionManager:
             logger.error(f"Error updating session activity: {e}")
             return False
     
-    def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]) -> bool:
         """
         Update metadata for a session.
         
@@ -169,7 +177,7 @@ class SessionManager:
             True if successful, False otherwise
         """
         try:
-            result = self.collection.update_one(
+            result = await self.collection.update_one(
                 {"session_id": session_id},
                 {"$set": {"metadata": metadata, "last_active": datetime.now()}}
             )
@@ -184,7 +192,7 @@ class SessionManager:
             logger.error(f"Error updating session metadata: {e}")
             return False
     
-    def complete_session(self, session_id: str) -> bool:
+    async def complete_session(self, session_id: str) -> bool:
         """
         Mark a session as completed.
         
@@ -195,7 +203,7 @@ class SessionManager:
             True if successful, False otherwise
         """
         try:
-            result = self.collection.update_one(
+            result = await self.collection.update_one(
                 {"session_id": session_id},
                 {"$set": {"status": "completed", "completed_at": datetime.now()}}
             )
@@ -210,7 +218,7 @@ class SessionManager:
             logger.error(f"Error completing session: {e}")
             return False
     
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
         """
         Delete a session.
         
@@ -221,7 +229,7 @@ class SessionManager:
             True if successful, False otherwise
         """
         try:
-            result = self.collection.delete_one({"session_id": session_id})
+            result = await self.collection.delete_one({"session_id": session_id})
             
             if result.deleted_count > 0:
                 logger.info(f"Deleted session {session_id}")
@@ -233,7 +241,7 @@ class SessionManager:
             logger.error(f"Error deleting session: {e}")
             return False
     
-    def list_active_sessions(self, max_inactive_minutes: int = 60) -> List[Dict[str, Any]]:
+    async def list_active_sessions(self, max_inactive_minutes: int = 60) -> List[Dict[str, Any]]:
         """
         List all active sessions.
         
@@ -247,13 +255,15 @@ class SessionManager:
         cutoff_datetime = datetime.fromtimestamp(cutoff_time)
         
         try:
-            sessions = list(self.collection.find(
+            cursor = self.collection.find(
                 {
                     "status": "active",
                     "last_active": {"$gte": cutoff_datetime}
                 },
                 sort=[("last_active", pymongo.DESCENDING)]
-            ))
+            )
+            
+            sessions = await cursor.to_list(length=None)
             
             logger.info(f"Found {len(sessions)} active sessions")
             return sessions
@@ -261,7 +271,7 @@ class SessionManager:
             logger.error(f"Error listing active sessions: {e}")
             return []
     
-    def get_most_recent_session(self, user_id: str) -> Optional[Dict[str, Any]]:
+    async def get_most_recent_session(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Get the most recent session for a user.
         
@@ -272,7 +282,7 @@ class SessionManager:
             Most recent session or None if not found
         """
         try:
-            session = self.collection.find_one(
+            session = await self.collection.find_one(
                 {"user_id": user_id, "status": "active"},
                 sort=[("last_active", pymongo.DESCENDING)]
             )
@@ -287,7 +297,7 @@ class SessionManager:
             logger.error(f"Error retrieving most recent session: {e}")
             return None
     
-    def clean_inactive_sessions(self, max_inactive_minutes: int = 1440) -> int:
+    async def clean_inactive_sessions(self, max_inactive_minutes: int = 1440) -> int:
         """
         Clean up inactive sessions by marking them as completed.
         
@@ -301,7 +311,7 @@ class SessionManager:
         cutoff_datetime = datetime.fromtimestamp(cutoff_time)
         
         try:
-            result = self.collection.update_many(
+            result = await self.collection.update_many(
                 {
                     "status": "active",
                     "last_active": {"$lt": cutoff_datetime}
@@ -323,21 +333,21 @@ class SessionManager:
             logger.error(f"Error cleaning up inactive sessions: {e}")
             return 0
     
-    def close(self):
+    async def close(self):
         """Close the MongoDB connection."""
         if self.client:
-            self.client.close()
+            await self.client.close()
             logger.info("MongoDB connection closed")
     
-    def __enter__(self):
-        """Context manager entry."""
+    async def __aenter__(self):
+        """Async context manager entry."""
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit with proper cleanup."""
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit with proper cleanup."""
+        await self.close()
     
-    def update_session_messages(self, session_id: str, messages: List[Any]) -> bool:
+    async def update_session_messages(self, session_id: str, messages: List[Any]) -> bool:
         """
         Update the messages for a session.
         
@@ -363,7 +373,7 @@ class SessionManager:
                     serializable_messages.append(msg)
             
             # Update the messages in the collection
-            result = self.collection.update_one(
+            result = await self.collection.update_one(
                 {"session_id": session_id},
                 {
                     "$set": {

@@ -12,12 +12,15 @@ import re
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.utils.config import get_llm_config, SYSTEM_NAME
+# Import profiling utilities
+from ai_interviewer.utils.profiling import timer, timed_function
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
 @tool
+@timed_function(log_level=logging.INFO)
 def generate_interview_question(
     job_role: str,
     skill_areas: Optional[List[str]] = None,
@@ -49,10 +52,11 @@ def generate_interview_question(
     try:
         # Initialize LLM with appropriate temperature for creative but controlled question generation
         llm_config = get_llm_config()
-        model = ChatGoogleGenerativeAI(
-            model=llm_config["model"],
-            temperature=0.4  # Using a slightly higher temperature for question variety
-        )
+        with timer("initialize_llm_model", log_level=logging.INFO):
+            model = ChatGoogleGenerativeAI(
+                model=llm_config["model"],
+                temperature=0.4  # Using a slightly higher temperature for question variety
+            )
         
         # Format previous Q&A for context
         conversation_context = ""
@@ -120,59 +124,61 @@ Return your response as a valid JSON object containing:
 """
         
         # Call the LLM
-        response = model.invoke(prompt)
+        with timer("llm_question_generation", log_level=logging.INFO):
+            response = model.invoke(prompt)
         
         # Process response
         response_content = response.content
         
         # Extract the JSON part
-        json_match = re.search(r'```json\s*(.*?)\s*```', response_content, re.DOTALL)
-        if json_match:
-            response_content = json_match.group(1)
-        else:
-            # Try to find JSON object without markdown
-            json_match = re.search(r'(\{.*\})', response_content, re.DOTALL)
+        with timer("parse_llm_response", log_level=logging.DEBUG):
+            json_match = re.search(r'```json\s*(.*?)\s*```', response_content, re.DOTALL)
             if json_match:
                 response_content = json_match.group(1)
+            else:
+                # Try to find JSON object without markdown
+                json_match = re.search(r'(\{.*\})', response_content, re.DOTALL)
+                if json_match:
+                    response_content = json_match.group(1)
         
-        # Parse the response
-        import json
-        try:
-            result = json.loads(response_content)
-            
-            # Ensure required fields are present
-            if "question" not in result:
-                result["question"] = "Could you tell me about your experience with technical challenges in your past roles?"
-            
-            if "expected_topics" not in result:
-                result["expected_topics"] = ["technical challenges", "problem-solving approach", "results achieved"]
-            
-            # Add metadata
-            result["requested_difficulty"] = difficulty_level
-            result["requested_skill_areas"] = skill_areas
-            result["job_role"] = job_role
-            
-            return result
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing LLM response as JSON: {e}")
-            logger.error(f"Raw response: {response_content}")
-            
-            # Fallback response
-            return {
-                "question": "Could you describe a challenging technical problem you've solved and how you approached it?",
-                "expected_topics": ["problem-solving", "technical skills", "analytical thinking"],
-                "difficulty": difficulty_level,
-                "skill_areas": skill_areas or ["general technical skills"],
-                "follow_up_questions": [
-                    "What tools or technologies did you use in your solution?",
-                    "What would you do differently if you faced the same problem again?",
-                    "How did you measure the success of your solution?"
-                ],
-                "job_role": job_role,
-                "requested_difficulty": difficulty_level,
-                "requested_skill_areas": skill_areas,
-                "generated_from_fallback": True
-            }
+            # Parse the response
+            import json
+            try:
+                result = json.loads(response_content)
+                
+                # Ensure required fields are present
+                if "question" not in result:
+                    result["question"] = "Could you tell me about your experience with technical challenges in your past roles?"
+                
+                if "expected_topics" not in result:
+                    result["expected_topics"] = ["technical challenges", "problem-solving approach", "results achieved"]
+                
+                # Add metadata
+                result["requested_difficulty"] = difficulty_level
+                result["requested_skill_areas"] = skill_areas
+                result["job_role"] = job_role
+                
+                return result
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing LLM response as JSON: {e}")
+                logger.error(f"Raw response: {response_content}")
+                
+                # Fallback response
+                return {
+                    "question": "Could you describe a challenging technical problem you've solved and how you approached it?",
+                    "expected_topics": ["problem-solving", "technical skills", "analytical thinking"],
+                    "difficulty": difficulty_level,
+                    "skill_areas": skill_areas or ["general technical skills"],
+                    "follow_up_questions": [
+                        "What tools or technologies did you use in your solution?",
+                        "What would you do differently if you faced the same problem again?",
+                        "How did you measure the success of your solution?"
+                    ],
+                    "job_role": job_role,
+                    "requested_difficulty": difficulty_level,
+                    "requested_skill_areas": skill_areas,
+                    "generated_from_fallback": True
+                }
     except Exception as e:
         logger.error(f"Error generating interview question: {e}")
         # Fallback return in case of errors
@@ -195,6 +201,7 @@ Return your response as a valid JSON object containing:
 
 
 @tool
+@timed_function(log_level=logging.INFO)
 def analyze_candidate_response(
     question: str,
     response: str,
