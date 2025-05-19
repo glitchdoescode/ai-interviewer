@@ -318,10 +318,10 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [ ] Update the LangGraph state transitions to handle extended context
 
 *   **Task S1.2: System Name Configurability**
-    *   [ ] Add `SYSTEM_NAME` and related variables to `ai_interviewer/utils/config.py`
-    *   [ ] Update all hardcoded system name references in prompts and UI
-    *   [ ] Create admin setting for changing system name
-    *   [ ] Test name changes propagate through the entire system
+    *   [x] Add `SYSTEM_NAME` and related variables to `ai_interviewer/utils/config.py`
+    *   [x] Update all hardcoded system name references in prompts and UI
+    *   [x] Create admin setting for changing system name
+    *   [x] Test name changes propagate through the entire system
 
 *   **Task S1.3: Optimizing LangGraph Responsiveness**
     *   [ ] Profile graph execution to identify bottlenecks
