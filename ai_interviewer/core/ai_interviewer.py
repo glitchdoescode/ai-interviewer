@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.types import interrupt, Command
+from langchain_core.messages import RemoveMessage
 
 # Import tools
 from ai_interviewer.tools.coding_tools import (
@@ -92,6 +93,11 @@ INTERVIEW APPROACH:
 4. Evaluate both technical knowledge and problem-solving approach
 5. Give constructive feedback on responses when appropriate
 
+CONTEXT MANAGEMENT:
+If a conversation summary is provided below, use it to understand previous parts of the interview that are no longer in the recent messages.
+
+{conversation_summary}
+
 HANDLING SPECIAL SITUATIONS:
 - When the candidate asks for clarification: Provide helpful context without giving away answers
 - When the candidate struggles: Show patience and offer gentle prompts or hints
@@ -133,6 +139,11 @@ class InterviewState(MessagesState):
     session_id: str = ""
     user_id: str = ""
     
+    # Context management
+    conversation_summary: str = ""
+    message_count: int = 0
+    max_messages_before_summary: int = 20
+    
     def __init__(self, 
                 messages: Optional[List[BaseMessage]] = None,
                 candidate_name: str = "",
@@ -143,7 +154,10 @@ class InterviewState(MessagesState):
                 requires_coding: bool = True,
                 interview_stage: str = "",
                 session_id: str = "",
-                user_id: str = ""):
+                user_id: str = "",
+                conversation_summary: str = "",
+                message_count: int = 0,
+                max_messages_before_summary: int = 20):
         """
         Initialize the InterviewState with the provided values.
         
@@ -158,6 +172,9 @@ class InterviewState(MessagesState):
             interview_stage: Current interview stage
             session_id: Session identifier
             user_id: User identifier
+            conversation_summary: Summary of earlier conversation parts
+            message_count: Total message count for context management
+            max_messages_before_summary: Threshold to trigger summarization
         """
         # Initialize MessagesState
         super().__init__(messages=messages or [])
@@ -172,6 +189,9 @@ class InterviewState(MessagesState):
         self.interview_stage = interview_stage or InterviewStage.INTRODUCTION.value
         self.session_id = session_id
         self.user_id = user_id
+        self.conversation_summary = conversation_summary
+        self.message_count = message_count
+        self.max_messages_before_summary = max_messages_before_summary
     
     # Add dictionary-style access for compatibility
     def __getitem__(self, key):
@@ -195,6 +215,12 @@ class InterviewState(MessagesState):
             return self.session_id
         elif key == "user_id":
             return self.user_id
+        elif key == "conversation_summary":
+            return self.conversation_summary
+        elif key == "message_count":
+            return self.message_count
+        elif key == "max_messages_before_summary":
+            return self.max_messages_before_summary
         else:
             raise KeyError(f"Key '{key}' not found in InterviewState")
     
@@ -260,6 +286,12 @@ class AIInterviewer:
             model=llm_config["model"],
             temperature=llm_config["temperature"]
         ).bind_tools(self.tools)
+        
+        # Initialize a raw LLM for summarization tasks
+        self.summarization_model = ChatGoogleGenerativeAI(
+            model=llm_config["model"],
+            temperature=0.1
+        )
         
         # Set up database connections if using MongoDB
         if use_mongodb:
@@ -362,6 +394,9 @@ class AIInterviewer:
                             updated_state["candidate_name"] = name_match
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
                     
+                    # Update message count for context management
+                    updated_state["message_count"] = state.get("message_count", 0) + len(tool_result.get("messages", []))
+                    
                     return updated_state
                 else:
                     # Extract messages from InterviewState
@@ -381,6 +416,9 @@ class AIInterviewer:
                             candidate_name = name_match
                             logger.info(f"Extracted candidate name during tool call: {name_match}")
                     
+                    # Update message count
+                    new_message_count = state.message_count + len(tool_result.get("messages", []))
+                    
                     # Create a new InterviewState with updated values
                     return InterviewState(
                         messages=updated_messages,
@@ -391,49 +429,222 @@ class AIInterviewer:
                         job_description=state.job_description,
                         interview_stage=state.interview_stage,
                         session_id=state.session_id,
-                        user_id=state.user_id
+                        user_id=state.user_id,
+                        conversation_summary=state.conversation_summary,
+                        message_count=new_message_count,
+                        max_messages_before_summary=state.max_messages_before_summary
                     )
             except Exception as e:
                 logger.error(f"Error in tools_node: {e}")
                 # Return original state on error
                 return state
         
+        # Define context management node
+        def manage_context(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
+            """
+            Manages conversation context by summarizing older messages when needed.
+            
+            Args:
+                state: Current state with messages
+                
+            Returns:
+                Updated state with managed context
+            """
+            try:
+                # Extract values from state based on type
+                if isinstance(state, dict):
+                    messages = state.get("messages", [])
+                    message_count = state.get("message_count", 0)
+                    max_messages = state.get("max_messages_before_summary", 20)
+                    current_summary = state.get("conversation_summary", "")
+                    session_id = state.get("session_id", "")
+                else:
+                    messages = state.messages
+                    message_count = state.message_count
+                    max_messages = state.max_messages_before_summary
+                    current_summary = state.conversation_summary
+                    session_id = state.session_id
+                
+                # Check if we need to summarize
+                if len(messages) <= max_messages:
+                    # No need to summarize yet
+                    if isinstance(state, dict):
+                        return state
+                    else:
+                        return state
+                
+                # We need to summarize older portions of the conversation
+                messages_to_keep = max_messages // 2  # Keep half of the max messages
+                messages_to_summarize = messages[:-messages_to_keep]
+                
+                # First, extract structured insights from the conversation
+                # These insights will be preserved even as we reduce the conversation history
+                current_insights = None
+                
+                # Try to get current insights from session metadata if available
+                if session_id and self.session_manager:
+                    session = self.session_manager.get_session(session_id)
+                    if session and "metadata" in session:
+                        metadata = session.get("metadata", {})
+                        current_insights = metadata.get("interview_insights", None)
+                
+                # Extract insights from all messages, updating current insights
+                insights = self._extract_interview_insights(messages, current_insights)
+                
+                # If we have a session manager and session ID, update the insights in metadata
+                if session_id and self.session_manager:
+                    try:
+                        session = self.session_manager.get_session(session_id)
+                        if session and "metadata" in session:
+                            metadata = session.get("metadata", {})
+                            metadata["interview_insights"] = insights
+                            self.session_manager.update_session_metadata(session_id, metadata)
+                            logger.info(f"Updated interview insights in session metadata for session {session_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to update interview insights in session metadata: {e}")
+                
+                # Now generate the conversation summary
+                # Include insights in the prompt to assist with better summarization
+                insights_text = ""
+                if insights and "candidate_details" in insights:
+                    details = insights["candidate_details"]
+                    skills = insights.get("key_skills", [])
+                    experiences = insights.get("notable_experiences", [])
+                    
+                    insights_text = "CANDIDATE INSIGHTS EXTRACTED SO FAR:\n"
+                    
+                    if details.get("name"):
+                        insights_text += f"Name: {details['name']}\n"
+                    
+                    if details.get("current_role"):
+                        insights_text += f"Current Role: {details['current_role']}\n"
+                    
+                    if details.get("years_of_experience"):
+                        insights_text += f"Experience: {details['years_of_experience']}\n"
+                    
+                    if skills:
+                        insights_text += f"Key Skills: {', '.join(skills[:10])}\n"
+                    
+                    if experiences:
+                        insights_text += f"Notable Experiences: {'; '.join(experiences[:3])}\n"
+                    
+                    coding = insights.get("coding_ability", {})
+                    if coding.get("languages"):
+                        insights_text += f"Coding Languages: {', '.join(coding['languages'])}\n"
+                
+                # Prompt to generate summary
+                if current_summary:
+                    summary_prompt = [
+                        SystemMessage(content=f"""You are a helpful assistant that summarizes technical interview conversations while retaining all key information.
+                        
+                        Below is an existing summary, extracted candidate insights, and new conversation parts to integrate.
+                        Create a comprehensive summary that includes all important details about the candidate, their skills,
+                        experiences, and responses to interview questions.
+                        
+                        Focus on preserving technical details, specific examples, and insights about the candidate's abilities
+                        and experiences. Be concise but thorough, ensuring no important technical details are lost.
+                        """),
+                        HumanMessage(content=f"EXISTING SUMMARY:\n{current_summary}\n\n{insights_text}\n\nNEW CONVERSATION TO INTEGRATE:\n" + "\n".join([f"{m.type}: {m.content}" for m in messages_to_summarize if hasattr(m, 'content')]))
+                    ]
+                else:
+                    summary_prompt = [
+                        SystemMessage(content=f"""You are a helpful assistant that summarizes technical interview conversations while retaining all key information.
+                        
+                        Create a comprehensive summary of this interview conversation that includes all important details about
+                        the candidate, their skills, experiences, and responses to interview questions.
+                        
+                        Focus on preserving technical details, specific examples, and insights about the candidate's abilities
+                        and experiences. Be concise but thorough, ensuring no important technical details are lost.
+                        """),
+                        HumanMessage(content=f"{insights_text}\n\nCONVERSATION TO SUMMARIZE:\n" + "\n".join([f"{m.type}: {m.content}" for m in messages_to_summarize if hasattr(m, 'content')]))
+                    ]
+                
+                # Generate the summary
+                summary_response = self.summarization_model.invoke(summary_prompt)
+                new_summary = summary_response.content if hasattr(summary_response, 'content') else ""
+                
+                # Create list of messages to remove from state
+                messages_to_remove = [RemoveMessage(id=m.id) for m in messages_to_summarize]
+                
+                # Return the appropriate state type based on input
+                if isinstance(state, dict):
+                    updated_state = dict(state)
+                    updated_state["conversation_summary"] = new_summary
+                    updated_state["messages"] = messages_to_remove + messages[-messages_to_keep:]
+                    updated_state["message_count"] = message_count - len(messages_to_summarize) + 1  # +1 for the summary itself
+                    return updated_state
+                else:
+                    # Get the messages to keep
+                    kept_messages = messages[-messages_to_keep:]
+                    
+                    # Create new state with updated values
+                    return InterviewState(
+                        messages=messages_to_remove + kept_messages,
+                        candidate_name=state.candidate_name,
+                        job_role=state.job_role,
+                        seniority_level=state.seniority_level,
+                        required_skills=state.required_skills,
+                        job_description=state.job_description,
+                        interview_stage=state.interview_stage,
+                        session_id=state.session_id,
+                        user_id=state.user_id,
+                        conversation_summary=new_summary,
+                        message_count=state.message_count - len(messages_to_summarize) + 1,  # +1 for the summary
+                        max_messages_before_summary=state.max_messages_before_summary
+                    )
+            except Exception as e:
+                logger.error(f"Error in manage_context: {e}")
+                # Return original state on error
+                return state
+        
         # Define nodes
         workflow.add_node("model", self.call_model)
         workflow.add_node("tools", tools_node)
+        workflow.add_node("manage_context", manage_context)
         
-        # Define edges - model -> should_continue
+        # Define edges with context management
         workflow.add_conditional_edges(
             "model",
             self.should_continue,
             {
                 "tools": "tools",
+                "manage_context": "manage_context",
                 "end": END
             }
         )
         
-        # Define edge - tools -> model
-        workflow.add_edge("tools", "model")
+        # Add edge from tools to context management
+        workflow.add_edge("tools", "manage_context")
+        
+        # Add edge from context management to model or end
+        workflow.add_conditional_edges(
+            "manage_context",
+            lambda state: "model" if self.should_continue(state) == "tools" else "end",
+            {
+                "model": "model",
+                "end": END
+            }
+        )
         
         # Define starting node
         workflow.set_entry_point("model")
         
         # Compile workflow
         logger.info("Compiling workflow")
-        compiled_workflow = workflow.compile()
+        compiled_workflow = workflow.compile(checkpointer=self.checkpointer)
         
         return compiled_workflow
         
     @staticmethod
-    def should_continue(state: Union[Dict, InterviewState]) -> Literal["tools", "end"]:
+    def should_continue(state: Union[Dict, InterviewState]) -> Literal["tools", "manage_context", "end"]:
         """
-        Determine whether to continue to tools or end the workflow.
+        Determine whether to continue to tools, manage context, or end the workflow.
         
         Args:
             state: Current state with messages (dict or InterviewState)
             
         Returns:
-            Next node to execute ("tools" or "end")
+            Next node to execute ("tools", "manage_context", or "end")
         """
         # Get the most recent assistant message
         # Check if state is a dictionary or MessagesState object
@@ -442,12 +653,20 @@ class AIInterviewer:
                 # No messages yet
                 return "end"
             messages = state["messages"]
+            message_count = state.get("message_count", 0)
+            max_messages = state.get("max_messages_before_summary", 20)
         else:
             # Assume it's a MessagesState or InterviewState object
             if not hasattr(state, "messages") or not state.messages:
                 # No messages yet
                 return "end"
             messages = state.messages
+            message_count = getattr(state, "message_count", 0)
+            max_messages = getattr(state, "max_messages_before_summary", 20)
+        
+        # Check if we need to manage context due to message length
+        if len(messages) > max_messages:
+            return "manage_context"
         
         # Look for the last AI message
         for message in reversed(messages):
@@ -484,6 +703,9 @@ class AIInterviewer:
                 interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
                 session_id = state.get("session_id", "")
                 user_id = state.get("user_id", "")
+                conversation_summary = state.get("conversation_summary", "")
+                message_count = state.get("message_count", len(messages))
+                max_messages_before_summary = state.get("max_messages_before_summary", 20)
                 # Default to True for requires_coding if not specified
                 requires_coding = state.get("requires_coding", True)
             else:
@@ -497,6 +719,9 @@ class AIInterviewer:
                 interview_stage = state.interview_stage
                 session_id = state.session_id
                 user_id = state.user_id
+                conversation_summary = state.conversation_summary
+                message_count = state.message_count
+                max_messages_before_summary = state.max_messages_before_summary
                 # Default to True for requires_coding if not specified
                 requires_coding = getattr(state, "requires_coding", True)
             
@@ -509,7 +734,8 @@ class AIInterviewer:
                 seniority_level=seniority_level,
                 required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
                 job_description=job_description,
-                requires_coding=requires_coding
+                requires_coding=requires_coding,
+                conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
             )
             
             # Update system message if present, otherwise add it
@@ -550,6 +776,9 @@ class AIInterviewer:
             # Determine if we need to update the interview stage
             new_stage = self._determine_interview_stage(messages, ai_message, interview_stage)
             
+            # Increment message count for new message
+            new_message_count = message_count + 1
+            
             # Return the appropriate state type based on input
             if isinstance(state, dict):
                 # Return a dictionary with updated values
@@ -557,6 +786,7 @@ class AIInterviewer:
                 updated_state["messages"] = messages + [ai_message]
                 updated_state["candidate_name"] = candidate_name
                 updated_state["interview_stage"] = new_stage if new_stage != interview_stage else interview_stage
+                updated_state["message_count"] = new_message_count
                 return updated_state
             else:
                 # Return a new InterviewState object
@@ -569,7 +799,10 @@ class AIInterviewer:
                     job_description=job_description,
                     interview_stage=new_stage if new_stage != interview_stage else interview_stage,
                     session_id=session_id,
-                    user_id=user_id
+                    user_id=user_id,
+                    conversation_summary=conversation_summary,
+                    message_count=new_message_count,
+                    max_messages_before_summary=max_messages_before_summary
                 )
             
         except Exception as e:
@@ -595,7 +828,10 @@ class AIInterviewer:
                     job_description=state.job_description if hasattr(state, "job_description") else self.job_description,
                     interview_stage=state.interview_stage if hasattr(state, "interview_stage") else InterviewStage.INTRODUCTION.value,
                     session_id=state.session_id if hasattr(state, "session_id") else "",
-                    user_id=state.user_id if hasattr(state, "user_id") else ""
+                    user_id=state.user_id if hasattr(state, "user_id") else "",
+                    conversation_summary=state.conversation_summary if hasattr(state, "conversation_summary") else "",
+                    message_count=state.message_count if hasattr(state, "message_count") else 0,
+                    max_messages_before_summary=state.max_messages_before_summary if hasattr(state, "max_messages_before_summary") else 20
                 )
     
     def _determine_interview_stage(self, messages: List[BaseMessage], ai_message: AIMessage, current_stage: str) -> str:
@@ -910,6 +1146,9 @@ class AIInterviewer:
         required_skills_value = required_skills or self.required_skills
         job_description_value = job_description or self.job_description
         requires_coding_value = requires_coding if requires_coding is not None else True
+        conversation_summary = ""
+        message_count = 0
+        max_messages_before_summary = 20  # Default value
         
         # Try to load existing session if available
         try:
@@ -946,6 +1185,9 @@ class AIInterviewer:
                 # Extract metadata values
                 candidate_name = metadata.get(CANDIDATE_NAME_KEY, "")
                 interview_stage = metadata.get(STAGE_KEY, InterviewStage.INTRODUCTION.value)
+                conversation_summary = metadata.get("conversation_summary", "")
+                message_count = metadata.get("message_count", len(messages))
+                max_messages_before_summary = metadata.get("max_messages_before_summary", 20)
                 
                 logger.debug(f"Loaded existing session with candidate_name: '{candidate_name}'")
                 
@@ -993,6 +1235,9 @@ class AIInterviewer:
                     "job_description": job_description or self.job_description,
                     "requires_coding": requires_coding if requires_coding is not None else True,
                     STAGE_KEY: InterviewStage.INTRODUCTION.value,
+                    "conversation_summary": "",
+                    "message_count": 0,
+                    "max_messages_before_summary": 20
                 }
                 
                 if self.session_manager:
@@ -1013,6 +1258,9 @@ class AIInterviewer:
                 "job_description": job_description or self.job_description,
                 "requires_coding": requires_coding if requires_coding is not None else True,
                 STAGE_KEY: InterviewStage.INTRODUCTION.value,
+                "conversation_summary": "",
+                "message_count": 0,
+                "max_messages_before_summary": 20
             }
         
         # Detect potential digression if enabled
@@ -1041,6 +1289,9 @@ class AIInterviewer:
         human_msg = HumanMessage(content=user_message)
         messages.append(human_msg)
         
+        # Increment message count for context management
+        message_count += 1
+        
         # Check for candidate name in the user message if not already known
         if not candidate_name:
             # First try with simple name patterns
@@ -1061,7 +1312,7 @@ class AIInterviewer:
         if "transcript" not in metadata:
             metadata["transcript"] = []
         
-        # Create or update system message with context
+        # Create or update system message with context including conversation summary
         system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
             candidate_name=candidate_name or "[Not provided yet]",
             interview_id=session_id,
@@ -1070,14 +1321,15 @@ class AIInterviewer:
             seniority_level=seniority_level_value,
             required_skills=", ".join(required_skills_value) if isinstance(required_skills_value, list) else str(required_skills_value),
             job_description=job_description_value,
-            requires_coding=requires_coding_value
+            requires_coding=requires_coding_value,
+            conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
         )
         
         # Prepend system message if not already present
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=system_prompt)] + messages
         else:
-            # Update existing system message to reflect current stage
+            # Update existing system message to reflect current stage and summary
             messages[0] = SystemMessage(content=system_prompt)
         
         # Properly initialize our InterviewState class
@@ -1091,7 +1343,10 @@ class AIInterviewer:
             requires_coding=requires_coding_value,
             interview_stage=interview_stage,
             session_id=session_id,
-            user_id=user_id
+            user_id=user_id,
+            conversation_summary=conversation_summary,
+            message_count=message_count,
+            max_messages_before_summary=max_messages_before_summary
         )
         
         # Add the StateGraph config
@@ -1123,12 +1378,16 @@ class AIInterviewer:
                     # Extract other state values
                     candidate_name = output.get("candidate_name", candidate_name)
                     interview_stage = output.get("interview_stage", interview_stage)
+                    conversation_summary = output.get("conversation_summary", conversation_summary)
+                    message_count = output.get("message_count", message_count)
                 else:
                     # Extract from InterviewState
                     all_messages = output.messages if hasattr(output, "messages") else []
                     # Extract other state values if available
                     candidate_name = output.candidate_name if hasattr(output, "candidate_name") else candidate_name
                     interview_stage = output.interview_stage if hasattr(output, "interview_stage") else interview_stage
+                    conversation_summary = output.conversation_summary if hasattr(output, "conversation_summary") else conversation_summary
+                    message_count = output.message_count if hasattr(output, "message_count") else message_count
                 
                 # Get AI messages
                 ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
@@ -1155,8 +1414,10 @@ class AIInterviewer:
                             metadata[CANDIDATE_NAME_KEY] = candidate_name
                             logger.info(f"Extracted candidate name from conversation: {candidate_name}")
                     
-                    # Update stage in metadata
+                    # Update stage and context management fields in metadata
                     metadata[STAGE_KEY] = interview_stage
+                    metadata["conversation_summary"] = conversation_summary
+                    metadata["message_count"] = message_count
             
             # Save the updated session
             try:
@@ -1632,4 +1893,206 @@ def safe_extract_content(message: AIMessage) -> str:
     try:
         return message.content or "I apologize, but I encountered an issue. Please try again."
     except Exception:
-        return "I apologize, but I encountered an issue. Please try again." 
+        return "I apologize, but I encountered an issue. Please try again."
+
+    def _extract_interview_insights(self, messages: List[BaseMessage], current_insights: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Extract key interview insights from messages to retain critical information
+        even when messages are summarized.
+        
+        Args:
+            messages: List of messages to extract insights from
+            current_insights: Current insights dictionary to update
+            
+        Returns:
+            Dictionary of structured insights about the candidate
+        """
+        # Initialize insights with existing data or create new dict
+        insights = current_insights or {
+            "candidate_details": {
+                "name": "",
+                "years_of_experience": None,
+                "current_role": "",
+                "education": "",
+                "location": "",
+            },
+            "key_skills": [],
+            "notable_experiences": [],
+            "strengths": [],
+            "areas_for_improvement": [],
+            "coding_ability": {
+                "assessed": False,
+                "languages": [],
+                "frameworks": [],
+                "level": "",
+                "challenge_results": []
+            },
+            "communication_ability": "",
+            "interview_progress": {
+                "questions_asked": [],
+                "completed_stages": []
+            },
+            "extracted_at": datetime.now().isoformat()
+        }
+        
+        try:
+            # If we have fewer than 5 messages, there's not much to extract yet
+            if len(messages) < 5:
+                return insights
+                
+            # Use the summarization model to extract structured insights
+            # Build a prompt that asks for specific structured information
+            extraction_prompt = [
+                SystemMessage(content="""You are an expert at analyzing technical interviews and extracting structured information.
+                Extract key information from this interview conversation into the following structured format.
+                Only include information that was explicitly mentioned; don't infer or make up details.
+                
+                Format your response as a valid JSON object with these fields:
+                {
+                    "candidate_details": {
+                        "name": "Candidate's name if mentioned",
+                        "years_of_experience": "Years of experience in relevant fields (number or range)",
+                        "current_role": "Current job title if mentioned",
+                        "education": "Educational background if mentioned",
+                        "location": "Location if mentioned"
+                    },
+                    "key_skills": ["List of skills the candidate mentioned having"],
+                    "notable_experiences": ["Brief descriptions of notable projects or achievements mentioned"],
+                    "strengths": ["Areas where the candidate demonstrated strength"],
+                    "areas_for_improvement": ["Areas where the candidate could improve"],
+                    "coding_ability": {
+                        "assessed": true/false,
+                        "languages": ["Programming languages mentioned"],
+                        "frameworks": ["Frameworks mentioned"],
+                        "level": "Assessment of coding ability if determined"
+                    },
+                    "communication_ability": "Assessment of communication skills if demonstrated"
+                }
+                """),
+                HumanMessage(content="Here is the interview conversation to analyze:\n\n" + "\n".join([f"{m.type}: {m.content}" for m in messages if hasattr(m, 'content')]))
+            ]
+            
+            # Call the model to extract insights
+            extraction_response = self.summarization_model.invoke(extraction_prompt)
+            extraction_text = extraction_response.content if hasattr(extraction_response, 'content') else ""
+            
+            # Parse the JSON response - handle potential JSON formatting issues
+            import json
+            import re
+            
+            # Look for JSON object in the response
+            json_match = re.search(r'```json\s*(.*?)\s*```', extraction_text, re.DOTALL)
+            if json_match:
+                extraction_text = json_match.group(1)
+            else:
+                # Try to find JSON with curly braces
+                json_match = re.search(r'({.*})', extraction_text, re.DOTALL)
+                if json_match:
+                    extraction_text = json_match.group(1)
+            
+            # Parse the JSON
+            try:
+                extracted_data = json.loads(extraction_text)
+                
+                # Update insights with extracted data, preserving existing data where appropriate
+                if "candidate_details" in extracted_data:
+                    for key, value in extracted_data["candidate_details"].items():
+                        if value and (not insights["candidate_details"].get(key) or key == "name"):
+                            insights["candidate_details"][key] = value
+                
+                # Update lists by adding new unique items
+                for list_key in ["key_skills", "notable_experiences", "strengths", "areas_for_improvement"]:
+                    if list_key in extracted_data and isinstance(extracted_data[list_key], list):
+                        current_set = set(insights.get(list_key, []))
+                        for item in extracted_data[list_key]:
+                            if item and item not in current_set:
+                                insights.setdefault(list_key, []).append(item)
+                                current_set.add(item)
+                
+                # Update coding ability
+                if "coding_ability" in extracted_data:
+                    coding = extracted_data["coding_ability"]
+                    insights_coding = insights["coding_ability"]
+                    
+                    # Only set assessed to True if it was previously False
+                    if coding.get("assessed", False):
+                        insights_coding["assessed"] = True
+                    
+                    # Add new programming languages
+                    if "languages" in coding and isinstance(coding["languages"], list):
+                        current_languages = set(insights_coding.get("languages", []))
+                        for lang in coding["languages"]:
+                            if lang and lang not in current_languages:
+                                insights_coding.setdefault("languages", []).append(lang)
+                                current_languages.add(lang)
+                    
+                    # Add new frameworks
+                    if "frameworks" in coding and isinstance(coding["frameworks"], list):
+                        current_frameworks = set(insights_coding.get("frameworks", []))
+                        for framework in coding["frameworks"]:
+                            if framework and framework not in current_frameworks:
+                                insights_coding.setdefault("frameworks", []).append(framework)
+                                current_frameworks.add(framework)
+                    
+                    # Update level if provided
+                    if coding.get("level") and (not insights_coding.get("level") or len(coding["level"]) > len(insights_coding["level"])):
+                        insights_coding["level"] = coding["level"]
+                
+                # Update communication ability if provided
+                if extracted_data.get("communication_ability"):
+                    insights["communication_ability"] = extracted_data["communication_ability"]
+                
+                # Update timestamp
+                insights["extracted_at"] = datetime.now().isoformat()
+                
+                logger.info(f"Successfully extracted interview insights with {len(insights.get('key_skills', []))} skills and {len(insights.get('notable_experiences', []))} experiences")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from extraction response: {e}")
+                logger.debug(f"Raw extraction text: {extraction_text}")
+        except Exception as e:
+            logger.error(f"Error extracting interview insights: {e}")
+        
+        return insights 
+
+    async def extract_and_update_insights(self, session_id: str) -> Dict[str, Any]:
+        """
+        Manually extract and update insights for a session.
+        
+        This method can be called to extract structured insights from an interview session
+        on demand, without having to wait for the automatic extraction during context management.
+        
+        Args:
+            session_id: Session ID to extract insights for
+            
+        Returns:
+            Dictionary of structured insights about the candidate
+        """
+        try:
+            # Get session data
+            if not self.session_manager:
+                logger.error("Cannot extract insights: Session manager not available")
+                return {}
+                
+            session = self.session_manager.get_session(session_id)
+            if not session:
+                logger.error(f"Cannot extract insights: Session {session_id} not found")
+                return {}
+                
+            # Get messages and current insights
+            messages = session.get("messages", [])
+            metadata = session.get("metadata", {})
+            current_insights = metadata.get("interview_insights", None)
+            
+            # Extract insights from messages
+            logger.info(f"Manually extracting insights from session {session_id} with {len(messages)} messages")
+            insights = self._extract_interview_insights(messages, current_insights)
+            
+            # Update metadata with new insights
+            metadata["interview_insights"] = insights
+            self.session_manager.update_session_metadata(session_id, metadata)
+            
+            logger.info(f"Successfully extracted and updated insights for session {session_id}")
+            return insights
+        except Exception as e:
+            logger.error(f"Error in extract_and_update_insights: {e}")
+            return {}
