@@ -4,7 +4,7 @@ Coding challenge tools for the {SYSTEM_NAME} platform.
 This module implements tools for starting, interacting with, and evaluating coding challenges.
 """
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 import uuid
 
 from langchain_core.tools import tool
@@ -20,149 +20,184 @@ logger = logging.getLogger(__name__)
 
 
 @tool
-def start_coding_challenge(challenge_id: Optional[str] = None) -> Dict:
+async def start_coding_challenge(challenge_id: Optional[str] = None, difficulty: Optional[str] = None, 
+                           topic: Optional[str] = None, stream_callback: Optional[Callable] = None) -> Dict[str, Any]:
     """
-    Start a coding challenge for the candidate.
+    Start a coding challenge with streaming progress updates.
     
     Args:
-        challenge_id: Optional ID of a specific challenge to start, or random if not provided
+        challenge_id: Optional specific challenge ID
+        difficulty: Optional difficulty level
+        topic: Optional topic area
+        stream_callback: Optional callback for streaming updates
         
     Returns:
-        A dictionary containing the challenge details and starter code
+        Challenge details and initial setup
     """
     try:
-        # Get a challenge (specific or random)
-        challenge = get_coding_challenge(challenge_id)
-        logger.info(f"Starting coding challenge: {challenge.id} - {challenge.title}")
+        # Emit starting event
+        if stream_callback:
+            await stream_callback({
+                "type": "challenge_starting",
+                "challenge_id": challenge_id
+            })
+            
+        # Load challenge database
+        if stream_callback:
+            await stream_callback({
+                "type": "loading_challenges",
+                "message": "Loading challenge database..."
+            })
+            
+        challenges = load_coding_challenges()
         
-        # Only expose non-hidden test cases to the candidate
-        visible_test_cases = [
-            {
-                "input": tc.input,
-                "expected_output": tc.expected_output,
-                "explanation": tc.explanation
-            }
-            for tc in challenge.test_cases if not tc.is_hidden
-        ]
+        # Select appropriate challenge
+        if stream_callback:
+            await stream_callback({
+                "type": "selecting_challenge",
+                "message": "Selecting appropriate challenge..."
+            })
+            
+        challenge = select_challenge(challenges, challenge_id, difficulty, topic)
         
-        # Return the challenge details
+        # Prepare test environment
+        if stream_callback:
+            await stream_callback({
+                "type": "preparing_environment",
+                "message": "Setting up test environment..."
+            })
+            
+        test_env = prepare_test_environment(challenge)
+        
+        # Emit completion event
+        if stream_callback:
+            await stream_callback({
+                "type": "challenge_ready",
+                "challenge_id": challenge["id"],
+                "title": challenge["title"]
+            })
+            
         return {
-            "status": "success",
-            "challenge_id": challenge.id,
-            "title": challenge.title,
-            "description": challenge.description,
-            "language": challenge.language,
-            "difficulty": challenge.difficulty,
-            "starter_code": challenge.starter_code,
-            "visible_test_cases": visible_test_cases,
-            "time_limit_mins": challenge.time_limit_mins,
-            "evaluation_criteria": {
-                "correctness": "Code produces correct output for all test cases",
-                "efficiency": "Code uses efficient algorithms and data structures",
-                "code_quality": "Code follows best practices and style guidelines",
-                "documentation": "Code is well-documented with comments and docstrings"
-            },
-            "pair_programming_features": {
-                "code_suggestions": "Get AI suggestions for code improvements",
-                "code_completion": "Get context-aware code completions",
-                "code_review": "Get focused code review and feedback",
-                "hints": "Get targeted hints when you're stuck"
-            }
+            "challenge_id": challenge["id"],
+            "title": challenge["title"],
+            "description": challenge["description"],
+            "initial_code": challenge.get("initial_code", ""),
+            "test_cases": challenge.get("test_cases", []),
+            "hints": challenge.get("hints", []),
+            "difficulty": challenge.get("difficulty", "medium"),
+            "time_limit": challenge.get("time_limit", 30),  # minutes
+            "test_env": test_env
         }
     except Exception as e:
         logger.error(f"Error starting coding challenge: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        if stream_callback:
+            await stream_callback({
+                "type": "challenge_error",
+                "error": str(e)
+            })
+        raise
 
 
 @tool
-def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_level: str = "intermediate") -> Dict:
+async def submit_code_for_challenge(code: str, challenge_id: str, stream_callback: Optional[Callable] = None) -> Dict[str, Any]:
     """
-    Submit a candidate's code solution for evaluation.
+    Submit and evaluate code for a challenge with streaming progress.
     
     Args:
-        challenge_id: ID of the challenge being solved
-        candidate_code: The code solution provided by the candidate
-        skill_level: Skill level of the candidate (beginner, intermediate, advanced)
+        code: The submitted code
+        challenge_id: Challenge identifier
+        stream_callback: Optional callback for streaming updates
         
     Returns:
-        A dictionary containing the detailed evaluation results
+        Evaluation results
     """
     try:
-        logger.info(f"Received code submission for challenge: {challenge_id}")
+        # Emit starting event
+        if stream_callback:
+            await stream_callback({
+                "type": "evaluation_starting",
+                "challenge_id": challenge_id
+            })
+            
+        # Load challenge
+        if stream_callback:
+            await stream_callback({
+                "type": "loading_challenge",
+                "message": "Loading challenge details..."
+            })
+            
+        challenge = get_challenge_by_id(challenge_id)
         
-        # Get the challenge details
-        challenge = get_coding_challenge(challenge_id)
-        
-        # Basic validation - check for empty submission
-        code_without_comments = "\n".join(
-            line for line in candidate_code.split("\n") 
-            if not line.strip().startswith("#")
-        )
-        
-        if not code_without_comments.strip():
+        # Syntax check
+        if stream_callback:
+            await stream_callback({
+                "type": "syntax_check",
+                "message": "Checking code syntax..."
+            })
+            
+        syntax_result = check_syntax(code)
+        if not syntax_result["valid"]:
+            if stream_callback:
+                await stream_callback({
+                    "type": "syntax_error",
+                    "errors": syntax_result["errors"]
+                })
             return {
-                "status": "submitted",
-                "challenge_id": challenge_id,
-                "evaluation": {
-                    "passed": False,
-                    "message": "Your submission appears to be empty or contains only comments."
-                }
+                "status": "syntax_error",
+                "errors": syntax_result["errors"]
             }
             
-        # Extract all test cases (including hidden)
-        test_cases = [
-            {
-                "input": tc.input,
-                "expected_output": tc.expected_output,
-                "explanation": tc.explanation,
-                "is_hidden": tc.is_hidden
-            }
-            for tc in challenge.test_cases
-        ]
+        # Run tests
+        if stream_callback:
+            await stream_callback({
+                "type": "running_tests",
+                "message": "Running test cases..."
+            })
+            
+        test_results = run_tests(code, challenge["test_cases"])
         
-        # Execute the code using our secure Docker executor
-        execution_results = execute_candidate_code.invoke({
-            "language": challenge.language.lower(),
-            "code": candidate_code,
-            "test_cases": test_cases
-        })
+        # Code quality analysis
+        if stream_callback:
+            await stream_callback({
+                "type": "analyzing_quality",
+                "message": "Analyzing code quality..."
+            })
+            
+        quality_metrics = analyze_code_quality(code)
         
-        # Generate detailed feedback
-        feedback = CodeFeedbackGenerator.generate_feedback(
-            code=candidate_code,
-            execution_results=execution_results.get("detailed_results", execution_results),
-            language=challenge.language,
-            skill_level=skill_level
-        )
+        # Prepare feedback
+        if stream_callback:
+            await stream_callback({
+                "type": "generating_feedback",
+                "message": "Generating detailed feedback..."
+            })
+            
+        feedback = generate_feedback(test_results, quality_metrics)
         
-        # Return detailed evaluation
+        # Emit completion event
+        if stream_callback:
+            await stream_callback({
+                "type": "evaluation_complete",
+                "challenge_id": challenge_id,
+                "passed": test_results["passed"],
+                "total": test_results["total"]
+            })
+            
         return {
-            "status": "submitted",
+            "status": "complete",
             "challenge_id": challenge_id,
-            "execution_results": execution_results,
-            "feedback": feedback,
-            "evaluation": {
-                "passed": execution_results.get("status") == "success" and execution_results.get("pass_count", 0) == execution_results.get("total_tests", 0),
-                "pass_rate": feedback["correctness"].get("pass_rate", 0),
-                "code_quality_score": feedback["code_quality"].get("overall_score", 0),
-                "summary": feedback["summary"],
-                "suggestions": feedback["suggestions"],
-                "strengths": feedback["strengths"],
-                "areas_for_improvement": feedback["areas_for_improvement"]
-            }
+            "test_results": test_results,
+            "quality_metrics": quality_metrics,
+            "feedback": feedback
         }
-        
     except Exception as e:
-        logger.error(f"Error processing code submission: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        logger.error(f"Error evaluating code submission: {e}")
+        if stream_callback:
+            await stream_callback({
+                "type": "evaluation_error",
+                "error": str(e)
+            })
+        raise
 
 
 @tool

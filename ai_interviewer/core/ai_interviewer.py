@@ -7,7 +7,7 @@ class that handles the entire interview process.
 import logging
 import os
 import uuid
-from typing import Dict, List, Optional, Any, Literal, Union, Tuple
+from typing import Dict, List, Optional, Any, Literal, Union, Tuple, Callable, AsyncGenerator
 from datetime import datetime
 from enum import Enum
 import re
@@ -463,7 +463,7 @@ class AIInterviewer:
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
         """
         Call the model to generate a response based on the current state.
-        Uses async operations internally but presents a synchronous interface for LangGraph.
+        Uses async operations internally and supports streaming responses.
         """
         try:
             # Start profiling this node
@@ -498,7 +498,7 @@ class AIInterviewer:
                 }
             }
             
-            # Call the model with retries
+            # Call the model with retries and streaming
             max_retries = 3
             retry_count = 0
             last_error = None
@@ -507,7 +507,25 @@ class AIInterviewer:
                 try:
                     logger.debug(f"Calling model with {len(messages)} messages (attempt {retry_count + 1})")
                     llm_start_time = time.time()
-                    ai_message = await self.llm.ainvoke(messages)
+                    
+                    # Use streaming for token-by-token generation
+                    full_response = ""
+                    async for chunk in self.llm.astream(messages):
+                        # Extract content from chunk
+                        chunk_content = chunk.content if hasattr(chunk, "content") else ""
+                        full_response += chunk_content
+                        
+                        # Emit streaming event if callback is set
+                        if hasattr(self, "stream_callback") and self.stream_callback:
+                            await self.stream_callback({
+                                "type": "llm_token",
+                                "content": chunk_content,
+                                "session_id": state_data["session_id"]
+                            })
+                    
+                    # Create final AI message
+                    ai_message = AIMessage(content=full_response)
+                    
                     llm_elapsed = time.time() - llm_start_time
                     logger.info(f"LLM call completed in {llm_elapsed:.2f} seconds")
                     break
@@ -578,6 +596,243 @@ class AIInterviewer:
                     session_id=state.session_id if hasattr(state, "session_id") else "",
                     user_id=state.user_id if hasattr(state, "user_id") else ""
                 )
+    
+    def set_stream_callback(self, callback: Callable):
+        """
+        Set a callback function to handle streaming events.
+        
+        Args:
+            callback: Async function that takes a dict with event data
+        """
+        self.stream_callback = callback
+        
+    async def run_interview_stream(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
+                                 job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
+                                 required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
+                                 requires_coding: Optional[bool] = None, handle_digression: bool = True) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Streaming version of run_interview that yields partial results.
+        
+        Args:
+            Same as run_interview
+            
+        Yields:
+            Dict containing streaming events (tokens, tool progress, etc.)
+        """
+        # Create a new session if one doesn't exist
+        if not session_id:
+            session_id = self._get_or_create_session(user_id)
+            yield {
+                "type": "session_created",
+                "session_id": session_id,
+                "user_id": user_id
+            }
+        
+        # Initialize state with default values
+        messages = []
+        candidate_name = ""
+        interview_stage = InterviewStage.INTRODUCTION.value
+        job_role_value = job_role or self.job_role
+        seniority_level_value = seniority_level or self.seniority_level
+        required_skills_value = required_skills or self.required_skills
+        job_description_value = job_description or self.job_description
+        requires_coding_value = requires_coding if requires_coding is not None else True
+        
+        try:
+            # Load session data
+            session_data = await self._load_session_data(session_id, user_id, job_role, seniority_level, 
+                                                       required_skills, job_description, requires_coding)
+            
+            # Extract session values
+            messages = session_data.get("messages", [])
+            metadata = session_data.get("metadata", {})
+            candidate_name = metadata.get(CANDIDATE_NAME_KEY, "")
+            interview_stage = metadata.get(STAGE_KEY, InterviewStage.INTRODUCTION.value)
+            
+            yield {
+                "type": "session_loaded",
+                "session_id": session_id,
+                "stage": interview_stage
+            }
+            
+            # Handle digression if enabled
+            if handle_digression and len(messages) > 2:
+                is_digression = await self._detect_digression(user_message, messages, interview_stage)
+                if is_digression:
+                    yield {
+                        "type": "digression_detected",
+                        "session_id": session_id
+                    }
+                    
+                    if not any("CONTEXT: Candidate is digressing" in m.content 
+                              for m in messages[-3:] if isinstance(m, AIMessage) and hasattr(m, 'content')):
+                        digression_note = AIMessage(content=f"CONTEXT: Candidate is digressing from the interview topic. I'll acknowledge their point and gently guide the conversation back to relevant technical topics.")
+                        messages.append(digression_note)
+                        metadata["handling_digression"] = True
+                    
+            # Add the user message
+            human_msg = HumanMessage(content=user_message)
+            messages.append(human_msg)
+            
+            # Check for candidate name
+            if not candidate_name:
+                name_match = self._extract_candidate_name([human_msg])
+                if name_match:
+                    candidate_name = name_match
+                    metadata[CANDIDATE_NAME_KEY] = candidate_name
+                    yield {
+                        "type": "name_extracted",
+                        "name": candidate_name,
+                        "session_id": session_id
+                    }
+            
+            # Create system prompt
+            system_prompt = await self._get_cached_system_prompt(
+                candidate_name, session_id, interview_stage,
+                job_role_value, seniority_level_value, required_skills_value,
+                job_description_value, requires_coding_value
+            )
+            
+            # Prepare messages
+            messages = self._prepare_messages(messages, system_prompt)
+            
+            # Create state
+            state = InterviewState(
+                messages=messages,
+                candidate_name=candidate_name,
+                job_role=job_role_value,
+                seniority_level=seniority_level_value,
+                required_skills=required_skills_value,
+                job_description=job_description_value,
+                requires_coding=requires_coding_value,
+                interview_stage=interview_stage,
+                session_id=session_id,
+                user_id=user_id
+            )
+            
+            # Set up streaming callback
+            async def stream_handler(event: Dict[str, Any]):
+                yield event
+            
+            self.set_stream_callback(stream_handler)
+            
+            # Run workflow with streaming
+            config = {
+                "configurable": {
+                    "thread_id": session_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }
+            }
+            
+            # Use LangGraph's streaming capabilities
+            async for event in self.workflow.astream_events(state, config=config):
+                if isinstance(event, dict) and "type" in event:
+                    yield event
+                elif isinstance(event, (dict, InterviewState)):
+                    # Extract final response
+                    messages = event.get("messages", []) if isinstance(event, dict) else event.messages
+                    if messages:
+                        ai_message = messages[-1]
+                        if isinstance(ai_message, AIMessage):
+                            yield {
+                                "type": "final_response",
+                                "content": safe_extract_content(ai_message),
+                                "session_id": session_id
+                            }
+            
+            # Update session with final state
+            await self._update_session_with_state(session_id, state, metadata)
+            
+            yield {
+                "type": "complete",
+                "session_id": session_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in run_interview_stream: {e}")
+            yield {
+                "type": "error",
+                "error": str(e),
+                "session_id": session_id
+            }
+            
+    async def _load_session_data(self, session_id: str, user_id: str, job_role: Optional[str] = None,
+                                seniority_level: Optional[str] = None, required_skills: Optional[List[str]] = None,
+                                job_description: Optional[str] = None, requires_coding: Optional[bool] = None) -> Dict[str, Any]:
+        """Helper method to load session data with streaming support."""
+        try:
+            if self.session_manager:
+                session = await self.session_manager.get_session(session_id)
+                if not session and session_id:
+                    await self.session_manager.create_session(user_id, session_id=session_id)
+                    session = await self.session_manager.get_session(session_id)
+                    
+                if session:
+                    messages = session.get("messages", [])
+                    metadata = session.get("metadata", {})
+                else:
+                    messages = []
+                    metadata = {}
+            else:
+                session = self.active_sessions.get(session_id, {})
+                messages = session.get("messages", [])
+                metadata = session
+                
+            # Update metadata with new values if provided
+            if job_role and "job_role" not in metadata:
+                metadata["job_role"] = job_role
+            if seniority_level and "seniority_level" not in metadata:
+                metadata["seniority_level"] = seniority_level
+            if required_skills and "required_skills" not in metadata:
+                metadata["required_skills"] = required_skills
+            if job_description and "job_description" not in metadata:
+                metadata["job_description"] = job_description
+            if requires_coding is not None and "requires_coding" not in metadata:
+                metadata["requires_coding"] = requires_coding
+                
+            # Ensure we have an interview stage
+            if STAGE_KEY not in metadata:
+                metadata[STAGE_KEY] = InterviewStage.INTRODUCTION.value
+                
+            return {
+                "messages": extract_messages_from_transcript(messages),
+                "metadata": metadata
+            }
+        except Exception as e:
+            logger.error(f"Error loading session data: {e}")
+            return {
+                "messages": [],
+                "metadata": {
+                    "job_role": job_role or self.job_role,
+                    "seniority_level": seniority_level or self.seniority_level,
+                    "required_skills": required_skills or self.required_skills,
+                    "job_description": job_description or self.job_description,
+                    "requires_coding": requires_coding if requires_coding is not None else True,
+                    STAGE_KEY: InterviewStage.INTRODUCTION.value
+                }
+            }
+            
+    async def _update_session_with_state(self, session_id: str, state: Union[Dict, InterviewState], metadata: Dict[str, Any]):
+        """Helper method to update session with final state."""
+        try:
+            if self.session_manager:
+                # Update metadata
+                await self.session_manager.update_session_metadata(session_id, metadata)
+                
+                # Update messages
+                messages = state.get("messages", []) if isinstance(state, dict) else state.messages
+                await self.session_manager.update_session_messages(session_id, messages)
+                
+                # Update activity timestamp
+                await self.session_manager.update_session_activity(session_id)
+            else:
+                # In-memory updates
+                self.active_sessions[session_id].update(metadata)
+                self.active_sessions[session_id]["messages"] = state.get("messages", []) if isinstance(state, dict) else state.messages
+                self.active_sessions[session_id]["last_active"] = datetime.now().isoformat()
+        except Exception as e:
+            logger.error(f"Error updating session with state: {e}")
     
     async def run_interview(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
                           job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
