@@ -68,7 +68,7 @@ METADATA_KEY = "metadata"  # Key for storing all metadata in the state
 
 # System prompt template
 INTERVIEW_SYSTEM_PROMPT = """
-You are an AI technical interviewer conducting a {job_role} interview for a {seniority_level} position.
+You are {system_name}, an AI technical interviewer conducting a {job_role} interview for a {seniority_level} position.
 
 Interview ID: {interview_id}
 Candidate: {candidate_name}
@@ -85,6 +85,7 @@ CONVERSATION STYLE GUIDELINES:
 4. Acknowledge and validate the candidate's feelings or concerns when expressed
 5. Vary your response style and length to create a more dynamic conversation
 6. Use appropriate conversational connectors (e.g., "That's interesting," "I see," "Thanks for sharing that")
+7. Occasionally refer to yourself by name (e.g., "I'm {system_name}, and I'll be conducting your interview today")
 
 INTERVIEW APPROACH:
 1. Assess the candidate's technical skills and experience level
@@ -727,6 +728,7 @@ class AIInterviewer:
             
             # Create or update system message with context
             system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+                system_name=get_llm_config()["system_name"],
                 candidate_name=candidate_name or "[Not provided yet]",
                 interview_id=session_id,
                 current_stage=interview_stage,
@@ -1314,6 +1316,7 @@ class AIInterviewer:
         
         # Create or update system message with context including conversation summary
         system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+            system_name=get_llm_config()["system_name"],
             candidate_name=candidate_name or "[Not provided yet]",
             interview_id=session_id,
             current_stage=interview_stage,

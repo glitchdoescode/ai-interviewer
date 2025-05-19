@@ -28,6 +28,7 @@ MONGODB_METADATA_COLLECTION = os.environ.get("MONGODB_METADATA_COLLECTION", "int
 # LLM configuration
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-1.5-pro-latest")
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+SYSTEM_NAME = os.environ.get("SYSTEM_NAME", "Dhruv")
 
 # Session configuration
 SESSION_TIMEOUT_MINUTES = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "60"))
@@ -65,6 +66,7 @@ def get_llm_config() -> Dict[str, Any]:
     return {
         "model": LLM_MODEL,
         "temperature": LLM_TEMPERATURE,
+        "system_name": SYSTEM_NAME,
     }
 
 def get_session_config() -> Dict[str, Any]:
@@ -116,6 +118,7 @@ def log_config():
     logger.info(f"- Metadata Collection: {MONGODB_METADATA_COLLECTION}")
     logger.info(f"- LLM Model: {LLM_MODEL}")
     logger.info(f"- LLM Temperature: {LLM_TEMPERATURE}")
+    logger.info(f"- System Name: {SYSTEM_NAME}")
     logger.info(f"- Session Timeout: {SESSION_TIMEOUT_MINUTES} minutes")
     logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages")
     logger.info(f"- Speech TTS Voice: {SPEECH_TTS_VOICE}")
