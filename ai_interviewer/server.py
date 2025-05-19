@@ -26,8 +26,9 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
-from ai_interviewer.utils.config import get_llm_config
+from ai_interviewer.utils.config import get_llm_config, get_db_config
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
+from ai_interviewer.utils.memory_manager import InterviewMemoryManager
 from langgraph.types import interrupt, Command
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -59,6 +60,7 @@ app = FastAPI(
     * Voice-based interview with STT/TTS
     * Session management for resuming interviews
     * User session history
+    * Cross-session memory persistence
     
     ## Authentication
     
@@ -85,7 +87,20 @@ app.add_middleware(
 # Initialize AI Interviewer instance
 # Apply a patch to make sure the interview instance has access to the summarization model
 try:
-    interviewer = AIInterviewer()
+    # Initialize memory manager first
+    db_config = get_db_config()
+    memory_manager = InterviewMemoryManager(
+        connection_uri=db_config["uri"],
+        db_name=db_config["database"],
+        checkpoint_collection=db_config["sessions_collection"],
+        store_collection="interview_memory_store"
+    )
+    
+    # Setup memory collections and indexes
+    memory_manager.setup()
+    
+    # Initialize AIInterviewer with MongoDB persistence
+    interviewer = AIInterviewer(use_mongodb=True)
     
     # Make sure the summarization model is initialized
     if not hasattr(interviewer, 'summarization_model'):
@@ -95,7 +110,8 @@ try:
             temperature=0.1
         )
         logger.info("Added summarization model to interviewer instance")
-        
+    
+    logger.info("AI Interviewer initialized successfully with memory management")
 except Exception as e:
     logger.critical(f"Failed to initialize AI Interviewer: {e}")
     # In a production environment, you might want to exit the application
@@ -270,12 +286,26 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Background task to clean up resources when the server is shutting down
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up resources when the server is shutting down."""
-    try:
-        interviewer.cleanup()
-        logger.info("Resources cleaned up on server shutdown")
-    except Exception as e:
-        logger.error(f"Error cleaning up resources: {e}")
+    """Clean up resources when shutting down."""
+    logger.info("Shutting down AI Interviewer server")
+    
+    # Clean up AI Interviewer resources
+    if 'interviewer' in globals():
+        try:
+            interviewer.cleanup()
+            logger.info("AI Interviewer resources cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning up AI Interviewer: {e}")
+    
+    # Clean up memory manager if it exists separately
+    if 'memory_manager' in globals():
+        try:
+            memory_manager.close()
+            logger.info("Memory manager resources cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning up memory manager: {e}")
+    
+    logger.info("Shutdown complete")
 
 # Dependency for monitoring request timing
 async def log_request_time(request: Request):
@@ -1959,6 +1989,141 @@ def start_server(host: str = "0.0.0.0", port: int = 8000):
         port=port,
         log_config=log_config
     )
+
+# Memory-related endpoints
+class EnhancedMemoryQuery(BaseModel):
+    user_id: str = Field(..., description="User ID to search memories for")
+    query: str = Field(..., description="Search query for memories")
+    max_results: int = Field(5, description="Maximum number of results to return")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_id": "user-123",
+                "query": "python",
+                "max_results": 5
+            }
+        }
+
+class EnhancedMemoryResponse(BaseModel):
+    memories: List[Dict[str, Any]] = Field(..., description="List of memory items found")
+    query: str = Field(..., description="Original search query")
+    user_id: str = Field(..., description="User ID searched for")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "memories": [
+                    {
+                        "type": "candidate_profile",
+                        "key": "profile-123",
+                        "value": {
+                            "key_skills": ["Python", "JavaScript"],
+                            "notable_experiences": ["Built a distributed system at Company X"]
+                        }
+                    }
+                ],
+                "query": "python",
+                "user_id": "user-123"
+            }
+        }
+
+@app.post(
+    "/api/memory/search",
+    response_model=EnhancedMemoryResponse,
+    responses={
+        200: {"description": "Successfully searched memories"},
+        400: {"description": "Bad request - missing parameters", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def search_memories(request: Request, query_data: EnhancedMemoryQuery):
+    """
+    Search through cross-session memories for a specific user.
+    """
+    try:
+        if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
+            raise HTTPException(
+                status_code=500,
+                detail="Memory management is not available on this server instance"
+            )
+        
+        memories = interviewer.memory_manager.search_memories(
+            query=query_data.query,
+            user_id=query_data.user_id,
+            max_results=query_data.max_results
+        )
+        
+        return {
+            "memories": memories,
+            "query": query_data.query,
+            "user_id": query_data.user_id
+        }
+    except Exception as e:
+        logger.error(f"Error searching memories: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to search memories: {str(e)}"
+        )
+
+class CandidateProfileResponse(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    profile: Optional[Dict[str, Any]] = Field(None, description="Candidate profile data if found")
+    has_profile: bool = Field(..., description="Whether a profile was found")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_id": "user-123",
+                "profile": {
+                    "key_skills": ["Python", "JavaScript", "AWS"],
+                    "notable_experiences": ["Built a distributed system at Company X"],
+                    "strengths": ["Problem solving", "System design"],
+                    "areas_for_improvement": ["Frontend design"]
+                },
+                "has_profile": True
+            }
+        }
+
+@app.get(
+    "/api/memory/profile/{user_id}",
+    response_model=CandidateProfileResponse,
+    responses={
+        200: {"description": "Successfully retrieved candidate profile"},
+        404: {"description": "Profile not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_candidate_profile(request: Request, user_id: str):
+    """
+    Get a candidate's profile data from cross-session memory.
+    """
+    try:
+        if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
+            raise HTTPException(
+                status_code=500, 
+                detail="Memory management is not available on this server instance"
+            )
+        
+        profile = interviewer.memory_manager.get_candidate_profile(user_id)
+        
+        return {
+            "user_id": user_id,
+            "profile": profile,
+            "has_profile": profile is not None
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving candidate profile: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve candidate profile: {str(e)}"
+        )
 
 if __name__ == "__main__":
     # Run the server directly if this module is executed
