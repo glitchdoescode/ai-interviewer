@@ -13,8 +13,7 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph_store_mongodb import MongoDBStore
-from langgraph.store.base import BaseStore, SearchResult
+from langgraph.store.mongodb.base import MongoDBStore
 
 from ai_interviewer.utils.config import get_db_config
 
@@ -71,16 +70,16 @@ class InterviewMemoryManager:
             )
             
             # Initialize store for cross-thread memory
-            self.store = MongoDBStore(
-                client=self.client,
-                db_name=self.db_name,
-                collection_name=self.store_collection
-            )
+            # Get the MongoDB collection object first
+            db = self.client[self.db_name]
+            collection = db[self.store_collection]
+            
+            # Pass the collection object directly to MongoDBStore
+            self.store = MongoDBStore(collection)
             
             # Verify connections
-            db = self.client[self.db_name]
             db[self.checkpoint_collection].find_one({})
-            db[self.store_collection].find_one({})
+            collection.find_one({})
             
             logger.info(f"Memory manager initialized with MongoDB: {self.db_name}")
         except Exception as e:
