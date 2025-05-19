@@ -27,7 +27,10 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
 from ai_interviewer.utils.config import get_llm_config
+from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
 from langgraph.types import interrupt, Command
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 
 # Set up logging
