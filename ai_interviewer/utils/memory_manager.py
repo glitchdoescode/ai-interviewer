@@ -89,8 +89,9 @@ class InterviewMemoryManager:
     def setup(self):
         """Set up database collections and indexes if needed."""
         try:
-            # Set up checkpointer and store
-            self.checkpointer.setup()
+            # Set up checkpointer - MongoDBSaver may not have setup method
+            if hasattr(self.checkpointer, 'setup') and callable(getattr(self.checkpointer, 'setup')):
+                self.checkpointer.setup()
             
             # Check if store has setup method 
             if hasattr(self.store, 'setup') and callable(getattr(self.store, 'setup')):
