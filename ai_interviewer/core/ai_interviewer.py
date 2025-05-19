@@ -445,31 +445,20 @@ class AIInterviewer:
         Returns:
             Next node to execute ("tools" or "end")
         """
-        # Get the most recent assistant message
-        # Check if state is a dictionary or MessagesState object
-        if isinstance(state, dict):
-            if "messages" not in state or not state["messages"]:
-                # No messages yet
-                return "end"
-            messages = state["messages"]
-        else:
-            # Assume it's a MessagesState or InterviewState object
-            if not hasattr(state, "messages") or not state.messages:
-                # No messages yet
-                return "end"
-            messages = state.messages
+        # Get messages list, handling both dict and InterviewState
+        messages = state.messages if hasattr(state, "messages") else state.get("messages", [])
         
-        # Look for the last AI message
-        for message in reversed(messages):
-            if isinstance(message, AIMessage):
-                # Check if it has tool calls
-                if hasattr(message, "tool_calls") and message.tool_calls:
-                    return "tools"
-                # No tool calls
-                return "end"
-        
-        # No AI messages found
-        return "end"
+        # No messages means end
+        if not messages:
+            return "end"
+            
+        # Get last AI message - we only need to check the most recent one
+        last_message = messages[-1]
+        if not isinstance(last_message, AIMessage):
+            return "end"
+            
+        # Check for tool calls
+        return "tools" if hasattr(last_message, "tool_calls") and last_message.tool_calls else "end"
     
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
         """
@@ -1402,44 +1391,100 @@ class AIInterviewer:
         Returns:
             Next interview stage
         """
-        # Don't change stage if we're handling a digression
-        if any("CONTEXT: Candidate is digressing" in m.content 
-               for m in messages[-3:] 
-               if isinstance(m, AIMessage) and hasattr(m, 'content')):
+        # Fast path: Don't change stage if we're handling a digression
+        if current_stage == InterviewStage.CONCLUSION.value:
             return current_stage
+            
+        # Check for digression context in latest messages only
+        latest_messages = messages[-3:] if len(messages) > 3 else messages
+        if any("CONTEXT: Candidate is digressing" in getattr(m, 'content', '') 
+               for m in latest_messages if isinstance(m, AIMessage)):
+            return current_stage
+            
+        # Only analyze the latest AI message content for transitions
+        ai_content = ai_message.content.lower()
         
-        # Extract content from messages for analysis
-        recent_content = " ".join([
-            m.content for m in messages[-3:] 
-            if hasattr(m, 'content')
-        ] + [ai_message.content])
-        
-        # Stage transition patterns
+        # Stage transition patterns with weighted indicators
         transitions = {
             InterviewStage.INTRODUCTION.value: {
-                "patterns": ["tell me about your experience", "background", "what brings you here"],
-                "next": InterviewStage.TECHNICAL_QUESTIONS.value
+                "next": InterviewStage.TECHNICAL_QUESTIONS.value,
+                "strong_indicators": [
+                    "let's begin with some technical questions",
+                    "let's start with your technical background",
+                    "now that i know a bit about you"
+                ],
+                "weak_indicators": [
+                    "tell me about your experience",
+                    "what's your background",
+                    "what brings you here"
+                ]
             },
             InterviewStage.TECHNICAL_QUESTIONS.value: {
-                "patterns": ["let's move on to a coding challenge", "I'd like you to solve", "implement"],
-                "next": InterviewStage.CODING_CHALLENGE.value
+                "next": InterviewStage.CODING_CHALLENGE.value,
+                "strong_indicators": [
+                    "let's move on to a coding challenge",
+                    "i'd like you to solve a coding problem",
+                    "time for a practical challenge"
+                ],
+                "weak_indicators": [
+                    "implement",
+                    "write a function",
+                    "solve this problem"
+                ]
             },
             InterviewStage.CODING_CHALLENGE.value: {
-                "patterns": ["great solution", "well done", "let's discuss", "behavioral question"],
-                "next": InterviewStage.BEHAVIORAL_QUESTIONS.value
+                "next": InterviewStage.BEHAVIORAL_QUESTIONS.value,
+                "strong_indicators": [
+                    "great solution",
+                    "excellent work on the challenge",
+                    "now let's discuss some behavioral questions"
+                ],
+                "weak_indicators": [
+                    "well done",
+                    "good job",
+                    "let's move on"
+                ]
             },
             InterviewStage.BEHAVIORAL_QUESTIONS.value: {
-                "patterns": ["do you have any questions", "would you like to ask"],
-                "next": InterviewStage.CONCLUSION.value
+                "next": InterviewStage.CONCLUSION.value,
+                "strong_indicators": [
+                    "thank you for your time today",
+                    "we're nearing the end of our interview",
+                    "do you have any questions for me"
+                ],
+                "weak_indicators": [
+                    "would you like to ask",
+                    "any questions",
+                    "wrapping up"
+                ]
             }
         }
         
         # Check for stage transition
         if current_stage in transitions:
-            patterns = transitions[current_stage]["patterns"]
-            if any(pattern.lower() in recent_content.lower() for pattern in patterns):
-                logger.info(f"Transitioning from {current_stage} to {transitions[current_stage]['next']}")
-                return transitions[current_stage]["next"]
+            transition = transitions[current_stage]
+            
+            # Check for strong indicators first
+            if any(indicator in ai_content for indicator in transition["strong_indicators"]):
+                logger.info(f"Strong indicator found: Transitioning from {current_stage} to {transition['next']}")
+                return transition["next"]
+                
+            # Check for weak indicators and additional context
+            if any(indicator in ai_content for indicator in transition["weak_indicators"]):
+                # For weak indicators, check if we have tool calls that support the transition
+                has_supporting_tools = False
+                if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+                    tool_names = [call.get("name", "") for call in ai_message.tool_calls]
+                    
+                    # Tool calls that support stage transitions
+                    if current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+                        has_supporting_tools = "start_coding_challenge" in tool_names
+                    elif current_stage == InterviewStage.CODING_CHALLENGE.value:
+                        has_supporting_tools = "evaluate_solution" in tool_names
+                
+                if has_supporting_tools:
+                    logger.info(f"Weak indicator with supporting tools: Transitioning from {current_stage} to {transition['next']}")
+                    return transition["next"]
         
         # Stay in current stage if no transition patterns matched
         return current_stage
