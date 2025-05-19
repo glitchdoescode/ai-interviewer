@@ -380,4 +380,156 @@ class SessionManager:
                 return False
         except Exception as e:
             logger.error(f"Error updating session messages: {e}")
+            return False
+    
+    def update_conversation_summary(self, session_id: str, summary: str) -> bool:
+        """
+        Update the conversation summary for a session.
+        
+        Args:
+            session_id: Session identifier
+            summary: New conversation summary
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get the current metadata
+            session = self.get_session(session_id)
+            if not session:
+                logger.warning(f"Session {session_id} not found for summary update")
+                return False
+                
+            metadata = session.get("metadata", {})
+            
+            # Update the summary in metadata
+            metadata["conversation_summary"] = summary
+            
+            # Save the updated metadata
+            result = self.collection.update_one(
+                {"session_id": session_id},
+                {"$set": {"metadata": metadata, "last_active": datetime.now()}}
+            )
+            
+            if result.modified_count > 0 or result.matched_count > 0:
+                logger.info(f"Updated conversation summary for session {session_id}")
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for summary update")
+                return False
+        except Exception as e:
+            logger.error(f"Error updating conversation summary: {e}")
+            return False
+            
+    def get_conversation_summary(self, session_id: str) -> Optional[str]:
+        """
+        Get the current conversation summary for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Conversation summary or None if not found
+        """
+        try:
+            session = self.get_session(session_id)
+            if not session:
+                return None
+                
+            metadata = session.get("metadata", {})
+            return metadata.get("conversation_summary", "")
+        except Exception as e:
+            logger.error(f"Error retrieving conversation summary: {e}")
+            return None
+            
+    def reduce_message_history(self, session_id: str, messages_to_keep: List[Any]) -> bool:
+        """
+        Update the session with a reduced set of messages, typically after summarization.
+        
+        Args:
+            session_id: Session identifier
+            messages_to_keep: List of message objects to retain
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Convert messages to a serializable format if needed
+            serializable_messages = []
+            for msg in messages_to_keep:
+                if hasattr(msg, 'dict') and callable(getattr(msg, 'dict')):
+                    # Handle Pydantic models or objects with dict method
+                    serializable_messages.append(msg.dict())
+                elif hasattr(msg, '__dict__'):
+                    # Handle custom objects with __dict__
+                    serializable_messages.append(msg.__dict__)
+                else:
+                    # Try direct serialization
+                    serializable_messages.append(msg)
+            
+            # Update the session with the reduced messages
+            result = self.collection.update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "messages": serializable_messages,
+                        "last_active": datetime.now()
+                    }
+                }
+            )
+            
+            if result.modified_count > 0 or result.matched_count > 0:
+                logger.info(f"Updated session {session_id} with reduced message history, count: {len(serializable_messages)}")
+                
+                # Also update the message count in metadata
+                session = self.get_session(session_id)
+                if session:
+                    metadata = session.get("metadata", {})
+                    metadata["message_count"] = len(serializable_messages)
+                    self.update_session_metadata(session_id, metadata)
+                
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for reducing message history")
+                return False
+        except Exception as e:
+            logger.error(f"Error reducing message history: {e}")
+            return False
+            
+    def configure_context_management(self, session_id: str, max_messages: int = 20) -> bool:
+        """
+        Configure context management settings for a session.
+        
+        Args:
+            session_id: Session identifier
+            max_messages: Maximum number of messages to keep before summarization
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            session = self.get_session(session_id)
+            if not session:
+                logger.warning(f"Session {session_id} not found for context management configuration")
+                return False
+                
+            metadata = session.get("metadata", {})
+            
+            # Update context management settings
+            metadata["max_messages_before_summary"] = max_messages
+            
+            # Save the updated metadata
+            result = self.collection.update_one(
+                {"session_id": session_id},
+                {"$set": {"metadata": metadata, "last_active": datetime.now()}}
+            )
+            
+            if result.modified_count > 0 or result.matched_count > 0:
+                logger.info(f"Updated context management settings for session {session_id}")
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for context management configuration")
+                return False
+        except Exception as e:
+            logger.error(f"Error configuring context management: {e}")
             return False 

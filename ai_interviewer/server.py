@@ -26,6 +26,7 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 from ai_interviewer.utils.speech_utils import VoiceHandler
+from ai_interviewer.utils.config import get_llm_config
 from langgraph.types import interrupt, Command
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 
@@ -79,7 +80,24 @@ app.add_middleware(
 )
 
 # Initialize AI Interviewer instance
-interviewer = AIInterviewer()
+# Apply a patch to make sure the interview instance has access to the summarization model
+try:
+    interviewer = AIInterviewer()
+    
+    # Make sure the summarization model is initialized
+    if not hasattr(interviewer, 'summarization_model'):
+        llm_config = get_llm_config()
+        interviewer.summarization_model = ChatGoogleGenerativeAI(
+            model=llm_config["model"],
+            temperature=0.1
+        )
+        logger.info("Added summarization model to interviewer instance")
+        
+except Exception as e:
+    logger.critical(f"Failed to initialize AI Interviewer: {e}")
+    # In a production environment, you might want to exit the application
+    # sys.exit(1)
+    raise
 
 # Initialize VoiceHandler for speech processing
 try:
@@ -1478,6 +1496,433 @@ async def get_code_snapshots(
         raise
     except Exception as e:
         logger.error(f"Error retrieving code snapshots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Context management related models
+class ContextSettingsRequest(BaseModel):
+    session_id: str = Field(..., description="Session ID to update settings for")
+    max_messages: int = Field(20, description="Maximum number of messages to keep before summarization",
+                             ge=10, le=100)
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "max_messages": 25
+            }
+        }
+
+class ContextSettingsResponse(BaseModel):
+    success: bool = Field(..., description="Whether the update was successful")
+    session_id: str = Field(..., description="Session ID")
+    max_messages: int = Field(..., description="Maximum messages setting")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "success": True,
+                "session_id": "sess-abc123",
+                "max_messages": 25
+            }
+        }
+
+class SummaryResponse(BaseModel):
+    session_id: str = Field(..., description="Session ID")
+    summary: str = Field(..., description="Current conversation summary")
+    has_summary: bool = Field(..., description="Whether a summary exists")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "summary": "The candidate introduced themselves as a frontend developer with 5 years of experience...",
+                "has_summary": True
+            }
+        }
+
+@app.put(
+    "/api/interview/context-settings",
+    response_model=ContextSettingsResponse,
+    responses={
+        200: {"description": "Successfully updated context settings"},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        422: {"description": "Invalid parameters", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def update_context_settings(request: Request, settings: ContextSettingsRequest):
+    """
+    Update context management settings for an interview session.
+    
+    This endpoint allows configuring how the system manages long-running conversations,
+    such as the threshold for when to summarize older content.
+    """
+    try:
+        # Verify the session exists
+        session = interviewer.session_manager.get_session(settings.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {settings.session_id} not found")
+        
+        # Configure context management settings
+        success = interviewer.session_manager.configure_context_management(
+            settings.session_id, 
+            max_messages=settings.max_messages
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "session_id": settings.session_id,
+                "max_messages": settings.max_messages
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update context settings")
+    except HTTPException:
+        # Re-raise existing HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error updating context settings: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get(
+    "/api/interview/{session_id}/summary",
+    response_model=SummaryResponse,
+    responses={
+        200: {"description": "Successfully retrieved summary"},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_conversation_summary(request: Request, session_id: str):
+    """
+    Get the current conversation summary for an interview session.
+    
+    This endpoint retrieves the AI-generated summary of earlier parts of the conversation
+    that have been condensed to manage context length.
+    """
+    try:
+        # Verify the session exists
+        session = interviewer.session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+        # Get the current summary
+        summary = interviewer.session_manager.get_conversation_summary(session_id)
+        
+        return {
+            "session_id": session_id,
+            "summary": summary or "",
+            "has_summary": bool(summary)
+        }
+    except HTTPException:
+        # Re-raise existing HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving conversation summary: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+class ForceSummarizeRequest(BaseModel):
+    session_id: str = Field(..., description="Session ID")
+    user_id: str = Field(..., description="User ID associated with the session")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "user_id": "user-123"
+            }
+        }
+
+class ForceSummarizeResponse(BaseModel):
+    success: bool = Field(..., description="Whether the summarization was successful")
+    session_id: str = Field(..., description="Session ID")
+    summary: str = Field(..., description="Generated summary")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "success": True,
+                "session_id": "sess-abc123",
+                "summary": "The candidate introduced themselves as a frontend developer with 5 years of experience..."
+            }
+        }
+
+@app.post(
+    "/api/interview/force-summarize",
+    response_model=ForceSummarizeResponse,
+    responses={
+        200: {"description": "Successfully summarized conversation"},
+        400: {"description": "Bad request - missing parameters", "model": ErrorResponse},
+        403: {"description": "Authentication/authorization error", "model": ErrorResponse},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("10/minute")
+async def force_summarize_conversation(request: Request, req_data: ForceSummarizeRequest):
+    """
+    Force the system to summarize the current conversation.
+    
+    This endpoint manually triggers the context management system to generate a summary
+    of the conversation so far, reducing the message history while preserving key information.
+    """
+    try:
+        # Verify the session exists and belongs to the user
+        session = interviewer.session_manager.get_session(req_data.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
+        
+        if session.get("user_id") != req_data.user_id:
+            raise HTTPException(status_code=403, detail="User ID does not match session owner")
+        
+        # Get all messages
+        messages = session.get("messages", [])
+        
+        # Extract messages as message objects
+        message_objects = extract_messages_from_transcript(messages)
+        
+        if len(message_objects) < 5:
+            raise HTTPException(status_code=400, detail="Not enough messages to summarize")
+        
+        # Use the LLM to generate a summary
+        # Keep the last 5 messages for continuity
+        messages_to_keep = 5
+        messages_to_summarize = message_objects[:-messages_to_keep] if len(message_objects) > messages_to_keep else message_objects
+        
+        # Create the prompt
+        current_summary = interviewer.session_manager.get_conversation_summary(req_data.session_id) or ""
+        
+        if current_summary:
+            summary_prompt = [
+                SystemMessage(content=f"You are a helpful assistant that summarizes conversations while retaining all key information. Below is an existing summary and new conversation parts to integrate. Create a comprehensive summary that includes all important details about the candidate, their skills, experiences, and responses to interview questions."),
+                HumanMessage(content=f"EXISTING SUMMARY:\n{current_summary}\n\nNEW CONVERSATION TO INTEGRATE:\n" + "\n".join([f"{m.type}: {m.content}" for m in messages_to_summarize if hasattr(m, 'content')]))
+            ]
+        else:
+            summary_prompt = [
+                SystemMessage(content=f"You are a helpful assistant that summarizes conversations while retaining all key information. Create a comprehensive summary of this interview conversation that includes all important details about the candidate, their skills, experiences, and responses to interview questions."),
+                HumanMessage(content="\n".join([f"{m.type}: {m.content}" for m in messages_to_summarize if hasattr(m, 'content')]))
+            ]
+        
+        # Generate summary
+        summary_response = interviewer.summarization_model.invoke(summary_prompt)
+        new_summary = summary_response.content if hasattr(summary_response, 'content') else ""
+        
+        # Update the session with the new summary and reduced message list
+        interviewer.session_manager.update_conversation_summary(req_data.session_id, new_summary)
+        
+        # Create a list of messages to keep - the most recent ones
+        kept_messages = message_objects[-messages_to_keep:] if len(message_objects) > messages_to_keep else []
+        interviewer.session_manager.reduce_message_history(req_data.session_id, kept_messages)
+        
+        # Update message count in metadata
+        metadata = session.get("metadata", {})
+        metadata["message_count"] = len(kept_messages)
+        interviewer.session_manager.update_session_metadata(req_data.session_id, metadata)
+        
+        return {
+            "success": True,
+            "session_id": req_data.session_id,
+            "summary": new_summary
+        }
+    except HTTPException:
+        # Re-raise existing HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error forcing summarization: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+class InterviewInsightsResponse(BaseModel):
+    session_id: str = Field(..., description="Session ID")
+    candidate_details: Dict[str, Any] = Field(..., description="Basic candidate details")
+    key_skills: List[str] = Field(default_factory=list, description="Candidate's key skills")
+    notable_experiences: List[str] = Field(default_factory=list, description="Notable experiences mentioned")
+    strengths: List[str] = Field(default_factory=list, description="Areas of strength")
+    areas_for_improvement: List[str] = Field(default_factory=list, description="Areas for improvement")
+    coding_ability: Dict[str, Any] = Field(default_factory=dict, description="Coding ability assessment")
+    communication_ability: str = Field("", description="Communication ability assessment")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "candidate_details": {
+                    "name": "Jane Smith",
+                    "years_of_experience": "5",
+                    "current_role": "Senior Frontend Developer"
+                },
+                "key_skills": ["JavaScript", "React", "TypeScript"],
+                "notable_experiences": ["Built a real-time dashboard application", "Led a team of 5 developers"],
+                "strengths": ["Problem solving", "Technical communication"],
+                "areas_for_improvement": ["Backend knowledge could be expanded"],
+                "coding_ability": {
+                    "assessed": True,
+                    "languages": ["JavaScript", "Python"],
+                    "level": "Strong in frontend technologies"
+                },
+                "communication_ability": "Clear and concise technical communication"
+            }
+        }
+
+@app.get(
+    "/api/interview/{session_id}/insights",
+    response_model=InterviewInsightsResponse,
+    responses={
+        200: {"description": "Successfully retrieved interview insights"},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_interview_insights(request: Request, session_id: str, user_id: Optional[str] = None):
+    """
+    Get structured insights extracted from the interview for a given session.
+    
+    This endpoint retrieves AI-extracted structured information about the candidate,
+    including skills, experiences, and areas of strength/improvement.
+    
+    Args:
+        session_id: Session ID to get insights for
+        user_id: Optional user ID for verification
+        
+    Returns:
+        Structured interview insights extracted from the conversation
+    """
+    try:
+        # Verify session exists
+        if not interviewer.session_manager:
+            raise HTTPException(status_code=500, detail="Session manager not available")
+            
+        session = interviewer.session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        # If user_id is provided, verify it matches the session
+        if user_id and session.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="User ID does not match session")
+            
+        # Get interview insights from session metadata
+        metadata = session.get("metadata", {})
+        insights = metadata.get("interview_insights", {})
+        
+        if not insights:
+            # If no insights exist yet, provide default structure
+            insights = {
+                "candidate_details": {},
+                "key_skills": [],
+                "notable_experiences": [],
+                "strengths": [],
+                "areas_for_improvement": [],
+                "coding_ability": {
+                    "assessed": False,
+                    "languages": [],
+                    "level": ""
+                },
+                "communication_ability": ""
+            }
+        
+        # Ensure insights has the required fields for the response model
+        for field in ["candidate_details", "key_skills", "notable_experiences", 
+                     "strengths", "areas_for_improvement", "coding_ability"]:
+            if field not in insights:
+                insights[field] = {} if field == "candidate_details" or field == "coding_ability" else []
+        
+        if "communication_ability" not in insights:
+            insights["communication_ability"] = ""
+        
+        # Add session_id to response
+        insights["session_id"] = session_id
+        
+        # Return formatted insights
+        return insights
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving interview insights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ExtractInsightsRequest(BaseModel):
+    session_id: str = Field(..., description="Session ID to extract insights for")
+    user_id: str = Field(..., description="User ID associated with the session")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-abc123",
+                "user_id": "user-123"
+            }
+        }
+
+@app.post(
+    "/api/interview/extract-insights",
+    response_model=InterviewInsightsResponse,
+    responses={
+        200: {"description": "Successfully extracted and updated insights"},
+        400: {"description": "Bad request - missing parameters", "model": ErrorResponse},
+        403: {"description": "Authentication/authorization error", "model": ErrorResponse},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("10/minute")
+async def extract_interview_insights(request: Request, req_data: ExtractInsightsRequest):
+    """
+    Manually trigger the extraction of insights from an interview session.
+    
+    This endpoint forces the system to analyze the conversation and extract
+    structured information about the candidate's skills, experiences, and abilities.
+    
+    Args:
+        req_data: ExtractInsightsRequest containing session ID and user ID
+        
+    Returns:
+        Structured interview insights extracted from the conversation
+    """
+    try:
+        # Verify the session exists and belongs to the user
+        session = interviewer.session_manager.get_session(req_data.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
+        
+        if session.get("user_id") != req_data.user_id:
+            raise HTTPException(status_code=403, detail="User ID does not match session owner")
+        
+        # Trigger insights extraction
+        insights = await interviewer.extract_and_update_insights(req_data.session_id)
+        
+        if not insights:
+            raise HTTPException(status_code=500, detail="Failed to extract insights")
+        
+        # Ensure insights has the required fields for the response model
+        for field in ["candidate_details", "key_skills", "notable_experiences", 
+                     "strengths", "areas_for_improvement", "coding_ability"]:
+            if field not in insights:
+                insights[field] = {} if field == "candidate_details" or field == "coding_ability" else []
+        
+        if "communication_ability" not in insights:
+            insights["communication_ability"] = ""
+        
+        # Add session_id to response
+        insights["session_id"] = req_data.session_id
+        
+        return insights
+    except HTTPException:
+        # Re-raise existing HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
