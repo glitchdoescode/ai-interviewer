@@ -13,7 +13,7 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.store.mongodb import MongoDBStore
+from langgraph_store_mongodb import MongoDBStore
 from langgraph.store.base import BaseStore, SearchResult
 
 from ai_interviewer.utils.config import get_db_config
