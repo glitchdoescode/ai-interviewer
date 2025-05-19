@@ -39,8 +39,9 @@ from ai_interviewer.tools.question_tools import (
 
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
+from ai_interviewer.utils.memory_manager import InterviewMemoryManager
 from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config
-from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content #, format_conversation_for_llm
+from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
 
 # Configure logging
 logging.basicConfig(
@@ -242,47 +243,31 @@ class AIInterviewer:
                 required_skills: List[str] = None,
                 job_description: str = ""):
         """
-        Initialize the AI Interviewer with tools, model, and workflow.
+        Initialize the AI Interviewer with the necessary components.
         
         Args:
             use_mongodb: Whether to use MongoDB for persistence
-            connection_uri: MongoDB connection URI (if None, uses config)
-            job_role: The specific job role for the interview
-            seniority_level: The seniority level for the position
-            required_skills: List of required skills for the position
-            job_description: Detailed job description for context
+            connection_uri: Optional MongoDB connection URI
+            job_role: Default job role for interviews
+            seniority_level: Default seniority level
+            required_skills: Default required skills
+            job_description: Default job description
         """
-        # Log configuration
         log_config()
         
-        # Store job role configuration
+        # Store default job parameters
         self.job_role = job_role
         self.seniority_level = seniority_level
-        self.required_skills = required_skills or ["Programming", "Problem Solving", "Technical Knowledge"]
-        self.job_description = job_description
+        self.required_skills = required_skills or ["Programming", "Problem-solving", "Communication"]
+        self.job_description = job_description or f"A {seniority_level} {job_role} position requiring skills in {', '.join(self.required_skills or [])}"
         
-        # Set up tools
-        self.tools = [
-            # Coding challenge tools
-            start_coding_challenge,
-            submit_code_for_challenge,
-            get_coding_hint,
-            
-            # Pair programming tools
-            suggest_code_improvements,
-            complete_code,
-            review_code_section,
-            
-            # Question generation and analysis tools
-            generate_interview_question,
-            analyze_candidate_response
-        ]
+        # Set up LLM and tools
+        self._setup_tools()
         
-        # Create tool node with proper state handling
-        self.tool_node = ToolNode(self.tools)
+        # Get LLM configuration
+        llm_config = get_llm_config()
         
         # Initialize LLM with tools
-        llm_config = get_llm_config()
         self.model = ChatGoogleGenerativeAI(
             model=llm_config["model"],
             temperature=llm_config["temperature"]
@@ -294,53 +279,53 @@ class AIInterviewer:
             temperature=0.1
         )
         
-        # Set up database connections if using MongoDB
+        # Set up memory management
         if use_mongodb:
             try:
                 # Get database config
                 db_config = get_db_config()
                 mongodb_uri = connection_uri or db_config["uri"]
                 
-                # Define the checkpoint namespace
-                checkpoint_namespace = "ai_interviewer"
-                
-                # Initialize MongoDB checkpointer using the official LangGraph implementation
-                logger.info(f"Initializing MongoDB checkpointer with URI {mongodb_uri}")
-                from pymongo import MongoClient
-                
-                # Create a MongoDB client
-                client = MongoClient(mongodb_uri)
-                
-                # Create the checkpointer instance directly
-                self.checkpointer = MongoDBSaver(
-                    client=client,
-                    db_name=db_config["database"], 
-                    collection_name=db_config["sessions_collection"]
+                # Initialize the InterviewMemoryManager for both short-term and long-term memory
+                logger.info(f"Initializing Memory Manager with URI {mongodb_uri}")
+                self.memory_manager = InterviewMemoryManager(
+                    connection_uri=mongodb_uri,
+                    db_name=db_config["database"],
+                    checkpoint_collection=db_config["sessions_collection"],
+                    store_collection="interview_memory_store"
                 )
                 
-                # Test MongoDB connection
-                try:
-                    # Simple connection test using the session manager
-                    self.session_manager = SessionManager(
-                        connection_uri=mongodb_uri,
-                        database_name=db_config["database"],
-                        collection_name=db_config["metadata_collection"],
-                    )
-                    logger.info("MongoDB connection successful!")
-                except Exception as e:
-                    raise ValueError(f"MongoDB connection test failed: {e}")
+                # Set up the memory manager
+                self.memory_manager.setup()
                 
-                logger.info("Using MongoDB for persistence")
+                # Get the checkpointer for thread-level memory
+                self.checkpointer = self.memory_manager.get_checkpointer()
+                
+                # Get the store for cross-thread memory
+                self.store = self.memory_manager.get_store()
+                
+                # Initialize the session manager for backward compatibility
+                self.session_manager = SessionManager(
+                    connection_uri=mongodb_uri,
+                    database_name=db_config["database"],
+                    collection_name=db_config["metadata_collection"],
+                )
+                
+                logger.info("MongoDB memory manager initialized successfully")
             except Exception as e:
                 # If there's an error with MongoDB, fall back to in-memory persistence
                 logger.warning(f"Failed to connect to MongoDB: {e}. Falling back to in-memory persistence.")
                 self.checkpointer = InMemorySaver()
                 self.session_manager = None
+                self.memory_manager = None
+                self.store = None
                 logger.info("Using in-memory persistence as fallback")
         else:
             # Use in-memory persistence
             self.checkpointer = InMemorySaver()
             self.session_manager = None
+            self.memory_manager = None
+            self.store = None
             logger.info("Using in-memory persistence")
         
         # Initialize workflow
@@ -348,6 +333,20 @@ class AIInterviewer:
         
         # Session tracking
         self.active_sessions = {}
+    
+    def _setup_tools(self):
+        """Set up the tools for the interviewer."""
+        # Define tools
+        self.tools = [
+            start_coding_challenge,
+            submit_code_for_challenge,
+            get_coding_hint,
+            suggest_code_improvements,
+            complete_code,
+            review_code_section,
+            generate_interview_question,
+            analyze_candidate_response
+        ]
     
     def _initialize_workflow(self) -> StateGraph:
         """
@@ -740,6 +739,42 @@ class AIInterviewer:
                 conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
             )
             
+            # Add cross-thread memory if available
+            if self.memory_manager and candidate_name and user_id:
+                try:
+                    # Get candidate profile from memory store
+                    candidate_profile = self.memory_manager.get_candidate_profile(user_id)
+                    
+                    if candidate_profile:
+                        # Add profile information to the system prompt
+                        profile_info = "\n\nCANDIDATE HISTORY FROM PREVIOUS SESSIONS:\n"
+                        
+                        if "key_skills" in candidate_profile and candidate_profile["key_skills"]:
+                            skills = candidate_profile["key_skills"]
+                            profile_info += f"- Previously demonstrated skills: {', '.join(skills[:5])}\n"
+                        
+                        if "notable_experiences" in candidate_profile and candidate_profile["notable_experiences"]:
+                            experiences = candidate_profile["notable_experiences"]
+                            profile_info += f"- Notable past experiences: {'; '.join(experiences[:3])}\n"
+                        
+                        if "strengths" in candidate_profile and candidate_profile["strengths"]:
+                            strengths = candidate_profile["strengths"]
+                            profile_info += f"- Previously identified strengths: {', '.join(strengths[:3])}\n"
+                        
+                        if "areas_for_improvement" in candidate_profile and candidate_profile["areas_for_improvement"]:
+                            improvements = candidate_profile["areas_for_improvement"]
+                            profile_info += f"- Areas for improvement: {', '.join(improvements[:3])}\n"
+                        
+                        if "coding_ability" in candidate_profile and candidate_profile["coding_ability"]:
+                            coding = candidate_profile["coding_ability"]
+                            if "languages" in coding and coding["languages"]:
+                                profile_info += f"- Coding languages: {', '.join(coding['languages'])}\n"
+                        
+                        # Add the profile info to the system prompt
+                        system_prompt += profile_info
+                except Exception as e:
+                    logger.error(f"Error retrieving candidate profile: {e}")
+            
             # Update system message if present, otherwise add it
             if messages and isinstance(messages[0], SystemMessage):
                 messages[0] = SystemMessage(content=system_prompt)
@@ -1118,21 +1153,21 @@ class AIInterviewer:
                            required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
                            requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Tuple[str, str]:
         """
-        Run the interview with a user message, creating or continuing a session.
+        Run an interview session with the given user message.
         
         Args:
-            user_id: Unique identifier for the user
-            user_message: Message from the user
-            session_id: Optional session ID to continue an existing session
+            user_id: User identifier
+            user_message: User's message text
+            session_id: Optional session ID for continuing a session
             job_role: Optional job role for the interview
             seniority_level: Optional seniority level
             required_skills: Optional list of required skills
-            job_description: Optional job description text
-            requires_coding: Optional flag indicating if coding challenges should be included
-            handle_digression: Whether to detect and handle digressions
+            job_description: Optional job description
+            requires_coding: Whether this role requires coding challenges
+            handle_digression: Whether to handle topic digressions
             
         Returns:
-            Tuple of (AI response, session_id)
+            Tuple of (AI response, session ID)
         """
         # Create a new session if one doesn't exist
         if not session_id:
@@ -1361,126 +1396,52 @@ class AIInterviewer:
             }
         }
         
-        # Call the workflow
+        # Store a message for the graph to process
+        human_message = HumanMessage(content=user_message)
+        
+        # Run the graph asynchronously
+        final_chunk = None
         try:
-            logger.info(f"Running workflow for session {session_id}")
-            
-            # Use runnable protocol with config
-            output = self.workflow.invoke(state, config=config)
-            
-            # Extract response from output
-            if not output:
-                logger.error("No output returned from workflow")
-                ai_message_content = "I apologize, but I encountered an issue. Please try again."
-                tool_calls = []
-            else:
-                # Handle different output types (dict or InterviewState)
-                if isinstance(output, dict):
-                    # Extract messages from dictionary
-                    all_messages = output.get("messages", [])
-                    # Extract other state values
-                    candidate_name = output.get("candidate_name", candidate_name)
-                    interview_stage = output.get("interview_stage", interview_stage)
-                    conversation_summary = output.get("conversation_summary", conversation_summary)
-                    message_count = output.get("message_count", message_count)
-                else:
-                    # Extract from InterviewState
-                    all_messages = output.messages if hasattr(output, "messages") else []
-                    # Extract other state values if available
-                    candidate_name = output.candidate_name if hasattr(output, "candidate_name") else candidate_name
-                    interview_stage = output.interview_stage if hasattr(output, "interview_stage") else interview_stage
-                    conversation_summary = output.conversation_summary if hasattr(output, "conversation_summary") else conversation_summary
-                    message_count = output.message_count if hasattr(output, "message_count") else message_count
-                
-                # Get AI messages
-                ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
-                
-                if not ai_messages:
-                    logger.error("No AI messages found in response")
-                    ai_message_content = "I apologize, but I encountered an issue. Please try again."
-                    tool_calls = []
-                else:
-                    # Get the latest AI message content
-                    response = ai_messages[-1]
-                    ai_message_content = safe_extract_content(response)
-                    tool_calls = getattr(response, "tool_calls", []) if hasattr(response, "tool_calls") else []
-                    
-                    # Update metadata with candidate name and stage
-                    if candidate_name:
-                        metadata[CANDIDATE_NAME_KEY] = candidate_name
-                    
-                    # Attempt to extract name from the conversation if not already set
-                    if not candidate_name:
-                        name_match = self._extract_candidate_name(all_messages)
-                        if name_match:
-                            candidate_name = name_match
-                            metadata[CANDIDATE_NAME_KEY] = candidate_name
-                            logger.info(f"Extracted candidate name from conversation: {candidate_name}")
-                    
-                    # Update stage and context management fields in metadata
-                    metadata[STAGE_KEY] = interview_stage
-                    metadata["conversation_summary"] = conversation_summary
-                    metadata["message_count"] = message_count
-            
-            # Save the updated session
-            try:
-                if self.session_manager:
-                    # Update metadata including transcript
-                    self.session_manager.update_session_metadata(session_id, metadata)
-                    
-                    # Update session with the updated messages
-                    # Transcript includes all messages
-                    if "transcript" in metadata:
-                        # Add the user message to transcript
-                        metadata["transcript"].append({
-                            "role": "user",
-                            "content": user_message,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        
-                        # Add the AI response to transcript
-                        metadata["transcript"].append({
-                            "role": "assistant",
-                            "content": ai_message_content,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        
-                        self.session_manager.update_session_metadata(session_id, metadata)
-                    
-                    # Update activity timestamp
-                    self.session_manager.update_session_activity(session_id)
-                    
-                    # Save all messages
-                    self.session_manager.update_session_messages(session_id, all_messages)
-                else:
-                    # In-memory storage
-                    self.active_sessions[session_id].update(metadata)
-                    
-                    # Update transcript
-                    if "transcript" in self.active_sessions[session_id]:
-                        self.active_sessions[session_id]["transcript"].append({
-                            "role": "user",
-                            "content": user_message,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        self.active_sessions[session_id]["transcript"].append({
-                            "role": "assistant",
-                            "content": ai_message_content,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                    
-                    # Update messages
-                    self.active_sessions[session_id]["messages"] = all_messages
-                    
-                    # Update timestamp
-                    self.active_sessions[session_id]["last_active"] = datetime.now().isoformat()
-            except Exception as e:
-                logger.error(f"Error saving session {session_id}: {e}")
-            
-            return ai_message_content, session_id
+            async for chunk in self.workflow.astream(
+                {"messages": [human_message]},
+                config=config,
+                stream_mode="values",
+            ):
+                final_chunk = chunk
         except Exception as e:
-            logger.error(f"Error in run_interview: {e}")
-            return "I apologize, but I encountered an issue. Please try again.", session_id
+            logger.error(f"Error running interview graph: {e}")
+            return f"I apologize, but there was an error processing your request. Please try again. Error: {str(e)}", session_id
+        
+        # Extract the AI response from the final chunk
+        if final_chunk and "messages" in final_chunk and len(final_chunk["messages"]) > 0:
+            for msg in reversed(final_chunk["messages"]):
+                if isinstance(msg, AIMessage):
+                    ai_response = msg.content
+                    logger.info(f"AI response generated for session {session_id}")
+                    
+                    # Update cross-thread memory if needed
+                    if self.memory_manager:
+                        try:
+                            # Extract candidate insights from the conversation
+                            insights = self._extract_interview_insights(final_chunk["messages"])
+                            
+                            # Update candidate profile in long-term memory
+                            if insights and "candidate_details" in insights:
+                                self.memory_manager.save_candidate_profile(user_id, insights)
+                            
+                            # Save interview memory for this session
+                            self.memory_manager.save_interview_memory(
+                                session_id=session_id,
+                                memory_type="insights",
+                                memory_data={"insights": insights}
+                            )
+                        except Exception as e:
+                            logger.error(f"Error updating memory: {e}")
+                    
+                    return ai_response, session_id
+        
+        # Fallback response if no AI message found
+        return "I'm sorry, I couldn't generate a proper response. Please try again.", session_id
     
     def _detect_digression(self, user_message: str, messages: List[BaseMessage], current_stage: str) -> bool:
         """
@@ -1703,7 +1664,13 @@ class AIInterviewer:
 
     def cleanup(self):
         """Clean up resources."""
-        if hasattr(self, 'checkpointer'):
+        if hasattr(self, 'memory_manager') and self.memory_manager:
+            try:
+                self.memory_manager.close()
+                logger.info("Memory manager resources cleaned up")
+            except Exception as e:
+                logger.error(f"Error closing memory manager: {e}")
+        elif hasattr(self, 'checkpointer'):
             try:
                 # Store a reference to the client before we potentially lose it
                 mongo_client = None
@@ -1723,7 +1690,7 @@ class AIInterviewer:
             except Exception as e:
                 logger.error(f"Error closing checkpointer: {e}")
         
-        if hasattr(self, 'session_manager') and hasattr(self.session_manager, 'close'):
+        if hasattr(self, 'session_manager') and self.session_manager and hasattr(self.session_manager, 'close'):
             try:
                 self.session_manager.close()
                 logger.info("Session manager resources cleaned up")

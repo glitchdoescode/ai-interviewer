@@ -1,77 +1,141 @@
-# AI Interviewer Platform Shortcomings
+# AI Interviewer System Shortcomings
 
-This document outlines the current shortcomings in the AI Interviewer platform that need to be addressed before proceeding with subsequent tasks.
+This document outlines current system shortcomings and planned improvements for the AI Interviewer platform. Items marked as ✅ have been addressed, while ⏳ indicates work in progress and ❌ indicates items still to be implemented.
 
-## 1. Memory/State Persistence Issues
+## Core State Management & Performance
 
-### Problem
-The current implementation of state persistence in the AI Interviewer doesn't effectively manage long-running conversations. As conversations grow longer, context is lost, which affects the interviewer's ability to maintain a coherent interview flow.
+### S1.1: Enhanced Conversation State Management ✅
 
-### LangGraph Documentation Reference
-- [LangGraph Memory Management](https://langchain-ai.github.io/langgraph/concepts/memory/)
-- [Managing Long Conversation History](https://langchain-ai.github.io/langgraph/concepts/memory/#managing-long-conversation-history)
-- [Summarizing Past Conversations](https://langchain-ai.github.io/langgraph/concepts/memory/#summarizing-past-conversations)
+**Status: Implemented**
 
-### Implementation Ideas
-- Implement advanced memory mechanisms like `ConversationBufferWindowMemory`
-- Implement context summarization to maintain important information while reducing token usage
-- Better segregate different types of information (candidate info, technical evaluations, etc.)
+The system now features a comprehensive memory management system with:
 
-## 2. System Name Configurability (Completed)
+- ✅ Enhanced `InterviewState` structure for comprehensive data capture
+- ✅ Advanced memory mechanisms using LangGraph's MongoDBSaver and MongoDBStore
+- ✅ Cross-thread memory persistence for remembering candidates across interview sessions
+- ✅ Proper loading/saving of all state components
+- ✅ Support for long-form context management through intelligent summarization
 
-### Problem
-~~The AI interviewer did not have a configurable name, resulting in less natural and personalized interactions with candidates.~~
+Implementation details:
+- Created `InterviewMemoryManager` class in `ai_interviewer/utils/memory_manager.py`
+- Added cross-thread memory persistence using LangGraph's store capabilities
+- Enhanced AIInterviewer class to use both thread-level and cross-thread memory
+- Added memory search and profile management API endpoints
 
-### Solution Implemented
-- Added `SYSTEM_NAME` configuration variable in `config.py` with a default value of "Dhruv"
-- Updated system prompt template to include the interviewer's name
-- Modified format calls to pass the system name to the prompt
-- Updated prompt to instruct the interviewer to occasionally refer to itself by name
+See `docs/memory_management.md` for complete documentation of the enhanced memory system.
 
-## 3. Text-to-Speech Compatibility Issues
+### S1.2: System Name Configurability ✅
 
-### Problem
-The generated text from the AI interviewer isn't always optimized for speech synthesis, resulting in unnatural-sounding audio output.
+**Status: Implemented**
 
-### Documentation Reference
-- [Deepgram TTS Documentation](https://developers.deepgram.com/docs/text-to-speech)
-- [Streaming TTS Integration](https://langchain-ai.github.io/langgraph/concepts/streaming/)
+The system name is now fully configurable across all components:
 
-### Implementation Ideas
-- Format text output to include pauses and emphasis for more natural speech
-- Implement SSML (Speech Synthesis Markup Language) formatting for better speech synthesis
-- Optimize sentence length and structure for better audio delivery
+- ✅ Added `SYSTEM_NAME` to `ai_interviewer/utils/config.py`
+- ✅ Updated all hardcoded system name references in prompts
+- ✅ Created configuration setting for changing system name
+- ✅ Ensured name changes propagate through the entire system
 
-## 4. System Latency Issues
+### S1.3: Optimizing LangGraph Responsiveness ⏳
 
-### Problem
-The current system experiences latency issues, particularly during longer interviews and when handling complex responses.
+**Status: Partially implemented**
 
-### Documentation Reference
-- [LangGraph Streaming Concepts](https://langchain-ai.github.io/langgraph/concepts/streaming/)
-- [Optimizing LangGraph Flows](https://langchain-ai.github.io/langgraph/how-tos/node-retries/)
+Some performance improvements have been made but further optimization is needed:
 
-### Implementation Ideas
-- Implement more efficient state management to reduce processing time
-- Optimize tool calls and database operations
-- Implement streaming responses to improve perceived responsiveness
-- Review and optimize conditional edges and transition logic
+- ✅ Improved memory management to reduce database operations
+- ✅ Implemented connection pooling for MongoDB operations 
+- ⏳ Profile graph execution to identify bottlenecks
+- ❌ Optimize tool calls, especially slow ones like `execute_candidate_code`
+- ❌ Review and optimize conditional edges and transition logic
+- ❌ Implement streaming for intermediate steps
 
-## 5. Real-time Audio Streaming Issues
+## Voice Experience Enhancements
 
-### Problem
-The current implementation doesn't support true real-time audio streaming, leading to a less interactive interview experience.
+### S2.1: TTS Naturalness Improvements ❌
 
-### Documentation Reference
+**Status: Not implemented**
+
+- ❌ Experiment with Deepgram voice options and settings
+- ❌ Refine prompts for more conversational LLM output
+- ❌ Implement SSML support for better speech synthesis control
+- ❌ Research and evaluate alternative TTS services if needed
+- ❌ Create A/B testing mechanism for voice quality comparison
+
+### S2.2: LiveKit Integration for Real-time Audio ❌
+
+**Status: Not implemented**
+
+- ❌ Set up LiveKit server and add required dependencies
+- ❌ Modify `server.py` to handle LiveKit room management and tokens
+- ❌ Implement real-time audio streaming
+- ❌ Update frontend to use LiveKit client SDK
+- ❌ Measure and optimize latency in audio transmission
+
+For more information on LiveKit integration, see:
 - [LiveKit Documentation](https://docs.livekit.io/)
-- [LangGraph Streaming Concepts](https://langchain-ai.github.io/langgraph/concepts/streaming/)
+- [LiveKit Server GitHub](https://github.com/livekit/livekit)
+- [LiveKit Client SDK](https://github.com/livekit/client-sdk-js)
 
-### Implementation Ideas
-- Implement LiveKit for real-time bidirectional audio streaming
-- Set up client-to-server and server-to-client audio streams
-- Integrate streaming audio with real-time transcription
-- Optimize for low-latency audio transmission
+## Security & Quality Improvements
+
+### S3.1: Code Execution Sandbox Security ❌
+
+**Status: Not implemented**
+
+- ❌ Update Docker base images to latest secure versions
+- ❌ Add additional container restrictions
+- ❌ Review and secure generated runner scripts
+- ❌ Implement more robust input sanitization
+- ❌ Phase out or restrict the legacy `CodeExecutor`
+
+### S3.2: Error Handling and Resilience ⏳
+
+**Status: Partially implemented**
+
+- ✅ Enhanced error handling in memory management system
+- ✅ Proper cleanup of database connections and resources
+- ⏳ Replace generic exception handling with specific exceptions
+- ❌ Implement retry mechanisms with backoff for external API calls
+- ❌ Define clear error responses for all API endpoints
+
+### S3.3: Test Coverage Expansion ❌
+
+**Status: Not implemented**
+
+- ❌ Create unit tests for core utilities and tools
+- ❌ Implement integration tests for API endpoints
+- ❌ Add tests for LangGraph flow and state transitions
+- ❌ Create specific tests for Docker sandbox and code execution
+- ❌ Set up CI pipeline for automated testing
+
+### S3.4: Documentation and Comments ⏳
+
+**Status: Partially implemented**
+
+- ✅ Added detailed documentation for memory management system
+- ✅ Improved inline comments for memory-related functionality
+- ⏳ Generate or create architecture diagrams
+- ❌ Update API documentation with more examples
+- ❌ Create developer onboarding documentation
 
 ## Next Steps
 
-After addressing these shortcomings, the AI Interviewer platform will be better positioned to provide a more natural and effective interview experience. Each issue should be addressed methodically, with careful testing to ensure improvements don't introduce new problems. 
+The following improvements are prioritized for upcoming development:
+
+1. Complete optimization of LangGraph responsiveness
+2. Implement LiveKit integration for real-time audio
+3. Enhance security of code execution sandbox
+4. Expand test coverage and improve documentation
+
+## References
+
+### LangGraph Documentation
+
+- [LangGraph Concepts: Memory](https://langchain-ai.github.io/langgraph/concepts/memory/)
+- [Cross-Thread Persistence](https://langchain-ai.github.io/langgraph/how-tos/cross-thread-persistence/)
+- [Add Summary Conversation History](https://langchain-ai.github.io/langgraph/how-tos/memory/add-summary-conversation-history/)
+
+### LiveKit Documentation
+
+- [LiveKit Documentation](https://docs.livekit.io/)
+- [Server Setup](https://docs.livekit.io/server/installation/)
+- [Client SDK Integration](https://docs.livekit.io/client-sdk/) 
