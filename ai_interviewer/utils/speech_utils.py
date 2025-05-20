@@ -17,7 +17,8 @@ import base64
 from pathlib import Path
 import json
 import time
-from ai_interviewer.utils.config import SYSTEM_NAME
+from ai_interviewer.utils.config import SYSTEM_NAME, get_speech_config
+from ai_interviewer.utils.ssml_utils import validate_ssml, add_automatic_ssml
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -336,6 +337,19 @@ class DeepgramTTS:
     Text-to-Speech functionality using Deepgram's Aura API.
     
     This class provides methods for converting text to speech.
+    
+    Available voices and models:
+    - Models:
+        - aura-asteria-en: High-quality English TTS
+        - aura-zeus-en: Alternative English TTS model
+    - Voices:
+        - nova: Default female voice
+        - stella: Alternative female voice
+        - athena: Professional female voice
+        - zeus: Male voice
+        - hera: Alternative female voice
+        - dave: Casual male voice
+        - reed: Professional male voice
     """
     
     def __init__(self, api_key: Optional[str] = None):
@@ -352,17 +366,24 @@ class DeepgramTTS:
         # API endpoint for Deepgram Aura TTS
         self.base_url = "https://api.deepgram.com/v1/speak"
         
+        # Get speech configuration
+        speech_config = get_speech_config()
+        
         # Default parameters for TTS
         self.default_params = {
-            "model": "aura-asteria-en",
-            "voice": "nova",  # Default voice
+            "model": speech_config.get("tts_model", "aura-asteria-en"),
+            "voice": speech_config.get("tts_voice", "nova"),
             "encoding": "linear16", # WAV format
-            "sample_rate": 24000,
-            "container": "wav"
+            "sample_rate": speech_config.get("sample_rate", 24000),
+            "container": "wav",
+            "rate": speech_config.get("tts_rate", 1.0),  # Speech rate (0.5 to 2.0)
+            "pitch": speech_config.get("tts_pitch", 1.0),  # Voice pitch (0.5 to 2.0)
+            "use_ssml": False  # Default to not using SSML
         }
         
         logger.debug("Deepgram TTS initialized with default parameters")
         logger.debug(f"TTS model: {self.default_params['model']}, voice: {self.default_params['voice']}")
+        logger.debug(f"TTS rate: {self.default_params['rate']}, pitch: {self.default_params['pitch']}")
         
         logger.info("Initialized Deepgram TTS client")
     
@@ -370,15 +391,22 @@ class DeepgramTTS:
                              text: str, 
                              output_file: Optional[Union[str, Path]] = None,
                              play_audio: bool = False,
-                             params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                             params: Optional[Dict[str, Any]] = None,
+                             auto_ssml: bool = True) -> Dict[str, Any]:
         """
         Convert text to speech using Deepgram's API.
         
         Args:
-            text: Text to convert to speech
+            text: Text to convert to speech (can be plain text or SSML)
             output_file: Optional path to save audio file
             play_audio: Whether to play the audio immediately
-            params: Additional parameters to pass to Deepgram API
+            params: Additional parameters to pass to Deepgram API. Supported parameters:
+                - model: TTS model to use (e.g. "aura-asteria-en", "aura-zeus-en")
+                - voice: Voice to use (e.g. "nova", "stella", "zeus")
+                - rate: Speech rate (0.5 to 2.0)
+                - pitch: Voice pitch (0.5 to 2.0)
+                - use_ssml: Whether the input text is SSML
+            auto_ssml: Whether to automatically add SSML tags if text is not SSML
             
         Returns:
             Dictionary with synthesis results
@@ -386,13 +414,36 @@ class DeepgramTTS:
         # Combine default and custom parameters
         request_params = {**self.default_params, **(params or {})}
         
+        # Check if text is SSML
+        is_ssml = text.strip().startswith("<speak>") and text.strip().endswith("</speak>")
+        
+        # If text is not SSML but auto_ssml is True, add SSML tags
+        if not is_ssml and auto_ssml:
+            text = add_automatic_ssml(text)
+            is_ssml = True
+        
+        # If text is SSML, validate it
+        if is_ssml:
+            if not validate_ssml(text):
+                logger.error("Invalid SSML markup")
+                return {
+                    "success": False,
+                    "error": "Invalid SSML markup"
+                }
+            request_params["use_ssml"] = True
+        
+        # Validate rate and pitch
+        if "rate" in request_params:
+            request_params["rate"] = max(0.5, min(2.0, float(request_params["rate"])))
+        if "pitch" in request_params:
+            request_params["pitch"] = max(0.5, min(2.0, float(request_params["pitch"])))
+        
         # Convert boolean parameters to string "true"/"false" for API compatibility
         for key, value in request_params.items():
             if isinstance(value, bool):
                 request_params[key] = "true" if value else "false"
         
-        # Create base URL with query parameters instead of putting them in payload
-        # Exclude text from query params as it will be in the payload
+        # Create base URL with query parameters
         query_params = []
         for key, value in request_params.items():
             if key != 'text':  # Don't include text in URL params
@@ -400,8 +451,7 @@ class DeepgramTTS:
         
         url = f"{self.base_url}?{'&'.join(query_params)}"
         
-        # Prepare request payload - ONLY include the text, nothing else
-        # This is what Deepgram API expects
+        # Prepare request payload
         payload = {
             "text": text
         }
@@ -416,6 +466,7 @@ class DeepgramTTS:
             logger.debug(f"TTS API request to: {url}")
             logger.debug(f"TTS API headers: {headers}")
             logger.debug(f"TTS API payload: {json.dumps(payload, indent=2)}")
+            logger.debug(f"TTS parameters: model={request_params.get('model')}, voice={request_params.get('voice')}, rate={request_params.get('rate')}, pitch={request_params.get('pitch')}, use_ssml={request_params.get('use_ssml')}")
             
             # Make API request
             async with aiohttp.ClientSession() as session:
@@ -448,7 +499,8 @@ class DeepgramTTS:
                         return {
                             "success": True,
                             "audio_data": audio_data,
-                            "output_file": str(output_file) if output_file else None
+                            "output_file": str(output_file) if output_file else None,
+                            "used_ssml": is_ssml
                         }
                 except aiohttp.ClientError as e:
                     logger.error(f"TTS API request failed: {e}")
@@ -501,7 +553,8 @@ class DeepgramTTS:
                     data = wf.readframes(chunk_size)
                     
                     print("Playing audio...")
-                    while len(data) > 0:
+                    
+                    while data:
                         stream.write(data)
                         data = wf.readframes(chunk_size)
                     
@@ -510,20 +563,15 @@ class DeepgramTTS:
                     stream.close()
                     p.terminate()
                     
-                    print("Audio playback complete.")
-            
-            except Exception as e:
-                logger.error(f"Error playing audio: {e}")
-            
+                    print("Finished playing audio.")
             finally:
                 # Clean up temporary file
                 try:
                     os.unlink(temp_path)
                 except Exception as e:
-                    logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
-                    
+                    logger.warning(f"Error cleaning up temporary file: {e}")
         except Exception as e:
-            logger.error(f"Error preparing audio for playback: {e}")
+            logger.error(f"Error playing audio: {e}")
 
 
 class VoiceHandler:
@@ -634,7 +682,8 @@ class VoiceHandler:
                  text: str, 
                  voice: str = "nova",
                  play_audio: bool = True,
-                 output_file: Optional[str] = None) -> bool:
+                 output_file: Optional[str] = None,
+                 params: Optional[Dict[str, Any]] = None) -> bool:
         """
         Convert text to speech and play/save.
         
@@ -643,11 +692,14 @@ class VoiceHandler:
             voice: Voice to use for synthesis
             play_audio: Whether to play the audio immediately
             output_file: Optional path to save audio file
+            params: Optional additional parameters for TTS
             
         Returns:
             True if successful, False otherwise
         """
-        params = {"voice": voice}
+        # Combine voice parameter with other params
+        params = params or {}
+        params["voice"] = voice
         
         result = await self.tts.synthesize_speech(
             text=text,

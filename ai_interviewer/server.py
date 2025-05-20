@@ -31,6 +31,7 @@ from ai_interviewer.config_api import router as config_router
 from langgraph.types import interrupt, Command
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 from langchain_core.tools import tool
+from ai_interviewer.core.integrations.livekit_service import LiveKitService
 
 # Set up logging
 logging.basicConfig(
@@ -135,6 +136,17 @@ except Exception as e:
     logger.warning(f"Voice processing disabled: {e}")
     voice_handler = None
     voice_enabled = False
+
+# Initialize LiveKitService (should be done once, similar to AIInterviewer)
+try:
+    livekit_service = LiveKitService()
+    logger.info("LiveKitService initialized.")
+except ValueError as e:
+    logger.error(f"Failed to initialize LiveKitService: {e}. LiveKit features will be unavailable.")
+    livekit_service = None
+except Exception as e:
+    logger.error(f"An unexpected error occurred during LiveKitService initialization: {e}")
+    livekit_service = None
 
 # Custom OpenAPI documentation
 @app.get("/docs", include_in_schema=False)
@@ -1595,6 +1607,69 @@ async def get_system_config(request: Request):
     except Exception as e:
         logger.error(f"Error getting system config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class LiveKitTokenRequest(BaseModel):
+    user_id: str = Field(..., description="Unique identifier for the participant joining the LiveKit room.")
+    participant_name: Optional[str] = Field(None, description="Display name for the participant.")
+    participant_metadata: Optional[str] = Field(None, description="Custom metadata for the participant.")
+
+class LiveKitTokenResponse(BaseModel):
+    token: str = Field(..., description="Access token for joining a LiveKit room.")
+    room_name: str = Field(..., description="The name of the LiveKit room the token is for.")
+
+@app.post(
+    "/api/interview/{interview_id}/livekit-token",
+    response_model=LiveKitTokenResponse,
+    summary="Generate LiveKit Token",
+    description="Generates an access token for a client to join a LiveKit room associated with an interview session.",
+    responses={
+        200: {"description": "Successfully generated LiveKit token"},
+        400: {"description": "Bad request (e.g., missing user_id)", "model": ErrorResponse},
+        404: {"description": "Interview session not found or LiveKit service unavailable", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse}
+    },
+    tags=["LiveKit", "Interview"], # Add tags for better Swagger UI organization
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("20/minute") # Adjust rate limit as needed
+async def generate_livekit_token(
+    request: Request, 
+    interview_id: str, 
+    token_request: LiveKitTokenRequest
+):
+    if not livekit_service:
+        logger.error(f"Attempted to generate LiveKit token for interview {interview_id} but LiveKitService is not available.")
+        raise HTTPException(status_code=503, detail="LiveKit service is not available. Please check server configuration.")
+
+    # Basic validation for interview_id (you might have more sophisticated checks, e.g., in DB)
+    if not interview_id: # Or if interview_id does not exist in your session management
+        raise HTTPException(status_code=404, detail=f"Interview session '{interview_id}' not found.")
+
+    # The LiveKit room name could be derived from the interview_id to ensure uniqueness
+    room_name = f"interview-{interview_id}"
+
+    try:
+        logger.info(f"Generating LiveKit token for room '{room_name}', participant '{token_request.user_id}'")
+        # For a client (e.g., interviewee), they need to publish their audio/video and subscribe to others (AI)
+        token = await livekit_service.generate_join_token(
+            room_name=room_name,
+            participant_identity=token_request.user_id,
+            participant_name=token_request.participant_name,
+            participant_metadata=token_request.participant_metadata,
+            can_publish=True,
+            can_subscribe=True
+        )
+        return LiveKitTokenResponse(token=token, room_name=room_name)
+    except ValueError as ve:
+        logger.warning(f"ValueError generating token for interview {interview_id}, user {token_request.user_id}: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error generating LiveKit token for interview {interview_id}, user {token_request.user_id}: {e}")
+        # Log the full exception for debugging
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to generate LiveKit token.")
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """

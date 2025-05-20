@@ -11,6 +11,7 @@ import re
 
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage
 from ai_interviewer.utils.config import get_llm_config, SYSTEM_NAME
 # Import profiling utilities
 from ai_interviewer.utils.profiling import timer, timed_function
@@ -18,6 +19,54 @@ from ai_interviewer.utils.profiling import timer, timed_function
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Question generation prompt that emphasizes conversational style
+QUESTION_GENERATION_PROMPT = """
+You are an expert technical interviewer known for your engaging and conversational interview style.
+Your task is to generate a natural, thought-provoking question about {topic} that:
+
+1. Sounds natural and conversational while being technically substantive
+2. Encourages detailed responses and deeper discussion
+3. Relates to real-world scenarios when possible
+4. Adapts to the candidate's demonstrated level ({difficulty_level})
+
+CONVERSATION STYLE:
+- Use natural language and a friendly tone
+- Include context or brief examples when helpful
+- Frame questions in a way that invites discussion
+- Use appropriate technical terminology without being overly formal
+
+EXAMPLES OF CONVERSATIONAL QUESTIONS:
+❌ "Explain the concept of dependency injection."
+✅ "I'm curious about your experience with dependency injection. Could you walk me through how you've used it in your projects and what benefits you've seen?"
+
+❌ "What are the differences between REST and GraphQL?"
+✅ "You know, I've seen teams switch between REST and GraphQL for different projects. Based on your experience, when would you choose one over the other?"
+
+❌ "Describe the event loop in JavaScript."
+✅ "Let's talk about JavaScript's event loop. Could you share a time when understanding it helped you solve a tricky problem in your code?"
+
+Previous questions asked: {previous_questions}
+Current discussion topic: {current_topic}
+Follow-up context: {follow_up_to}
+"""
+
+# Response analysis prompt that maintains conversation flow
+RESPONSE_ANALYSIS_PROMPT = """
+Analyze the candidate's response while maintaining our conversational interview style.
+We want to evaluate their technical knowledge while keeping the discussion natural and engaging.
+
+QUESTION: {question}
+CANDIDATE RESPONSE: {response}
+
+Analyze the response considering:
+1. Technical accuracy and depth
+2. Real-world application understanding
+3. Problem-solving approach
+4. Communication clarity
+5. Areas for follow-up discussion
+
+Provide analysis in a way that helps guide our next conversational direction.
+"""
 
 @tool
 @timed_function(log_level=logging.INFO)
@@ -68,34 +117,21 @@ def generate_interview_question(
         # Default skill areas if none provided
         skill_areas_text = ", ".join(skill_areas) if skill_areas else "general technical skills for the role"
         
-        # Adjust difficulty parameters based on level
-        difficulty_params = {
-            "beginner": {
-                "depth": "focus on fundamentals and basic concepts",
-                "complexity": "straightforward questions with clear answers"
-            },
-            "intermediate": {
-                "depth": "explore practical application and real-world scenarios",
-                "complexity": "questions requiring analysis and critical thinking"
-            },
-            "advanced": {
-                "depth": "deep technical knowledge and expert-level understanding",
-                "complexity": "complex scenarios requiring in-depth knowledge and experience"
-            }
-        }.get(difficulty_level.lower(), {
-            "depth": "balanced mix of theoretical and practical knowledge",
-            "complexity": "moderate complexity appropriate for experienced professionals"
-        })
-        
         # Build the prompt
-        prompt = [
-            SystemMessage(content=QUESTION_GENERATION_PROMPT),
-            HumanMessage(content=f"Generate a {difficulty_level} level technical interview question about {current_topic}.")
-        ]
+        prompt = QUESTION_GENERATION_PROMPT.format(
+            topic=current_topic or skill_areas_text,
+            difficulty_level=difficulty_level,
+            previous_questions=previous_questions or [],
+            current_topic=current_topic or "general technical assessment",
+            follow_up_to=follow_up_to or "initial question"
+        )
         
         # Get response from model
         with timer("llm_question_generation", log_level=logging.INFO):
-            response = model.invoke(prompt)
+            response = model.invoke([
+                SystemMessage(content=prompt),
+                HumanMessage(content=f"Generate a {difficulty_level} level technical interview question about {current_topic or skill_areas_text}.")
+            ])
         
         # Extract question from response
         question = response.content.strip()
@@ -118,14 +154,14 @@ def generate_interview_question(
         # Fallback return in case of errors
         return {
             "status": "error",
-            "question": "Tell me about your most challenging project and the technical skills you used to complete it.",
+            "question": "I'd love to hear about a challenging project you've worked on recently. Could you walk me through the technical decisions you made and how you approached any obstacles you encountered?",
             "topic": current_topic,
             "difficulty": "intermediate",
             "skill_areas": ["general"],
             "follow_up_questions": [
-                "What specific technologies did you use?",
-                "What obstacles did you overcome?",
-                "What did you learn from the experience?"
+                "What specific technologies did you use in that project?",
+                "How did you overcome the main challenges you faced?",
+                "What were the key lessons you learned from that experience?"
             ],
             "error": str(e),
             "job_role": job_role,
@@ -146,22 +182,19 @@ def analyze_candidate_response(
     experience_level: str = "intermediate"
 ) -> Dict[str, Any]:
     """
-    Analyze a candidate's response to identify strengths, weaknesses, and potential follow-up areas.
-    Performs deep analysis of concept understanding and knowledge depth.
+    Analyze a candidate's response to generate insights and potential follow-up questions.
     
     Args:
         question: The question that was asked
-        response: The candidate's response to analyze
-        job_role: The job role for context
-        skill_areas: Skills that were being evaluated
-        expected_topics: Expected topics in a good answer
-        experience_level: Experience level of the candidate (beginner, intermediate, advanced)
+        response: The candidate's response
+        job_role: The job role being interviewed for
+        skill_areas: List of relevant skill areas
+        expected_topics: List of topics expected in the response
+        experience_level: Expected experience level
         
     Returns:
-        Dictionary containing detailed analysis results
+        Dictionary containing analysis and follow-up suggestions
     """
-    logger.info(f"Analyzing candidate response for job role: {job_role}")
-    
     try:
         # Initialize LLM
         llm_config = get_llm_config()
@@ -171,63 +204,15 @@ def analyze_candidate_response(
         )
         
         # Build the prompt
-        prompt = f"""
-You are an expert technical interviewer evaluating candidates for {job_role} positions.
-
-Analyze the following candidate response to the interview question. Focus on extracting key concepts and performing a deep analysis of the candidate's understanding.
-
-QUESTION: {question}
-
-CANDIDATE RESPONSE: {response}
-
-JOB ROLE: {job_role}
-EXPERIENCE LEVEL: {experience_level}
-{"SKILL AREAS: " + ", ".join(skill_areas) if skill_areas else ""}
-{"EXPECTED TOPICS: " + ", ".join(expected_topics) if expected_topics else ""}
-
-ANALYSIS TASKS:
-1. Identify the main points made by the candidate
-2. Extract key concepts and technical terms used by the candidate
-3. Evaluate how well the response addresses the question
-4. Assess technical accuracy and depth of knowledge
-5. Evaluate the candidate's conceptual understanding (not just surface-level knowledge)
-6. Identify evidence of practical experience vs. theoretical knowledge
-7. Note any missing key concepts or topics that should have been addressed
-8. Assess problem-solving approach and critical thinking
-9. Identify areas where follow-up questions would be valuable
-10. Determine strengths and weaknesses in the response
-
-DEPTH OF UNDERSTANDING ASSESSMENT:
-- Consider whether the candidate explains underlying principles or just surface details
-- Look for connections made between different concepts
-- Assess whether the candidate can explain "why" not just "what" or "how"
-- Evaluate their ability to consider edge cases or limitations
-- Check for evidence of real-world application of knowledge
-
-RESPONSE FORMAT:
-Return your analysis as a valid JSON object with the following fields:
-- "main_points": List of main points made by the candidate
-- "key_concepts": List of key concepts or technical terms correctly used by the candidate
-- "relevance_score": 1-10 rating of how relevant the response was to the question
-- "technical_accuracy": 1-10 rating of technical accuracy
-- "depth_of_knowledge": 1-10 rating of knowledge depth
-- "conceptual_understanding": 1-10 rating of understanding of underlying concepts and principles
-- "practical_experience": 1-10 rating of evidence of practical experience
-- "problem_solving": 1-10 rating of demonstrated problem-solving ability
-- "misconceptions": List of any misconceptions or technical inaccuracies
-- "missing_topics": Key topics that were not addressed
-- "follow_up_areas": Areas that would benefit from follow-up questions
-- "concept_connections": How well the candidate connected different concepts (1-10)
-- "edge_case_awareness": How well they considered edge cases or limitations (1-10)
-- "strengths": List of strengths in the response
-- "weaknesses": List of weaknesses in the response
-- "recommended_follow_up_question": One specific follow-up question designed to assess deeper understanding
-- "alternative_follow_up_questions": 2-3 additional follow-up questions focusing on different aspects
-- "depth_analysis": A paragraph explaining the candidate's depth of understanding
-"""
+        prompt = RESPONSE_ANALYSIS_PROMPT.format(
+            question=question,
+            response=response
+        )
         
         # Call the LLM
-        response_obj = model.invoke(prompt)
+        response_obj = model.invoke([
+            SystemMessage(content=prompt)
+        ])
         response_content = response_obj.content
         
         # Extract the JSON part
@@ -267,36 +252,14 @@ Return your analysis as a valid JSON object with the following fields:
         result["experience_level"] = experience_level
         
         return result
+        
     except Exception as e:
-        logger.error(f"Error analyzing candidate response: {e}")
-        # Fallback return in case of errors
+        logger.error(f"Error analyzing response: {e}")
         return {
-            "main_points": ["Unable to extract main points due to error"],
-            "key_concepts": [],
-            "relevance_score": 5,
-            "technical_accuracy": 5,
-            "depth_of_knowledge": 5,
-            "conceptual_understanding": 5,
-            "practical_experience": 5,
-            "problem_solving": 5,
-            "misconceptions": ["Unable to determine misconceptions"],
-            "missing_topics": ["Unable to determine missing topics"],
-            "follow_up_areas": ["General clarification"],
-            "concept_connections": 5,
-            "edge_case_awareness": 5,
-            "strengths": ["Unable to determine strengths"],
-            "weaknesses": ["Unable to determine weaknesses"],
-            "recommended_follow_up_question": "Could you elaborate more on your answer?",
-            "alternative_follow_up_questions": [
-                "Can you explain how this works in practice?",
-                "What are some challenges you might encounter with this approach?",
-                "How would you modify your approach for a different scenario?"
-            ],
-            "depth_analysis": "Unable to analyze depth of understanding due to an error in processing.",
-            "comprehensive_understanding_score": 5,
-            "question": question,
-            "job_role": job_role,
-            "experience_level": experience_level,
             "error": str(e),
-            "generated_from_error": True
+            "status": "error",
+            "technical_accuracy": 0,
+            "depth_of_knowledge": 0,
+            "comprehensive_understanding_score": 0,
+            "suggested_follow_up": "Could you elaborate more on your approach to this problem?"
         } 

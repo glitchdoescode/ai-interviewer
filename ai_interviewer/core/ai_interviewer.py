@@ -13,6 +13,7 @@ from enum import Enum
 import re
 import time
 import asyncio
+import json
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -40,9 +41,24 @@ from ai_interviewer.tools.question_tools import (
 
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
-from ai_interviewer.utils.config import get_db_config, get_llm_config, log_config, SYSTEM_NAME
+from ai_interviewer.utils.config import (
+    get_db_config, 
+    get_llm_config, 
+    log_config, 
+    SYSTEM_NAME,
+    AI_NAME,
+    AI_ROLE,
+    get_interviewer_config
+)
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
 from ai_interviewer.utils.profiling import timer, timed_function, LangGraphProfiler
+from ai_interviewer.ai.prompts.interview_prompts import (
+    INTERVIEW_SYSTEM_PROMPT,
+    FOLLOW_UP_PROMPT,
+    TRANSITION_PROMPT,
+    TECHNICAL_DISCUSSION_PROMPT,
+    FEEDBACK_PROMPT
+)
 
 # Configure logging
 logging.basicConfig(
@@ -70,7 +86,7 @@ METADATA_KEY = "metadata"  # Key for storing all metadata in the state
 
 # System prompt template
 INTERVIEW_SYSTEM_PROMPT = """
-You are {system_name}, an AI technical interviewer conducting a {job_role} interview for a {seniority_level} position.
+You are {interviewer_name}, a {interviewer_role} conducting a {job_role} interview for a {seniority_level} position at {system_name}.
 
 Interview ID: {interview_id}
 Candidate: {candidate_name}
@@ -81,12 +97,14 @@ Job description: {job_description}
 Requires coding: {requires_coding}
 
 CONVERSATION STYLE GUIDELINES:
-1. Be warm, personable, and empathetic while maintaining professionalism
-2. Use natural conversational transitions rather than formulaic responses
-3. Address the candidate by name occasionally but naturally
-4. Acknowledge and validate the candidate's feelings or concerns when expressed
-5. Vary your response style and length to create a more dynamic conversation
-6. Use appropriate conversational connectors (e.g., "That's interesting," "I see," "Thanks for sharing that")
+1. Always introduce yourself with your full name ({interviewer_name}) and role ({interviewer_role})
+2. Be warm, personable, and empathetic while maintaining professionalism
+3. Use natural conversational transitions rather than formulaic responses
+4. Address the candidate by name occasionally but naturally
+5. Acknowledge and validate the candidate's feelings or concerns when expressed
+6. Vary your response style and length to create a more dynamic conversation
+7. Use appropriate conversational connectors (e.g., "That's interesting," "I see," "Thanks for sharing that")
+8. Never mention that you are an AI - maintain your human persona as {interviewer_name}
 
 INTERVIEW APPROACH:
 1. Assess the candidate's technical skills and experience level
@@ -461,142 +479,82 @@ class AIInterviewer:
         return "tools" if hasattr(last_message, "tool_calls") and last_message.tool_calls else "end"
     
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
-        """
-        Call the model to generate a response based on the current state.
-        Uses async operations internally and supports streaming responses.
-        """
+        """Call the LLM with the current state and return the updated state."""
         try:
-            # Start profiling this node
-            self.graph_profiler.start_node("call_model")
-            start_time = time.time()
-            
-            # Extract state data efficiently using a helper method
+            # Extract data from state using the helper to handle dict or object
             state_data = self._extract_state_data(state)
+
+            # Get interviewer config
+            interviewer_config = get_interviewer_config()
             
-            # Create system prompt
+            # Format system prompt with current context using extracted state_data
             system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
                 system_name=SYSTEM_NAME,
-                candidate_name=state_data["candidate_name"] or "[Not provided yet]",
-                interview_id=state_data["session_id"],
-                current_stage=state_data["interview_stage"],
+                interviewer_name=interviewer_config["name"],
+                interviewer_role=interviewer_config["role"],
                 job_role=state_data["job_role"],
                 seniority_level=state_data["seniority_level"],
+                interview_id=state_data["session_id"],
+                candidate_name=state_data["candidate_name"],
+                current_stage=state_data["interview_stage"],
                 required_skills=", ".join(state_data["required_skills"]) if isinstance(state_data["required_skills"], list) else str(state_data["required_skills"]),
                 job_description=state_data["job_description"],
                 requires_coding=state_data["requires_coding"]
             )
             
             # Prepare messages with system prompt
-            messages = self._prepare_messages(state_data["messages"], system_prompt)
+            messages_for_llm = self._prepare_messages(state_data["messages"], system_prompt)
             
-            # Include metadata for model tracing/context
-            model_config = {
-                "metadata": {
-                    "interview_id": state_data["session_id"],
-                    "candidate_name": state_data["candidate_name"],
-                    "interview_stage": state_data["interview_stage"]
-                }
-            }
+            # Call LLM
+            response = await self.llm.ainvoke(messages_for_llm)
             
-            # Call the model with retries and streaming
-            max_retries = 3
-            retry_count = 0
-            last_error = None
+            # Extract content from response
+            content = safe_extract_content(response)
             
-            while retry_count < max_retries:
-                try:
-                    logger.debug(f"Calling model with {len(messages)} messages (attempt {retry_count + 1})")
-                    llm_start_time = time.time()
-                    
-                    # Use streaming for token-by-token generation
-                    full_response = ""
-                    async for chunk in self.llm.astream(messages):
-                        # Extract content from chunk
-                        chunk_content = chunk.content if hasattr(chunk, "content") else ""
-                        full_response += chunk_content
-                        
-                        # Emit streaming event if callback is set
-                        if hasattr(self, "stream_callback") and self.stream_callback:
-                            await self.stream_callback({
-                                "type": "llm_token",
-                                "content": chunk_content,
-                                "session_id": state_data["session_id"]
-                            })
-                    
-                    # Create final AI message
-                    ai_message = AIMessage(content=full_response)
-                    
-                    llm_elapsed = time.time() - llm_start_time
-                    logger.info(f"LLM call completed in {llm_elapsed:.2f} seconds")
-                    break
-                except Exception as e:
-                    last_error = e
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        logger.warning(f"LLM call failed (attempt {retry_count}): {str(e)}")
-                        await asyncio.sleep(1)  # Wait before retrying
-                    else:
-                        logger.error(f"All LLM retries failed: {str(e)}")
-                        raise
+            # Create AI message
+            ai_message = AIMessage(content=content)
             
-            # Process name extraction if needed
-            if not state_data["candidate_name"]:
-                name_match = self._extract_candidate_name(messages + [ai_message])
-                if name_match:
-                    state_data["candidate_name"] = name_match
-                    logger.info(f"Extracted candidate name: {name_match}")
+            # Determine new interview stage
+            new_stage = await self._determine_interview_stage_async(
+                state_data["messages"] + [ai_message], 
+                ai_message, 
+                state_data["interview_stage"]
+            )
             
-            # Determine next stage
-            new_stage = await self._determine_interview_stage(messages, ai_message, state_data["interview_stage"])
-            
-            # Create the final state
-            if isinstance(state, dict):
-                updated_state = dict(state)
-                updated_state["messages"] = messages + [ai_message]
-                updated_state["candidate_name"] = state_data["candidate_name"]
-                updated_state["interview_stage"] = new_stage
-                result = updated_state
-            else:
-                result = InterviewState(
-                    messages=messages + [ai_message],
-                    candidate_name=state_data["candidate_name"],
-                    job_role=state_data["job_role"],
-                    seniority_level=state_data["seniority_level"],
-                    required_skills=state_data["required_skills"],
-                    job_description=state_data["job_description"],
-                    interview_stage=new_stage,
-                    session_id=state_data["session_id"],
-                    user_id=state_data["user_id"]
+            # If stage has changed, generate a transition message
+            if new_stage != state_data["interview_stage"]:
+                # Format transition prompt
+                transition_prompt = TRANSITION_PROMPT.format(
+                    current_stage=state_data["interview_stage"],
+                    next_stage=new_stage,
+                    stage_context=self._get_stage_context(state_data["messages"]),
+                    performance_summary=self._get_performance_summary(state_data["messages"])
                 )
+                
+                # Get transition message
+                transition_response = await self.llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=transition_prompt)
+                ])
+                
+                # Combine transition with original response
+                content = f"{safe_extract_content(transition_response)} {content}"
+                ai_message = AIMessage(content=content)
             
-            # End profiling this node
-            total_elapsed = time.time() - start_time
-            logger.info(f"Total call_model execution time: {total_elapsed:.2f} seconds")
-            self.graph_profiler.end_node("call_model")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in call_model: {str(e)}")
-            # End profiling even on error
-            self.graph_profiler.end_node("call_model")
-            # Return error state with more informative message
-            error_message = AIMessage(content=f"I apologize, but I encountered a technical issue. Please try again in a moment.")
+            # Update state with new message and stage
             if isinstance(state, dict):
-                state["messages"] = state.get("messages", []) + [error_message]
+                state["messages"] = state_data["messages"] + [ai_message]
+                state["interview_stage"] = new_stage
                 return state
             else:
-                return InterviewState(
-                    messages=state.messages + [error_message] if hasattr(state, "messages") else [error_message],
-                    candidate_name=state.candidate_name if hasattr(state, "candidate_name") else "",
-                    job_role=state.job_role if hasattr(state, "job_role") else self.job_role,
-                    seniority_level=state.seniority_level if hasattr(state, "seniority_level") else self.seniority_level,
-                    required_skills=state.required_skills if hasattr(state, "required_skills") else self.required_skills,
-                    job_description=state.job_description if hasattr(state, "job_description") else self.job_description,
-                    interview_stage=state.interview_stage if hasattr(state, "interview_stage") else InterviewStage.INTRODUCTION.value,
-                    session_id=state.session_id if hasattr(state, "session_id") else "",
-                    user_id=state.user_id if hasattr(state, "user_id") else ""
-                )
-    
+                state.messages = state_data["messages"] + [ai_message]
+                state.interview_stage = new_stage
+                return state
+            
+        except Exception as e:
+            logger.error(f"Error in call_model: {e}")
+            raise
+
     def set_stream_callback(self, callback: Callable):
         """
         Set a callback function to handle streaming events.
@@ -1021,8 +979,11 @@ class AIInterviewer:
             metadata["transcript"] = []
         
         # Create or update system message with context
+        interviewer_config = get_interviewer_config()
         system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
             system_name=SYSTEM_NAME,
+            interviewer_name=interviewer_config["name"],
+            interviewer_role=interviewer_config["role"],
             candidate_name=candidate_name or "[Not provided yet]",
             interview_id=session_id,
             current_stage=interview_stage,
@@ -1302,7 +1263,6 @@ class AIInterviewer:
                 self.active_sessions[session_id] = {
                     "user_id": user_id,
                     "interview_id": session_id,
-                    "candidate_name": "",  # Will be populated during conversation
                     "created_at": datetime.now().isoformat(),
                     "last_active": datetime.now().isoformat(),
                     "interview_stage": InterviewStage.INTRODUCTION.value
@@ -1634,7 +1594,146 @@ class AIInterviewer:
             messages = [SystemMessage(content=system_prompt)] + messages
         return messages
 
-    async def _determine_interview_stage(self, messages: List[BaseMessage], ai_message: AIMessage, current_stage: str) -> str:
+    async def _determine_interview_stage_async(self, messages: List[BaseMessage], 
+                                             ai_message: AIMessage, 
+                                             current_stage: str) -> str:
+        """Asynchronous version of interview stage determination. For now, it calls the synchronous version."""
+        # This can be made fully async later if performance becomes an issue.
+        # For now, just call the synchronous version.
+        return self._determine_interview_stage(messages, ai_message, current_stage)
+
+    async def _create_updated_state(self, original_state: Union[Dict, InterviewState], 
+                                  state_data: Dict[str, Any],
+                                  ai_message: AIMessage,
+                                  new_stage: str) -> Union[Dict, InterviewState]:
+        """Create updated state object ensuring all fields are present."""
+        updated_messages = state_data.get("messages", []) + [ai_message]
+        
+        # Ensure all necessary keys from InterviewState are in state_data, with defaults if missing
+        final_state_data = {
+            "messages": updated_messages,
+            "candidate_name": state_data.get("candidate_name", ""),
+            "job_role": state_data.get("job_role", self.job_role), # Use self.job_role as default
+            "seniority_level": state_data.get("seniority_level", self.seniority_level), # Use self.seniority_level as default
+            "required_skills": state_data.get("required_skills", self.required_skills), # Use self.required_skills as default
+            "job_description": state_data.get("job_description", self.job_description), # Use self.job_description as default
+            "requires_coding": state_data.get("requires_coding", True),
+            "interview_stage": new_stage, # Always use the new_stage
+            "session_id": state_data.get("session_id", ""),
+            "user_id": state_data.get("user_id", "")
+        }
+
+        if isinstance(original_state, dict):
+            # Update the original dictionary directly with all keys from final_state_data
+            original_state.update(final_state_data)
+            return original_state
+        else:
+            # Create a new InterviewState object
+            return InterviewState(**final_state_data)
+
+    async def _handle_model_error(self, state: Union[Dict, InterviewState], error: Exception) -> Union[Dict, InterviewState]:
+        """Handle model errors consistently by returning state with an error message."""
+        logger.error(f"Handling model error in _handle_model_error: {str(error)}") # Log the specific error
+        error_ai_message = AIMessage(content="I apologize, but I encountered an issue. Please try again.")
+        
+        state_data = self._extract_state_data(state) # Get a dictionary view
+        updated_messages = state_data.get("messages", []) + [error_ai_message]
+
+        # Use all existing state data and only update messages and potentially stage
+        final_state_data = {
+            "messages": updated_messages,
+            "candidate_name": state_data.get("candidate_name", ""),
+            "job_role": state_data.get("job_role", self.job_role),
+            "seniority_level": state_data.get("seniority_level", self.seniority_level),
+            "required_skills": state_data.get("required_skills", self.required_skills),
+            "job_description": state_data.get("job_description", self.job_description),
+            "requires_coding": state_data.get("requires_coding", True),
+            "interview_stage": state_data.get("interview_stage", InterviewStage.INTRODUCTION.value), # Keep current stage or default
+            "session_id": state_data.get("session_id", ""),
+            "user_id": state_data.get("user_id", "")
+        }
+
+        if isinstance(state, dict):
+            state.update(final_state_data)
+            return state
+        else: # Must be InterviewState
+            return InterviewState(**final_state_data)
+
+    async def _get_cached_system_prompt(self, candidate_name: str, session_id: str, 
+                                      interview_stage: str, job_role: str, 
+                                      seniority_level: str, required_skills: List[str],
+                                      job_description: str, requires_coding: bool) -> str:
+        """Get system prompt with caching for performance."""
+        cache_key = f"{session_id}:{interview_stage}:{candidate_name}"
+        
+        if not hasattr(self, '_prompt_cache'):
+            self._prompt_cache = {}
+        
+        if cache_key in self._prompt_cache:
+            return self._prompt_cache[cache_key]
+        
+        interviewer_config = get_interviewer_config()
+        system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+            system_name=SYSTEM_NAME,
+            interviewer_name=interviewer_config["name"],
+            interviewer_role=interviewer_config["role"],
+            candidate_name=candidate_name or "[Not provided yet]",
+            interview_id=session_id,
+            current_stage=interview_stage,
+            job_role=job_role,
+            seniority_level=seniority_level,
+            required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
+            job_description=job_description,
+            requires_coding=requires_coding
+        )
+        
+        self._prompt_cache[cache_key] = system_prompt
+        return system_prompt
+
+    async def _extract_candidate_name_async(self, messages: List[BaseMessage]) -> str:
+        """Asynchronous version of name extraction."""
+        if len(messages) < 1: # Adjusted from 3 to allow earlier extraction if possible
+            return ""
+        
+        # Simplified prompt, focusing on direct statements of name
+        conversation_text = "\\n".join([m.content for m in messages if hasattr(m, 'content') and m.content])
+        if not conversation_text:
+            return ""
+
+        extract_prompt_messages = [
+            SystemMessage(content="You are an expert at extracting names. From the following conversation, extract the first mentioned full name if a person introduces themselves (e.g., 'My name is John Doe', 'I am Jane Smith'). Respond with only the name. If no such direct introduction is found, respond with 'Unknown'."),
+            HumanMessage(content=f"Conversation:\\n{conversation_text}")
+        ]
+        
+        try:
+            raw_model = ChatGoogleGenerativeAI(
+                model=get_llm_config().get("model", "gemini-pro"), # Use get safely
+                temperature=0.0,
+                max_output_tokens=50 
+            )
+            
+            response = await raw_model.ainvoke(extract_prompt_messages)
+            name = response.content.strip()
+
+            if name.lower() == "unknown" or len(name.split()) < 2: # Basic check for a full name
+                # Try a more general regex for "My name is X" or "I'm X"
+                for msg_content in [m.content for m in messages if isinstance(m, HumanMessage) and m.content]:
+                    match = re.search(r"(?:my name is|i'm|i am)\s+([A-Za-z'-]+(?:\s+[A-Za-z'-]+)+)", msg_content, re.IGNORECASE)
+                    if match:
+                        extracted_name = match.group(1).strip()
+                        logger.info(f"Regex extracted candidate name: {extracted_name}")
+                        return extracted_name
+                return ""
+            
+            logger.info(f"LLM extracted candidate name: {name}")
+            return name
+        except Exception as e:
+            logger.error(f"Error extracting candidate name asynchronously: {e}")
+            return ""
+
+    async def _determine_interview_stage(self, messages: List[BaseMessage], 
+                                         ai_message: AIMessage, 
+                                         current_stage: str) -> str:
         """
         Determine the next interview stage based on conversation context.
         
@@ -1744,159 +1843,238 @@ class AIInterviewer:
         # Stay in current stage if no transition patterns matched
         return current_stage
 
-# Import for resume_interview method
-import asyncio
+    async def _update_session_metadata_async(self, session_id: str, key: str, value: Any):
+        """Asynchronously update session metadata."""
+        try:
+            if self.session_manager:
+                # Ensure session exists or handle appropriately
+                session = await self.session_manager.get_session(session_id)
+                if session: # Check if session is not None
+                    metadata = session.get("metadata", {})
+                    metadata[key] = value
+                    await self.session_manager.update_session_metadata(session_id, metadata)
+                    # logger.info(f"Updated session metadata {key}: {value}") # Can be verbose
+                else:
+                    logger.warning(f"Session {session_id} not found for metadata update ({key}={value}).")
+        except Exception as e:
+            logger.error(f"Error updating session metadata asynchronously for {session_id}: {e}")
 
-def safe_extract_content(message: AIMessage) -> str:
-    """
-    Safely extract the content from an AI message.
-    
-    Args:
-        message: AIMessage object
-        
-    Returns:
-        Content string or default error message
-    """
-    try:
-        return message.content or "I apologize, but I encountered an issue. Please try again."
-    except Exception:
-        return "I apologize, but I encountered an issue. Please try again."
+    def _extract_state_data(self, state: Union[Dict, InterviewState]) -> Dict[str, Any]:
+        """Extract data from either a dictionary or InterviewState object."""
+        if isinstance(state, dict):
+            return {
+                "messages": state.get("messages", []),
+                "candidate_name": state.get("candidate_name", ""),
+                "job_role": state.get("job_role", self.job_role),
+                "seniority_level": state.get("seniority_level", self.seniority_level),
+                "required_skills": state.get("required_skills", self.required_skills),
+                "job_description": state.get("job_description", self.job_description),
+                "interview_stage": state.get("interview_stage", InterviewStage.INTRODUCTION.value),
+                "session_id": state.get("session_id", ""),
+                "user_id": state.get("user_id", ""),
+                "requires_coding": state.get("requires_coding", True)
+            }
+        else:
+            return {
+                "messages": state.messages,
+                "candidate_name": state.candidate_name,
+                "job_role": state.job_role,
+                "seniority_level": state.seniority_level,
+                "required_skills": state.required_skills,
+                "job_description": state.job_description,
+                "interview_stage": state.interview_stage,
+                "session_id": state.session_id,
+                "user_id": state.user_id,
+                "requires_coding": getattr(state, "requires_coding", True)
+            }
 
-async def _get_cached_system_prompt(self, candidate_name: str, session_id: str, 
-                                  interview_stage: str, job_role: str, 
-                                  seniority_level: str, required_skills: List[str],
-                                  job_description: str, requires_coding: bool) -> str:
-    """Get system prompt with caching for performance."""
-    cache_key = f"{session_id}:{interview_stage}:{candidate_name}"
-    
-    # Check cache first
-    if hasattr(self, '_prompt_cache') and cache_key in self._prompt_cache:
-        return self._prompt_cache[cache_key]
-    
-    # Create prompt
-    system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
-        system_name=SYSTEM_NAME,
-        candidate_name=candidate_name or "[Not provided yet]",
-        interview_id=session_id,
-        current_stage=interview_stage,
-        job_role=job_role,
-        seniority_level=seniority_level,
-        required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
-        job_description=job_description,
-        requires_coding=requires_coding
-    )
-    
-    # Cache the result
-    if not hasattr(self, '_prompt_cache'):
-        self._prompt_cache = {}
-    self._prompt_cache[cache_key] = system_prompt
-    
-    return system_prompt
+    def _prepare_messages(self, messages: List[BaseMessage], system_prompt: str) -> List[BaseMessage]:
+        """Prepare messages with system prompt."""
+        if messages and isinstance(messages[0], SystemMessage):
+            messages[0] = SystemMessage(content=system_prompt)
+        else:
+            messages = [SystemMessage(content=system_prompt)] + messages
+        return messages
 
-async def _extract_candidate_name_async(self, messages: List[BaseMessage]) -> str:
-    """Asynchronous version of name extraction."""
-    if len(messages) < 3:
-        return ""
-    
-    extract_prompt = [
-        SystemMessage(content="You are a helpful assistant. Your task is to extract the candidate's name from the conversation, if mentioned. Respond with just the name, or 'Unknown' if no name is found."),
-        HumanMessage(content=f"Extract the candidate's name from this conversation: {', '.join([m.content for m in messages if hasattr(m, 'content')])}")
-    ]
-    
-    try:
-        # Use the same model but with no tools and minimal temperature
-        raw_model = ChatGoogleGenerativeAI(
-            model=get_llm_config()["model"],
-            temperature=0.0,
-            max_output_tokens=128  # Keep it small for speed
-        )
-        
-        response = await raw_model.ainvoke(extract_prompt)
-        
-        name = response.content.strip()
-        if name.lower() in ["unknown", "not mentioned", "no name found", "none"]:
-            return ""
-            
-        name = name.replace("Name:", "").replace("Candidate name:", "").strip()
-        logger.info(f"Extracted candidate name: {name}")
-        return name
-    except Exception as e:
-        logger.error(f"Error extracting candidate name: {e}")
-        return ""
-
-async def _determine_interview_stage_async(self, messages: List[BaseMessage], 
+    async def _determine_interview_stage(self, messages: List[BaseMessage], 
                                          ai_message: AIMessage, 
                                          current_stage: str) -> str:
-    """Asynchronous version of interview stage determination."""
-    # Most of the logic can be reused from _determine_interview_stage
-    # but we'll make it more efficient
-    return self._determine_interview_stage(messages, ai_message, current_stage)
-
-async def _update_session_metadata_async(self, session_id: str, key: str, value: Any):
-    """Asynchronously update session metadata."""
-    try:
-        if self.session_manager:
-            session = self.session_manager.get_session(session_id)
-            if session and "metadata" in session:
-                metadata = session.get("metadata", {})
-                metadata[key] = value
-                await self.session_manager.update_session_metadata(session_id, metadata)
-                logger.info(f"Updated session metadata {key}: {value}")
-    except Exception as e:
-        logger.error(f"Error updating session metadata: {e}")
-
-async def _create_updated_state(self, original_state: Union[Dict, InterviewState], 
-                              state_data: Dict[str, Any],
-                              ai_message: AIMessage,
-                              new_stage: str) -> Union[Dict, InterviewState]:
-    """Create updated state object."""
-    messages = state_data["messages"] + [ai_message]
-    interview_stage = new_stage if new_stage != state_data["interview_stage"] else state_data["interview_stage"]
-    
-    if isinstance(original_state, dict):
-        updated_state = dict(original_state)
-        updated_state["messages"] = messages
-        updated_state["candidate_name"] = state_data["candidate_name"]
-        updated_state["interview_stage"] = interview_stage
-        result = updated_state
-    else:
-        result = InterviewState(
-            messages=messages,
-            candidate_name=state_data["candidate_name"],
-            job_role=state_data["job_role"],
-            seniority_level=state_data["seniority_level"],
-            required_skills=state_data["required_skills"],
-            job_description=state_data["job_description"],
-            interview_stage=interview_stage,
-            session_id=state_data["session_id"],
-            user_id=state_data["user_id"]
-        )
+        """
+        Determine the next interview stage based on conversation context.
         
-    # Update stage in result
-    result["interview_stage"] = interview_stage
-    
-    return result
+        Args:
+            messages: Previous messages in the conversation
+            ai_message: Latest AI message
+            current_stage: Current interview stage
+            
+        Returns:
+            Next interview stage
+        """
+        # Fast path: Don't change stage if we're handling a digression
+        if current_stage == InterviewStage.CONCLUSION.value:
+            return current_stage
+            
+        # Check for digression context in latest messages only
+        latest_messages = messages[-3:] if len(messages) > 3 else messages
+        if any("CONTEXT: Candidate is digressing" in getattr(m, 'content', '') 
+               for m in latest_messages if isinstance(m, AIMessage)):
+            return current_stage
+            
+        # Only analyze the latest AI message content for transitions
+        ai_content = ai_message.content.lower()
+        
+        # Stage transition patterns with weighted indicators
+        transitions = {
+            InterviewStage.INTRODUCTION.value: {
+                "next": InterviewStage.TECHNICAL_QUESTIONS.value,
+                "strong_indicators": [
+                    "let's begin with some technical questions",
+                    "let's start with your technical background",
+                    "now that i know a bit about you"
+                ],
+                "weak_indicators": [
+                    "tell me about your experience",
+                    "what's your background",
+                    "what brings you here"
+                ]
+            },
+            InterviewStage.TECHNICAL_QUESTIONS.value: {
+                "next": InterviewStage.CODING_CHALLENGE.value,
+                "strong_indicators": [
+                    "let's move on to a coding challenge",
+                    "i'd like you to solve a coding problem",
+                    "time for a practical challenge"
+                ],
+                "weak_indicators": [
+                    "implement",
+                    "write a function",
+                    "solve this problem"
+                ]
+            },
+            InterviewStage.CODING_CHALLENGE.value: {
+                "next": InterviewStage.BEHAVIORAL_QUESTIONS.value,
+                "strong_indicators": [
+                    "great solution",
+                    "excellent work on the challenge",
+                    "now let's discuss some behavioral questions"
+                ],
+                "weak_indicators": [
+                    "well done",
+                    "good job",
+                    "let's move on"
+                ]
+            },
+            InterviewStage.BEHAVIORAL_QUESTIONS.value: {
+                "next": InterviewStage.CONCLUSION.value,
+                "strong_indicators": [
+                    "thank you for your time today",
+                    "we're nearing the end of our interview",
+                    "do you have any questions for me"
+                ],
+                "weak_indicators": [
+                    "would you like to ask",
+                    "any questions",
+                    "wrapping up"
+                ]
+            }
+        }
+        
+        # Check for stage transition
+        if current_stage in transitions:
+            transition = transitions[current_stage]
+            
+            # Check for strong indicators first
+            if any(indicator in ai_content for indicator in transition["strong_indicators"]):
+                logger.info(f"Strong indicator found: Transitioning from {current_stage} to {transition['next']}")
+                return transition["next"]
+                
+            # Check for weak indicators and additional context
+            if any(indicator in ai_content for indicator in transition["weak_indicators"]):
+                # For weak indicators, check if we have tool calls that support the transition
+                has_supporting_tools = False
+                if hasattr(ai_message, "tool_calls") and ai_message.tool_calls:
+                    tool_names = [call.get("name", "") for call in ai_message.tool_calls]
+                    
+                    # Tool calls that support stage transitions
+                    if current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+                        has_supporting_tools = "start_coding_challenge" in tool_names
+                    elif current_stage == InterviewStage.CODING_CHALLENGE.value:
+                        has_supporting_tools = "evaluate_solution" in tool_names
+                
+                if has_supporting_tools:
+                    logger.info(f"Weak indicator with supporting tools: Transitioning from {current_stage} to {transition['next']}")
+                    return transition["next"]
+        
+        # Stay in current stage if no transition patterns matched
+        return current_stage
 
-async def _handle_model_error(self, state: Union[Dict, InterviewState], error: Exception) -> Union[Dict, InterviewState]:
-    """Handle model errors consistently."""
-    error_message = AIMessage(content="I apologize, but I encountered an issue. Please try again.")
-    
-    if isinstance(state, dict):
-        updated_state = dict(state)
-        if "messages" in updated_state:
-            updated_state["messages"] = updated_state["messages"] + [error_message]
+    async def _create_updated_state(self, original_state: Union[Dict, InterviewState], 
+                                  state_data: Dict[str, Any],
+                                  ai_message: AIMessage,
+                                  new_stage: str) -> Union[Dict, InterviewState]:
+        """Create updated state object."""
+        updated_messages = state_data.get("messages", []) + [ai_message]
+        
+        # Ensure all necessary keys from InterviewState are in state_data, with defaults if missing
+        final_state_data = {
+            "messages": updated_messages,
+            "candidate_name": state_data.get("candidate_name", ""),
+            "job_role": state_data.get("job_role", self.job_role), # Use self.job_role as default
+            "seniority_level": state_data.get("seniority_level", self.seniority_level), # Use self.seniority_level as default
+            "required_skills": state_data.get("required_skills", self.required_skills), # Use self.required_skills as default
+            "job_description": state_data.get("job_description", self.job_description), # Use self.job_description as default
+            "requires_coding": state_data.get("requires_coding", True),
+            "interview_stage": new_stage, # Always use the new_stage
+            "session_id": state_data.get("session_id", ""),
+            "user_id": state_data.get("user_id", "")
+        }
+
+        if isinstance(original_state, dict):
+            # Update the original dictionary directly with all keys from final_state_data
+            original_state.update(final_state_data)
+            return original_state
         else:
-            updated_state["messages"] = [error_message]
-        return updated_state
-    else:
-        return InterviewState(
-            messages=state.messages + [error_message] if hasattr(state, "messages") else [error_message],
-            candidate_name=state.candidate_name if hasattr(state, "candidate_name") else "",
-            job_role=state.job_role if hasattr(state, "job_role") else self.job_role,
-            seniority_level=state.seniority_level if hasattr(state, "seniority_level") else self.seniority_level,
-            required_skills=state.required_skills if hasattr(state, "required_skills") else self.required_skills,
-            job_description=state.job_description if hasattr(state, "job_description") else self.job_description,
-            interview_stage=state.interview_stage if hasattr(state, "interview_stage") else InterviewStage.INTRODUCTION.value,
-            session_id=state.session_id if hasattr(state, "session_id") else "",
-            user_id=state.user_id if hasattr(state, "user_id") else ""
-        ) 
+            # Create a new InterviewState object
+            return InterviewState(**final_state_data)
+
+    async def _handle_model_error(self, state: Union[Dict, InterviewState], error: Exception) -> Union[Dict, InterviewState]:
+        """Handle model errors consistently by returning state with an error message."""
+        logger.error(f"Handling model error: {str(error)}") # Log the specific error
+        error_ai_message = AIMessage(content="I apologize, but I encountered an issue. Please try again.")
+        
+        state_data = self._extract_state_data(state) # Get a dictionary view
+        updated_messages = state_data.get("messages", []) + [error_ai_message]
+
+        final_state_data = {
+            "messages": updated_messages,
+            "candidate_name": state_data.get("candidate_name", ""),
+            "job_role": state_data.get("job_role", self.job_role),
+            "seniority_level": state_data.get("seniority_level", self.seniority_level),
+            "required_skills": state_data.get("required_skills", self.required_skills),
+            "job_description": state_data.get("job_description", self.job_description),
+            "requires_coding": state_data.get("requires_coding", True),
+            # Keep current stage on error, or a safe default if not available
+            "interview_stage": state_data.get("interview_stage", InterviewStage.INTRODUCTION.value), 
+            "session_id": state_data.get("session_id", ""),
+            "user_id": state_data.get("user_id", "")
+        }
+
+        if isinstance(state, dict):
+            state.update(final_state_data)
+            return state
+        else:
+            return InterviewState(**final_state_data) 
+
+    def _get_stage_context(self, messages: List[BaseMessage]) -> str:
+        """Extract context about the current stage from messages."""
+        # Get the last few messages for context
+        recent_messages = messages[-5:] if len(messages) > 5 else messages
+        return "\n".join([
+            f"{'User' if isinstance(m, HumanMessage) else 'Interviewer'}: {m.content}"
+            for m in recent_messages if hasattr(m, 'content')
+        ])
+
+    def _get_performance_summary(self, messages: List[BaseMessage]) -> str:
+        """Generate a brief summary of candidate performance."""
+        # This could be enhanced with actual performance metrics
+        return "The candidate has been engaging well with the discussion and showing good technical knowledge."

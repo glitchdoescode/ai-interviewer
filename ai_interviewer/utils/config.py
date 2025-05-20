@@ -42,11 +42,16 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 SPEECH_RECORDING_DURATION = float(os.environ.get("SPEECH_RECORDING_DURATION", "30.0"))  # Max recording duration
 SPEECH_SAMPLE_RATE = int(os.environ.get("SPEECH_SAMPLE_RATE", "16000"))
 SPEECH_TTS_VOICE = os.environ.get("SPEECH_TTS_VOICE", "nova")
+SPEECH_TTS_MODEL = os.environ.get("SPEECH_TTS_MODEL", "aura-asteria-en")  # Added TTS model config
+SPEECH_TTS_RATE = float(os.environ.get("SPEECH_TTS_RATE", "1.0"))  # Added speech rate config
+SPEECH_TTS_PITCH = float(os.environ.get("SPEECH_TTS_PITCH", "1.0"))  # Added pitch config
 SPEECH_SILENCE_THRESHOLD = float(os.environ.get("SPEECH_SILENCE_THRESHOLD", "0.03"))  # Volume threshold to detect silence
 SPEECH_SILENCE_DURATION = float(os.environ.get("SPEECH_SILENCE_DURATION", "2.0"))  # Seconds of silence to stop recording
 
 # --- System Configuration ---
-SYSTEM_NAME = os.getenv("SYSTEM_NAME", "AI Interviewer")
+SYSTEM_NAME = os.getenv("SYSTEM_NAME", "TechHire")
+AI_NAME = os.getenv("AI_NAME", "Sarah Chen")  # Default interviewer name
+AI_ROLE = os.getenv("AI_ROLE", "Technical Hiring Manager")  # Default role
 
 def get_db_config() -> Dict[str, str]:
     """
@@ -111,8 +116,23 @@ def get_speech_config() -> Dict[str, Any]:
         "recording_duration": SPEECH_RECORDING_DURATION,
         "sample_rate": SPEECH_SAMPLE_RATE,
         "tts_voice": SPEECH_TTS_VOICE,
+        "tts_model": SPEECH_TTS_MODEL,  # Added TTS model
+        "tts_rate": SPEECH_TTS_RATE,    # Added speech rate
+        "tts_pitch": SPEECH_TTS_PITCH,  # Added pitch
         "silence_threshold": SPEECH_SILENCE_THRESHOLD,
         "silence_duration": SPEECH_SILENCE_DURATION,
+    }
+
+def get_interviewer_config() -> Dict[str, str]:
+    """
+    Get interviewer configuration.
+    
+    Returns:
+        Dictionary with interviewer configuration
+    """
+    return {
+        "name": AI_NAME,
+        "role": AI_ROLE,
     }
 
 def log_config():
@@ -126,8 +146,14 @@ def log_config():
     logger.info(f"- Session Timeout: {SESSION_TIMEOUT_MINUTES} minutes")
     logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages")
     logger.info(f"- Speech TTS Voice: {SPEECH_TTS_VOICE}")
+    logger.info(f"- Speech TTS Model: {SPEECH_TTS_MODEL}")
+    logger.info(f"- Speech TTS Rate: {SPEECH_TTS_RATE}")
+    logger.info(f"- Speech TTS Pitch: {SPEECH_TTS_PITCH}")
     logger.info(f"- Speech Recording Max Duration: {SPEECH_RECORDING_DURATION} seconds")
     logger.info(f"- Speech Sample Rate: {SPEECH_SAMPLE_RATE} Hz")
     logger.info(f"- Speech Silence Threshold: {SPEECH_SILENCE_THRESHOLD}")
     logger.info(f"- Speech Silence Duration: {SPEECH_SILENCE_DURATION} seconds")
-    logger.info(f"- Deepgram API Key: {'Configured' if DEEPGRAM_API_KEY else 'Not configured'}") 
+    logger.info(f"- Deepgram API Key: {'Configured' if DEEPGRAM_API_KEY else 'Not configured'}")
+    logger.info(f"- System Name: {SYSTEM_NAME}")
+    logger.info(f"- Interviewer Name: {AI_NAME}")
+    logger.info(f"- Interviewer Role: {AI_ROLE}") 

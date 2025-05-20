@@ -64,11 +64,15 @@ class VoiceInterviewCLI:
         self.recording_duration = speech_config["recording_duration"]
         self.sample_rate = speech_config["sample_rate"]
         self.tts_voice = speech_config["tts_voice"]
+        self.tts_model = speech_config["tts_model"]
+        self.tts_rate = speech_config["tts_rate"]
+        self.tts_pitch = speech_config["tts_pitch"]
         self.silence_threshold = speech_config["silence_threshold"]
         self.silence_duration = speech_config["silence_duration"]
         
         logger.info(f"Voice CLI initialized with max recording: {self.recording_duration}s, "
                    f"sample rate: {self.sample_rate}Hz, voice: {self.tts_voice}, "
+                   f"model: {self.tts_model}, rate: {self.tts_rate}, pitch: {self.tts_pitch}, "
                    f"silence detection: {self.silence_duration}s pause at threshold {self.silence_threshold}")
     
     async def start_interview(self):
@@ -76,6 +80,7 @@ class VoiceInterviewCLI:
         print(f"\n🔊 {SYSTEM_NAME} Voice - Technical Interview Simulator 🎙️\n")
         print(f"Welcome to your voice-based technical interview simulation with {SYSTEM_NAME}!")
         print("Speak after each prompt. Say 'exit' to end the interview.\n")
+        print(f"Using voice: {self.tts_voice}, model: {self.tts_model}, rate: {self.tts_rate}, pitch: {self.tts_pitch}\n")
         
         # Initial greeting from the AI
         print(f"\n🤖 {SYSTEM_NAME} is introducing itself...")
@@ -85,12 +90,17 @@ class VoiceInterviewCLI:
             self.user_id, "Hello, I'm ready for my interview."
         )
         
-        # Speak the initial response
+        # Speak the initial response with configured voice settings
         print(f"🤖 Interviewer: {ai_response}")
         await self.voice_handler.speak(
             text=ai_response,
             voice=self.tts_voice,
-            play_audio=True
+            play_audio=True,
+            params={
+                "model": self.tts_model,
+                "rate": self.tts_rate,
+                "pitch": self.tts_pitch
+            }
         )
         
         # Store in history
@@ -139,7 +149,12 @@ class VoiceInterviewCLI:
             await self.voice_handler.speak(
                 text=ai_response,
                 voice=self.tts_voice,
-                play_audio=True
+                play_audio=True,
+                params={
+                    "model": self.tts_model,
+                    "rate": self.tts_rate,
+                    "pitch": self.tts_pitch
+                }
             )
             
             # Store in history
@@ -226,7 +241,27 @@ def parse_args():
         "--voice", 
         type=str, 
         default="nova",
+        choices=["nova", "stella", "athena", "zeus", "hera", "dave", "reed"],
         help="Voice to use for text-to-speech (default: nova)"
+    )
+    parser.add_argument(
+        "--model", 
+        type=str, 
+        default="aura-asteria-en",
+        choices=["aura-asteria-en", "aura-zeus-en"],
+        help="TTS model to use (default: aura-asteria-en)"
+    )
+    parser.add_argument(
+        "--rate", 
+        type=float, 
+        default=1.0,
+        help="Speech rate (0.5-2.0, default: 1.0)"
+    )
+    parser.add_argument(
+        "--pitch", 
+        type=float, 
+        default=1.0,
+        help="Voice pitch (0.5-2.0, default: 1.0)"
     )
     parser.add_argument(
         "--debug", 
@@ -248,22 +283,21 @@ async def _main():
     api_key = args.api_key or os.environ.get("DEEPGRAM_API_KEY")
     
     if not api_key:
-        print("❌ Error: Deepgram API key is required. Set DEEPGRAM_API_KEY environment variable or use --api-key.")
-        return
+        print("Error: Deepgram API key is required. Set DEEPGRAM_API_KEY environment variable or pass --api-key.")
+        sys.exit(1)
+    
+    # Override speech config with command line arguments
+    os.environ["SPEECH_TTS_VOICE"] = args.voice
+    os.environ["SPEECH_TTS_MODEL"] = args.model
+    os.environ["SPEECH_TTS_RATE"] = str(args.rate)
+    os.environ["SPEECH_TTS_PITCH"] = str(args.pitch)
+    os.environ["SPEECH_RECORDING_DURATION"] = str(args.max_duration)
+    os.environ["SPEECH_SILENCE_DURATION"] = str(args.silence_duration)
+    os.environ["SPEECH_SILENCE_THRESHOLD"] = str(args.silence_threshold)
     
     # Create and start CLI
     try:
         cli = VoiceInterviewCLI(api_key=api_key)
-        
-        # Override defaults with command line arguments
-        if args.max_duration:
-            cli.recording_duration = args.max_duration
-        if args.silence_duration:
-            cli.silence_duration = args.silence_duration
-        if args.silence_threshold:
-            cli.silence_threshold = args.silence_threshold
-        if args.voice:
-            cli.tts_voice = args.voice
         
         # Start interview
         await cli.start_interview()
