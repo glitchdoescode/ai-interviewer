@@ -16,7 +16,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 from langgraph.store.mongodb.base import MongoDBStore
-from langgraph.store.mongodb.aio import AsyncMongoDBStore
+from langgraph.store.memory import InMemoryStore
 
 from ai_interviewer.utils.config import get_db_config
 
@@ -34,7 +34,7 @@ class InterviewMemoryManager:
     
     This class provides:
     1. Thread-level memory persistence via MongoDBSaver checkpointer (sync) or AsyncMongoDBSaver (async)
-    2. Cross-thread memory persistence via MongoDBStore (sync) or AsyncMongoDBStore (async)
+    2. Cross-thread memory persistence via MongoDBStore (sync) or InMemoryStore (async)
     3. Helper methods for common memory operations
     """
     
@@ -81,14 +81,14 @@ class InterviewMemoryManager:
                 collection = db[self.store_collection]
                 
                 try:
-                    # Pass the collection object directly to AsyncMongoDBStore
-                    self.async_store = AsyncMongoDBStore(collection)
-                    logger.info(f"Initialized async MongoDB store with collection: {self.store_collection}")
+                    # Use InMemoryStore for async operations as there is no AsyncMongoDBStore
+                    self.async_store = InMemoryStore()
+                    logger.info(f"Initialized InMemoryStore for async operations")
                 except Exception as store_error:
-                    logger.error(f"Error initializing async MongoDB store: {store_error}")
+                    logger.error(f"Error initializing async store: {store_error}")
                     from langgraph.store.memory import InMemoryStore
                     self.async_store = InMemoryStore()
-                    logger.warning("Using InMemoryStore as fallback after async MongoDB store initialization failed")
+                    logger.warning("Using InMemoryStore as fallback after store initialization failed")
                 
                 # Initialize sync clients as None since we're in async mode
                 self.client = None
@@ -199,7 +199,7 @@ class InterviewMemoryManager:
         Get the appropriate store for cross-thread memory persistence.
         
         Returns:
-            MongoDBStore or AsyncMongoDBStore instance based on use_async setting
+            MongoDBStore or InMemoryStore instance based on use_async setting
         """
         if self.use_async:
             return self.async_store

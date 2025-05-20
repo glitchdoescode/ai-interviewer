@@ -1418,7 +1418,7 @@ class AIInterviewer:
         # Store a message for the graph to process
         human_message = HumanMessage(content=user_message)
         
-        # Run the graph asynchronously
+        # Run the graph with appropriate method based on checkpointer type
         final_chunk = None
         try:
             # Check if we're using an async checkpointer
@@ -1427,6 +1427,7 @@ class AIInterviewer:
             # Use the appropriate streaming method based on the checkpointer type
             if is_async_checkpointer:
                 # For async checkpointer
+                logger.info(f"Using async streaming with thread_id: {session_id}")
                 async for chunk in self.workflow.astream(
                     {"messages": [human_message]},
                     config=config,
@@ -1434,8 +1435,8 @@ class AIInterviewer:
                 ):
                     final_chunk = chunk
             else:
-                # For sync checkpointer (fallback)
-                logger.warning("Using synchronous streaming with potentially async workflow - this may cause issues")
+                # For sync checkpointer
+                logger.info(f"Using synchronous streaming with thread_id: {session_id}")
                 for chunk in self.workflow.stream(
                     {"messages": [human_message]},
                     config=config,
@@ -1445,9 +1446,41 @@ class AIInterviewer:
         except NotImplementedError as e:
             # Handle the specific error when using wrong checkpointer type
             logger.error(f"NotImplementedError - likely mismatched checkpointer type: {str(e)}")
-            if "aget_tuple" in str(e):
+            error_message = str(e)
+            
+            # Give specific guidance based on the error
+            if "astream" in error_message and not is_async_checkpointer:
+                # Trying to use astream with a sync checkpointer
                 logger.error("Async operation called with synchronous checkpointer. Use AsyncMongoDBSaver instead of MongoDBSaver")
-            return f"I apologize, but there was an error processing your request. The system is using an incompatible checkpoint configuration. Please contact support.", session_id
+                # Try fallback to sync method
+                try:
+                    logger.info("Attempting fallback to synchronous stream method")
+                    for chunk in self.workflow.stream(
+                        {"messages": [human_message]},
+                        config=config,
+                        stream_mode="values",
+                    ):
+                        final_chunk = chunk
+                except Exception as fallback_error:
+                    logger.error(f"Fallback to sync method failed: {fallback_error}")
+                    return f"I apologize, but there was an error processing your request. The system is using an incompatible checkpoint configuration. Please contact support.", session_id
+            elif "stream" in error_message and is_async_checkpointer:
+                # Trying to use stream with an async checkpointer
+                logger.error("Synchronous operation called with async checkpointer. Use MongoDBSaver instead of AsyncMongoDBSaver")
+                # Try fallback to async method if we're in an event loop
+                try:
+                    logger.info("Attempting fallback to asynchronous stream method")
+                    async for chunk in self.workflow.astream(
+                        {"messages": [human_message]},
+                        config=config,
+                        stream_mode="values",
+                    ):
+                        final_chunk = chunk
+                except Exception as fallback_error:
+                    logger.error(f"Fallback to async method failed: {fallback_error}")
+                    return f"I apologize, but there was an error processing your request. The system is using an incompatible checkpoint configuration. Please contact support.", session_id
+            else:
+                return f"I apologize, but there was an error processing your request. The system is using an incompatible checkpoint configuration. Please contact support. Error: {error_message}", session_id
         except Exception as e:
             import traceback
             error_tb = traceback.format_exc()
