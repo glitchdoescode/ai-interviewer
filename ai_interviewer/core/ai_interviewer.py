@@ -233,6 +233,26 @@ class InterviewState(MessagesState):
         except KeyError:
             return default
 
+# Add safe_extract_content function before the AIInterviewer class definition
+
+# Import for resume_interview method
+import asyncio
+
+def safe_extract_content(message: AIMessage) -> str:
+    """
+    Safely extract the content from an AI message.
+    
+    Args:
+        message: AIMessage object
+        
+    Returns:
+        Content string or default error message
+    """
+    try:
+        return message.content or "I apologize, but I encountered an issue. Please try again."
+    except Exception:
+        return "I apologize, but I encountered an issue. Please try again."
+
 class AIInterviewer:
     """Main class that encapsulates the AI Interviewer functionality."""
     
@@ -291,21 +311,36 @@ class AIInterviewer:
                 logger.info(f"Initializing Memory Manager with URI {mongodb_uri}")
                 self.memory_manager = InterviewMemoryManager(
                     connection_uri=mongodb_uri,
-                    db_name=db_config["database"],
+                    db_name=db_config["database"], 
                     checkpoint_collection=db_config["sessions_collection"],
                     store_collection="interview_memory_store",
                     use_async=True  # Default to async checkpointer
                 )
                 
+                # Initialize the checkpointer by calling async_setup
                 try:
-                    # Set up the memory manager
-                    # Note: async_setup should have been called before in the server.py
-                    # But we'll check if the memory manager is properly initialized
-                    if hasattr(self.memory_manager, 'async_setup') and not hasattr(self.memory_manager, 'async_setup_completed'):
-                        logger.warning("Memory manager async_setup may not have been called - this should be handled in server.py")
-                    logger.info("Memory manager assumed to be set up")
+                    # Create an event loop if necessary and call async_setup
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # We're already in an event loop, create a task
+                            asyncio.create_task(self.memory_manager.async_setup())
+                            logger.info("Created task to initialize async memory manager")
+                        else:
+                            # We have an event loop but it's not running
+                            loop.run_until_complete(self.memory_manager.async_setup())
+                            logger.info("Initialized async memory manager in existing event loop")
+                    except RuntimeError:
+                        # No event loop exists, create one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.memory_manager.async_setup())
+                        logger.info("Initialized async memory manager in new event loop")
+                    
+                    # Mark setup as complete
+                    self.memory_manager.async_setup_completed = True
                 except Exception as setup_error:
-                    logger.error(f"Error during memory manager setup check: {setup_error}")
+                    logger.error(f"Error during memory manager async_setup: {setup_error}")
                 
                 # Get the checkpointer for thread-level memory
                 self.checkpointer = self.memory_manager.get_checkpointer()
@@ -1968,24 +2003,6 @@ class AIInterviewer:
         """Context manager exit."""
         self.cleanup()
 
-# Import for resume_interview method
-import asyncio
-
-def safe_extract_content(message: AIMessage) -> str:
-    """
-    Safely extract the content from an AI message.
-    
-    Args:
-        message: AIMessage object
-        
-    Returns:
-        Content string or default error message
-    """
-    try:
-        return message.content or "I apologize, but I encountered an issue. Please try again."
-    except Exception:
-        return "I apologize, but I encountered an issue. Please try again."
-
     def _extract_interview_insights(self, messages: List[BaseMessage], current_insights: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Extract key interview insights from messages to retain critical information
@@ -2143,7 +2160,7 @@ def safe_extract_content(message: AIMessage) -> str:
         except Exception as e:
             logger.error(f"Error extracting interview insights: {e}")
         
-        return insights 
+        return insights
 
     async def extract_and_update_insights(self, session_id: str) -> Dict[str, Any]:
         """

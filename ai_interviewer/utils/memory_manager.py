@@ -63,39 +63,33 @@ class InterviewMemoryManager:
         self.checkpoint_collection = checkpoint_collection or db_config["sessions_collection"]
         self.store_collection = store_collection or "interview_memory_store"
         self.use_async = use_async
+        self.async_setup_completed = False
         
         try:
             if self.use_async:
                 # Initialize async MongoDB client
                 self.async_client = AsyncIOMotorClient(self.connection_uri)
                 
-                # Create async checkpointer
-                self.async_checkpointer = AsyncMongoDBSaver(
-                    client=self.async_client,
-                    db_name=self.db_name,
-                    collection_name=self.checkpoint_collection
-                )
+                # Store params for async_checkpointer (don't initialize it yet to avoid "no running event loop" error)
+                self.async_checkpointer = None
+                self.async_checkpointer_params = {
+                    "client": self.async_client,
+                    "db_name": self.db_name,
+                    "collection_name": self.checkpoint_collection
+                }
                 
                 # Initialize async store for cross-thread memory
-                db = self.async_client[self.db_name]
-                collection = db[self.store_collection]
-                
-                try:
-                    # Use InMemoryStore for async operations as there is no AsyncMongoDBStore
-                    self.async_store = InMemoryStore()
-                    logger.info(f"Initialized InMemoryStore for async operations")
-                except Exception as store_error:
-                    logger.error(f"Error initializing async store: {store_error}")
-                    from langgraph.store.memory import InMemoryStore
-                    self.async_store = InMemoryStore()
-                    logger.warning("Using InMemoryStore as fallback after store initialization failed")
+                # Use InMemoryStore for async operations as there is no AsyncMongoDBStore
+                self.async_store = InMemoryStore()
+                logger.info(f"Initialized InMemoryStore for async operations")
                 
                 # Initialize sync clients as None since we're in async mode
                 self.client = None
                 self.checkpointer = None
                 self.store = None
                 
-                logger.info(f"Memory manager initialized with async MongoDB: {self.db_name}")
+                logger.info(f"Memory manager initialized with async MongoDB client: {self.db_name}")
+                logger.info(f"Async checkpointer will be initialized during async_setup")
             else:
                 # Initialize MongoDB client - synchronous version
                 self.client = MongoClient(self.connection_uri)
@@ -146,14 +140,21 @@ class InterviewMemoryManager:
             if not self.use_async:
                 logger.warning("Cannot use async_setup when initialized with use_async=False")
                 return
-                
-            # Set up async checkpointer
-            if hasattr(self.async_checkpointer, 'setup') and callable(getattr(self.async_checkpointer, 'setup')):
+            
+            # Create the async checkpointer now that we're in an async context
+            if self.async_checkpointer is None and hasattr(self, 'async_checkpointer_params'):
+                logger.info("Initializing AsyncMongoDBSaver in async context")
+                self.async_checkpointer = AsyncMongoDBSaver(**self.async_checkpointer_params)
+            
+            # Set up async checkpointer if it has a setup method
+            if self.async_checkpointer and hasattr(self.async_checkpointer, 'setup') and callable(getattr(self.async_checkpointer, 'setup')):
                 await self.async_checkpointer.setup()
+                logger.info("Async checkpointer setup completed")
             
             # Check if async store has setup method 
             if hasattr(self.async_store, 'setup') and callable(getattr(self.async_store, 'setup')):
                 await self.async_store.setup()
+                logger.info("Async store setup completed")
             
             # Mark setup as completed
             self.async_setup_completed = True
@@ -191,6 +192,8 @@ class InterviewMemoryManager:
             MongoDBSaver or AsyncMongoDBSaver instance based on use_async setting
         """
         if self.use_async:
+            if not self.async_checkpointer:
+                logger.warning("Async checkpointer requested but not initialized. Make sure to call async_setup() first.")
             return self.async_checkpointer
         return self.checkpointer
     

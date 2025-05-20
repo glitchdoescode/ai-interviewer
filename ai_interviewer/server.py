@@ -89,22 +89,38 @@ app.add_middleware(
 try:
     # Initialize memory manager first
     db_config = get_db_config()
-    memory_manager = InterviewMemoryManager(
-        connection_uri=db_config["uri"],
-        db_name=db_config["database"],
-        checkpoint_collection=db_config["sessions_collection"],
-        store_collection="interview_memory_store",
-        use_async=True  # Explicitly use async mode
-    )
     
-    # Setup memory collections and indexes using async method
-    # We need to run this coroutine, so we'll create a small event loop
-    async def setup_async_memory():
+    # Create a proper async setup function
+    async def setup_memory_manager():
+        # Create the memory manager
+        memory_manager = InterviewMemoryManager(
+            connection_uri=db_config["uri"],
+            db_name=db_config["database"],
+            checkpoint_collection=db_config["sessions_collection"],
+            store_collection="interview_memory_store",
+            use_async=True  # Explicitly use async mode
+        )
+        
+        # Initialize the AsyncMongoDBSaver in an async context
         await memory_manager.async_setup()
+        return memory_manager
     
-    # Run the setup in an asyncio event loop
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(setup_async_memory())
+    # Use asyncio.run() to properly create and run the event loop
+    try:
+        # Check if we already have a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're in a running event loop, create a new task
+            memory_manager_task = loop.create_task(setup_memory_manager())
+            memory_manager = loop.run_until_complete(memory_manager_task)
+        except RuntimeError:
+            # No running event loop, use asyncio.run() instead
+            memory_manager = asyncio.run(setup_memory_manager())
+        
+        logger.info("Memory manager initialized and setup successfully")
+    except Exception as e:
+        logger.error(f"Error setting up memory manager: {e}")
+        raise
     
     # Initialize AIInterviewer with MongoDB persistence
     interviewer = AIInterviewer(use_mongodb=True)
@@ -304,7 +320,7 @@ async def shutdown_event():
         except Exception as e:
             logger.error(f"Error cleaning up AI Interviewer: {e}")
     
-    # Close async memory manager directly if needed
+    # Properly close the memory manager
     if 'memory_manager' in globals():
         try:
             if hasattr(memory_manager, 'use_async') and memory_manager.use_async:
@@ -312,7 +328,7 @@ async def shutdown_event():
                 logger.info("Async memory manager closed during shutdown")
             else:
                 memory_manager.close()
-                logger.info("Memory manager closed during shutdown")
+                logger.info("Sync memory manager closed during shutdown")
         except Exception as e:
             logger.error(f"Error closing memory manager: {e}")
     
