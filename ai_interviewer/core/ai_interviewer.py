@@ -7,6 +7,7 @@ class that handles the entire interview process.
 import logging
 import os
 import uuid
+import asyncio
 from typing import Dict, List, Optional, Any, Literal, Union, Tuple
 from datetime import datetime
 from enum import Enum
@@ -292,17 +293,32 @@ class AIInterviewer:
                     connection_uri=mongodb_uri,
                     db_name=db_config["database"],
                     checkpoint_collection=db_config["sessions_collection"],
-                    store_collection="interview_memory_store"
+                    store_collection="interview_memory_store",
+                    use_async=True  # Default to async checkpointer
                 )
                 
-                # Set up the memory manager
-                self.memory_manager.setup()
+                try:
+                    # Set up the memory manager
+                    # Note: async_setup should have been called before in the server.py
+                    # But we'll check if the memory manager is properly initialized
+                    if hasattr(self.memory_manager, 'async_setup') and not hasattr(self.memory_manager, 'async_setup_completed'):
+                        logger.warning("Memory manager async_setup may not have been called - this should be handled in server.py")
+                    logger.info("Memory manager assumed to be set up")
+                except Exception as setup_error:
+                    logger.error(f"Error during memory manager setup check: {setup_error}")
                 
                 # Get the checkpointer for thread-level memory
                 self.checkpointer = self.memory_manager.get_checkpointer()
                 
+                # Log checkpointer type for better debugging
+                if hasattr(self.checkpointer, 'aget_tuple'):
+                    logger.info(f"Using async MongoDB checkpointer: {self.checkpointer.__class__.__name__}")
+                else:
+                    logger.warning(f"Using synchronous MongoDB checkpointer: {self.checkpointer.__class__.__name__}. This may cause issues with async operations.")
+                
                 # Get the store for cross-thread memory
                 self.store = self.memory_manager.get_store()
+                logger.info(f"Using MongoDB store: {self.store.__class__.__name__}")
                 
                 # Initialize the session manager for backward compatibility
                 self.session_manager = SessionManager(
@@ -359,6 +375,9 @@ class AIInterviewer:
         
         # Use our custom InterviewState instead of MessagesState
         workflow = StateGraph(InterviewState)
+        
+        # Initialize the tool node first
+        self.tool_node = ToolNode(self.tools)
         
         # Define custom wrapper for the tool node to ensure proper state handling
         def tools_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
@@ -1402,14 +1421,38 @@ class AIInterviewer:
         # Run the graph asynchronously
         final_chunk = None
         try:
-            async for chunk in self.workflow.astream(
-                {"messages": [human_message]},
-                config=config,
-                stream_mode="values",
-            ):
-                final_chunk = chunk
+            # Check if we're using an async checkpointer
+            is_async_checkpointer = hasattr(self.checkpointer, 'aget_tuple')
+            
+            # Use the appropriate streaming method based on the checkpointer type
+            if is_async_checkpointer:
+                # For async checkpointer
+                async for chunk in self.workflow.astream(
+                    {"messages": [human_message]},
+                    config=config,
+                    stream_mode="values",
+                ):
+                    final_chunk = chunk
+            else:
+                # For sync checkpointer (fallback)
+                logger.warning("Using synchronous streaming with potentially async workflow - this may cause issues")
+                for chunk in self.workflow.stream(
+                    {"messages": [human_message]},
+                    config=config,
+                    stream_mode="values",
+                ):
+                    final_chunk = chunk
+        except NotImplementedError as e:
+            # Handle the specific error when using wrong checkpointer type
+            logger.error(f"NotImplementedError - likely mismatched checkpointer type: {str(e)}")
+            if "aget_tuple" in str(e):
+                logger.error("Async operation called with synchronous checkpointer. Use AsyncMongoDBSaver instead of MongoDBSaver")
+            return f"I apologize, but there was an error processing your request. The system is using an incompatible checkpoint configuration. Please contact support.", session_id
         except Exception as e:
-            logger.error(f"Error running interview graph: {e}")
+            import traceback
+            error_tb = traceback.format_exc()
+            logger.error(f"Error running interview graph: {str(e)}")
+            logger.error(f"Traceback: {error_tb}")
             return f"I apologize, but there was an error processing your request. Please try again. Error: {str(e)}", session_id
         
         # Extract the AI response from the final chunk
@@ -1666,8 +1709,30 @@ class AIInterviewer:
         """Clean up resources."""
         if hasattr(self, 'memory_manager') and self.memory_manager:
             try:
-                self.memory_manager.close()
-                logger.info("Memory manager resources cleaned up")
+                # Check if we're using an async memory manager
+                if hasattr(self.memory_manager, 'use_async') and self.memory_manager.use_async:
+                    # Create a temporary event loop to run the async close
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If we're already in an event loop, create a task
+                            asyncio.create_task(self.memory_manager.aclose())
+                            logger.info("Created task to close async memory manager")
+                        else:
+                            # If not in an event loop, run the coroutine
+                            loop.run_until_complete(self.memory_manager.aclose())
+                            logger.info("Closed async memory manager")
+                    except RuntimeError:
+                        # If no event loop is available, create a new one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.memory_manager.aclose())
+                        loop.close()
+                        logger.info("Closed async memory manager with new event loop")
+                else:
+                    # Use synchronous close
+                    self.memory_manager.close()
+                    logger.info("Memory manager resources cleaned up")
             except Exception as e:
                 logger.error(f"Error closing memory manager: {e}")
         elif hasattr(self, 'checkpointer'):
@@ -1676,15 +1741,38 @@ class AIInterviewer:
                 mongo_client = None
                 if hasattr(self.checkpointer, 'client'):
                     mongo_client = self.checkpointer.client
+                elif hasattr(self.checkpointer, 'async_client'):
+                    mongo_client = self.checkpointer.async_client
                 
+                # Check if it's an async checkpointer
+                if hasattr(self.checkpointer, 'aclose'):
+                    # Create a temporary event loop to run the async close
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # If we're already in an event loop, create a task
+                            asyncio.create_task(self.checkpointer.aclose())
+                            logger.info("Created task to close async checkpointer")
+                        else:
+                            # If not in an event loop, run the coroutine
+                            loop.run_until_complete(self.checkpointer.aclose())
+                            logger.info("Closed async checkpointer")
+                    except RuntimeError:
+                        # If no event loop is available, create a new one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.checkpointer.aclose())
+                        loop.close()
+                        logger.info("Closed async checkpointer with new event loop")
                 # Close the checkpointer if it has a close method
-                if hasattr(self.checkpointer, 'close'):
+                elif hasattr(self.checkpointer, 'close'):
                     self.checkpointer.close()
                 
                 # Close the MongoDB client if we have it
-                if mongo_client and hasattr(mongo_client, 'close'):
-                    mongo_client.close()
-                    logger.info("MongoDB client closed")
+                if mongo_client:
+                    if hasattr(mongo_client, 'close'):
+                        mongo_client.close()
+                        logger.info("MongoDB client closed")
                     
                 logger.info("Checkpointer resources cleaned up")
             except Exception as e:
