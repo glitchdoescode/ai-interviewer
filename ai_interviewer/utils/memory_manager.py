@@ -10,10 +10,13 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime
 
 from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.collection import Collection
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 from langgraph.store.mongodb.base import MongoDBStore
+from langgraph.store.mongodb.aio import AsyncMongoDBStore
 
 from ai_interviewer.utils.config import get_db_config
 
@@ -30,8 +33,8 @@ class InterviewMemoryManager:
     Manages both short-term (thread-level) and long-term (cross-thread) memory for the AI Interviewer.
     
     This class provides:
-    1. Thread-level memory persistence via MongoDBSaver checkpointer
-    2. Cross-thread memory persistence via MongoDBStore
+    1. Thread-level memory persistence via MongoDBSaver checkpointer (sync) or AsyncMongoDBSaver (async)
+    2. Cross-thread memory persistence via MongoDBStore (sync) or AsyncMongoDBStore (async)
     3. Helper methods for common memory operations
     """
     
@@ -40,7 +43,8 @@ class InterviewMemoryManager:
         connection_uri: Optional[str] = None,
         db_name: Optional[str] = None,
         checkpoint_collection: Optional[str] = None,
-        store_collection: Optional[str] = None
+        store_collection: Optional[str] = None,
+        use_async: bool = True
     ):
         """
         Initialize the InterviewMemoryManager.
@@ -50,6 +54,7 @@ class InterviewMemoryManager:
             db_name: Database name (from env if None)
             checkpoint_collection: Collection name for checkpoints (from env if None)
             store_collection: Collection name for cross-thread store (from env if None)
+            use_async: Whether to use async clients and savers (default: True)
         """
         # Get database config
         db_config = get_db_config()
@@ -57,38 +62,114 @@ class InterviewMemoryManager:
         self.db_name = db_name or db_config["database"]
         self.checkpoint_collection = checkpoint_collection or db_config["sessions_collection"]
         self.store_collection = store_collection or "interview_memory_store"
+        self.use_async = use_async
         
         try:
-            # Initialize MongoDB client
-            self.client = MongoClient(self.connection_uri)
-            
-            # Create store and checkpointer
-            self.checkpointer = MongoDBSaver(
-                client=self.client,
-                db_name=self.db_name,
-                collection_name=self.checkpoint_collection
-            )
-            
-            # Initialize store for cross-thread memory
-            # Get the MongoDB collection object first
-            db = self.client[self.db_name]
-            collection = db[self.store_collection]
-            
-            # Pass the collection object directly to MongoDBStore
-            self.store = MongoDBStore(collection)
-            
-            # Verify connections
-            db[self.checkpoint_collection].find_one({})
-            collection.find_one({})
-            
-            logger.info(f"Memory manager initialized with MongoDB: {self.db_name}")
+            if self.use_async:
+                # Initialize async MongoDB client
+                self.async_client = AsyncIOMotorClient(self.connection_uri)
+                
+                # Create async checkpointer
+                self.async_checkpointer = AsyncMongoDBSaver(
+                    client=self.async_client,
+                    db_name=self.db_name,
+                    collection_name=self.checkpoint_collection
+                )
+                
+                # Initialize async store for cross-thread memory
+                db = self.async_client[self.db_name]
+                collection = db[self.store_collection]
+                
+                try:
+                    # Pass the collection object directly to AsyncMongoDBStore
+                    self.async_store = AsyncMongoDBStore(collection)
+                    logger.info(f"Initialized async MongoDB store with collection: {self.store_collection}")
+                except Exception as store_error:
+                    logger.error(f"Error initializing async MongoDB store: {store_error}")
+                    from langgraph.store.memory import InMemoryStore
+                    self.async_store = InMemoryStore()
+                    logger.warning("Using InMemoryStore as fallback after async MongoDB store initialization failed")
+                
+                # Initialize sync clients as None since we're in async mode
+                self.client = None
+                self.checkpointer = None
+                self.store = None
+                
+                logger.info(f"Memory manager initialized with async MongoDB: {self.db_name}")
+            else:
+                # Initialize MongoDB client - synchronous version
+                self.client = MongoClient(self.connection_uri)
+                
+                # Create store and checkpointer - synchronous version
+                self.checkpointer = MongoDBSaver(
+                    client=self.client,
+                    db_name=self.db_name,
+                    collection_name=self.checkpoint_collection
+                )
+                
+                # Initialize store for cross-thread memory - synchronous version
+                db = self.client[self.db_name]
+                collection = db[self.store_collection]
+                
+                try:
+                    # Pass the collection object directly to MongoDBStore
+                    self.store = MongoDBStore(collection)
+                    logger.info(f"Initialized MongoDB store with collection: {self.store_collection}")
+                except Exception as store_error:
+                    logger.error(f"Error initializing MongoDB store: {store_error}")
+                    # Create a basic fallback store
+                    from langgraph.store.base import SimpleStore
+                    self.store = SimpleStore()
+                    logger.warning("Using SimpleStore as fallback after MongoDB store initialization failed")
+                
+                # Initialize async clients as None since we're in sync mode
+                self.async_client = None
+                self.async_checkpointer = None
+                self.async_store = None
+                
+                # Verify connections
+                try:
+                    db[self.checkpoint_collection].find_one({})
+                    collection.find_one({})
+                    logger.info("MongoDB connections verified")
+                except Exception as e:
+                    logger.warning(f"Could not verify MongoDB connections: {e}")
+                
+                logger.info(f"Memory manager initialized with synchronous MongoDB: {self.db_name}")
         except Exception as e:
             logger.error(f"Error initializing memory manager: {e}")
             raise
     
-    def setup(self):
-        """Set up database collections and indexes if needed."""
+    async def async_setup(self):
+        """Set up database collections and indexes for async operations."""
         try:
+            if not self.use_async:
+                logger.warning("Cannot use async_setup when initialized with use_async=False")
+                return
+                
+            # Set up async checkpointer
+            if hasattr(self.async_checkpointer, 'setup') and callable(getattr(self.async_checkpointer, 'setup')):
+                await self.async_checkpointer.setup()
+            
+            # Check if async store has setup method 
+            if hasattr(self.async_store, 'setup') and callable(getattr(self.async_store, 'setup')):
+                await self.async_store.setup()
+            
+            # Mark setup as completed
+            self.async_setup_completed = True
+            
+            logger.info("Async memory manager setup complete")
+        except Exception as e:
+            logger.error(f"Error setting up async memory manager: {e}")
+            raise
+    
+    def setup(self):
+        """Set up database collections and indexes for sync operations."""
+        try:
+            if self.use_async:
+                logger.warning("Cannot use sync setup when initialized with use_async=True, use async_setup instead")
+                return
+                
             # Set up checkpointer - MongoDBSaver may not have setup method
             if hasattr(self.checkpointer, 'setup') and callable(getattr(self.checkpointer, 'setup')):
                 self.checkpointer.setup()
@@ -102,22 +183,26 @@ class InterviewMemoryManager:
             logger.error(f"Error setting up memory manager: {e}")
             raise
     
-    def get_checkpointer(self) -> MongoDBSaver:
+    def get_checkpointer(self):
         """
-        Get the MongoDBSaver checkpointer for thread-level memory persistence.
+        Get the appropriate checkpointer for thread-level memory persistence.
         
         Returns:
-            MongoDBSaver instance
+            MongoDBSaver or AsyncMongoDBSaver instance based on use_async setting
         """
+        if self.use_async:
+            return self.async_checkpointer
         return self.checkpointer
     
-    def get_store(self) -> MongoDBStore:
+    def get_store(self):
         """
-        Get the MongoDBStore for cross-thread memory persistence.
+        Get the appropriate store for cross-thread memory persistence.
         
         Returns:
-            MongoDBStore instance
+            MongoDBStore or AsyncMongoDBStore instance based on use_async setting
         """
+        if self.use_async:
+            return self.async_store
         return self.store
     
     # Helper methods for common interview memory operations
@@ -323,20 +408,36 @@ class InterviewMemoryManager:
             return []
     
     def close(self):
-        """Close connections and clean up resources."""
+        """Close database connections and release resources."""
         try:
-            if hasattr(self.checkpointer, 'close'):
-                self.checkpointer.close()
-            
-            if hasattr(self.store, 'close'):
-                self.store.close()
-            
-            if hasattr(self, 'client') and self.client:
-                self.client.close()
-            
-            logger.info("Memory manager connections closed")
+            if self.use_async:
+                # Close async client if it exists
+                if self.async_client:
+                    self.async_client.close()
+                    logger.info("Closed async MongoDB client")
+            else:
+                # Close sync client if it exists
+                if self.client:
+                    self.client.close()
+                    logger.info("Closed MongoDB client")
         except Exception as e:
-            logger.error(f"Error closing memory manager connections: {e}")
+            logger.error(f"Error closing MongoDB connections: {e}")
+
+    async def aclose(self):
+        """Asynchronously close database connections and release resources."""
+        try:
+            if self.use_async:
+                # Close async client if it exists
+                if self.async_client:
+                    await self.async_client.close()
+                    logger.info("Closed async MongoDB client")
+            else:
+                # Close sync client if it exists
+                if self.client:
+                    self.client.close()
+                    logger.info("Closed MongoDB client")
+        except Exception as e:
+            logger.error(f"Error closing MongoDB connections: {e}")
     
     def __enter__(self):
         return self

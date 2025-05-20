@@ -93,11 +93,18 @@ try:
         connection_uri=db_config["uri"],
         db_name=db_config["database"],
         checkpoint_collection=db_config["sessions_collection"],
-        store_collection="interview_memory_store"
+        store_collection="interview_memory_store",
+        use_async=True  # Explicitly use async mode
     )
     
-    # Setup memory collections and indexes
-    memory_manager.setup()
+    # Setup memory collections and indexes using async method
+    # We need to run this coroutine, so we'll create a small event loop
+    async def setup_async_memory():
+        await memory_manager.async_setup()
+    
+    # Run the setup in an asyncio event loop
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_async_memory())
     
     # Initialize AIInterviewer with MongoDB persistence
     interviewer = AIInterviewer(use_mongodb=True)
@@ -111,7 +118,7 @@ try:
         )
         logger.info("Added summarization model to interviewer instance")
     
-    logger.info("AI Interviewer initialized successfully with memory management")
+    logger.info("AI Interviewer initialized successfully with async memory management")
 except Exception as e:
     logger.critical(f"Failed to initialize AI Interviewer: {e}")
     # In a production environment, you might want to exit the application
@@ -286,8 +293,8 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Background task to clean up resources when the server is shutting down
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up resources when shutting down."""
-    logger.info("Shutting down AI Interviewer server")
+    """Clean up resources when the server shuts down."""
+    logger.info("Server shutting down, cleaning up resources")
     
     # Clean up AI Interviewer resources
     if 'interviewer' in globals():
@@ -297,15 +304,28 @@ async def shutdown_event():
         except Exception as e:
             logger.error(f"Error cleaning up AI Interviewer: {e}")
     
-    # Clean up memory manager if it exists separately
+    # Close async memory manager directly if needed
     if 'memory_manager' in globals():
         try:
-            memory_manager.close()
-            logger.info("Memory manager resources cleaned up")
+            if hasattr(memory_manager, 'use_async') and memory_manager.use_async:
+                await memory_manager.aclose()
+                logger.info("Async memory manager closed during shutdown")
+            else:
+                memory_manager.close()
+                logger.info("Memory manager closed during shutdown")
         except Exception as e:
-            logger.error(f"Error cleaning up memory manager: {e}")
+            logger.error(f"Error closing memory manager: {e}")
     
-    logger.info("Shutdown complete")
+    # Clean up voice handler resources
+    if 'voice_handler' in globals() and voice_handler:
+        try:
+            if hasattr(voice_handler, 'close'):
+                voice_handler.close()
+                logger.info("Voice handler resources cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning up voice handler: {e}")
+    
+    logger.info("Server shutdown complete")
 
 # Dependency for monitoring request timing
 async def log_request_time(request: Request):
