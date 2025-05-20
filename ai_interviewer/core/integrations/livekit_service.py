@@ -1,6 +1,10 @@
 import os
+import logging
 from livekit import api
-from livekit.api import RoomServiceClient, AccessToken, VideoGrant
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 LIVEKIT_HOST = os.environ.get("LIVEKIT_HOST", "http://localhost:7880")
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY")
@@ -10,17 +14,30 @@ class LiveKitService:
     def __init__(self):
         if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
             raise ValueError("LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in environment variables.")
-        self.room_service = RoomServiceClient(LIVEKIT_HOST, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        self.livekit_api = api.LiveKitAPI(LIVEKIT_HOST)
+        self.active_rooms = {}  # Track active rooms and their participants
 
     async def create_room_if_not_exists(self, room_name: str):
         try:
-            await self.room_service.create_room(name=room_name)
-            print(f"Room '{room_name}' created.")
-        except api.RoomAlreadyExistsError:
-            print(f"Room '{room_name}' already exists.")
+            await self.livekit_api.room.create_room(
+                api.CreateRoomRequest(name=room_name)
+            )
+            logger.info(f"Room '{room_name}' created.")
+            self.active_rooms[room_name] = {
+                'participants': {},
+                'tracks': {}
+            }
         except Exception as e:
-            print(f"Error creating room '{room_name}': {e}")
-            raise
+            if "already exists" in str(e):
+                logger.info(f"Room '{room_name}' already exists.")
+                if room_name not in self.active_rooms:
+                    self.active_rooms[room_name] = {
+                        'participants': {},
+                        'tracks': {}
+                    }
+            else:
+                logger.error(f"Error creating room '{room_name}': {e}")
+                raise
 
     async def generate_join_token(
         self, 
@@ -37,25 +54,84 @@ class LiveKitService:
 
         await self.create_room_if_not_exists(room_name)
 
-        grant = VideoGrant(
+        # Create access token with the specified permissions
+        token = api.AccessToken() \
+            .with_identity(participant_identity) \
+            .with_name(participant_name or participant_identity)
+
+        if participant_metadata:
+            token = token.with_metadata(participant_metadata)
+
+        # Add video grants
+        token = token.with_grants(api.VideoGrants(
             room_join=True,
             room=room_name,
             can_publish=can_publish,
             can_subscribe=can_subscribe,
-            can_publish_data=True, # Important for potential future data channel use
-            hidden=hidden,
-        )
+            hidden=hidden
+        ))
+
+        return token.to_jwt()
+
+    def handle_participant_joined(self, room_name: str, participant_id: str, participant_name: str = None):
+        """Handle a new participant joining a room."""
+        if room_name not in self.active_rooms:
+            self.active_rooms[room_name] = {'participants': {}, 'tracks': {}}
         
-        access_token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        access_token.identity = participant_identity
-        if participant_name:
-            access_token.name = participant_name
-        if participant_metadata:
-            access_token.metadata = participant_metadata
-        
-        access_token.add_grant(grant)
-        
-        return access_token.to_jwt()
+        self.active_rooms[room_name]['participants'][participant_id] = {
+            'name': participant_name,
+            'tracks': []
+        }
+        logger.info(f"Participant {participant_name or participant_id} joined room {room_name}")
+
+    def handle_participant_left(self, room_name: str, participant_id: str):
+        """Handle a participant leaving a room."""
+        if room_name in self.active_rooms and participant_id in self.active_rooms[room_name]['participants']:
+            participant = self.active_rooms[room_name]['participants'].pop(participant_id)
+            logger.info(f"Participant {participant.get('name', participant_id)} left room {room_name}")
+
+    def handle_track_published(self, room_name: str, participant_id: str, track_id: str, track_type: str):
+        """Handle a new track being published."""
+        if room_name not in self.active_rooms:
+            return
+
+        room = self.active_rooms[room_name]
+        if participant_id in room['participants']:
+            room['participants'][participant_id]['tracks'].append(track_id)
+            room['tracks'][track_id] = {
+                'type': track_type,
+                'participant_id': participant_id
+            }
+            
+            participant_name = room['participants'][participant_id].get('name', participant_id)
+            logger.info(f"Received {track_type} track from participant {participant_name} in room {room_name}")
+            
+            # For this sprint, we're just logging audio tracks
+            if track_type == 'audio':
+                logger.info(f"Audio track {track_id} received from participant {participant_name} in room {room_name}")
+
+    def handle_track_unpublished(self, room_name: str, track_id: str):
+        """Handle a track being unpublished."""
+        if room_name in self.active_rooms and track_id in self.active_rooms[room_name]['tracks']:
+            track_info = self.active_rooms[room_name]['tracks'].pop(track_id)
+            participant_id = track_info['participant_id']
+            if participant_id in self.active_rooms[room_name]['participants']:
+                tracks = self.active_rooms[room_name]['participants'][participant_id]['tracks']
+                if track_id in tracks:
+                    tracks.remove(track_id)
+            logger.info(f"Track {track_id} unpublished from room {room_name}")
+
+    def get_room_participants(self, room_name: str):
+        """Get all participants in a room."""
+        if room_name in self.active_rooms:
+            return self.active_rooms[room_name]['participants']
+        return {}
+
+    def get_room_tracks(self, room_name: str):
+        """Get all tracks in a room."""
+        if room_name in self.active_rooms:
+            return self.active_rooms[room_name]['tracks']
+        return {}
 
 # Example usage (for testing purposes, remove later)
 async def main():

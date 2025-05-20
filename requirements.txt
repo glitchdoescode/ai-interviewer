@@ -42,8 +42,8 @@ langchain-chroma>=0.1.0
 google-generativeai>=0.3.0
 
 # Real-time audio/video
-livekit-server-sdk>=0.9.0
-livekit-api
+livekit>=1.0.8  # Real-time client SDK
+livekit-api>=1.0.0  # Server API and token generation
 
 # Speech to Text / Text to Speech
 # deepgram-sdk
