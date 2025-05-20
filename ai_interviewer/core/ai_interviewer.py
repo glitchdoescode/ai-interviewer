@@ -579,7 +579,7 @@ class AIInterviewer:
         """
         # Create a new session if one doesn't exist
         if not session_id:
-            session_id = self._get_or_create_session(user_id)
+            session_id = await self._get_or_create_session(user_id)
             yield {
                 "type": "session_created",
                 "session_id": session_id,
@@ -815,7 +815,7 @@ class AIInterviewer:
         """
         # Create a new session if one doesn't exist
         if not session_id:
-            session_id = self._get_or_create_session(user_id)
+            session_id = await self._get_or_create_session(user_id)
             logger.info(f"Created new session {session_id} for user {user_id}")
         
         # Initialize state with default values
@@ -1043,13 +1043,18 @@ class AIInterviewer:
                     all_messages = output.get("messages", [])
                     # Extract other state values
                     candidate_name = output.get("candidate_name", candidate_name)
+                    # Ensure interview_stage is not a coroutine
                     interview_stage = output.get("interview_stage", interview_stage)
+                    if hasattr(interview_stage, "__await__"):
+                        interview_stage = await interview_stage
                 else:
                     # Extract from InterviewState
                     all_messages = output.messages if hasattr(output, "messages") else []
                     # Extract other state values if available
                     candidate_name = output.candidate_name if hasattr(output, "candidate_name") else candidate_name
                     interview_stage = output.interview_stage if hasattr(output, "interview_stage") else interview_stage
+                    if hasattr(interview_stage, "__await__"):
+                        interview_stage = await interview_stage
                 
                 # Get AI messages
                 ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
@@ -1076,7 +1081,7 @@ class AIInterviewer:
                             metadata[CANDIDATE_NAME_KEY] = candidate_name
                             logger.info(f"Extracted candidate name from conversation: {candidate_name}")
                     
-                    # Update stage in metadata
+                    # Update stage in metadata (ensure not coroutine)
                     metadata[STAGE_KEY] = interview_stage
             
             # Save the updated session
@@ -1218,7 +1223,7 @@ class AIInterviewer:
         
         return is_off_topic or is_non_responsive
     
-    def _get_or_create_session(self, user_id: str) -> str:
+    async def _get_or_create_session(self, user_id: str) -> str:
         """
         Get an existing session or create a new one.
         
@@ -1231,15 +1236,15 @@ class AIInterviewer:
         try:
             if self.session_manager:
                 # Try to get most recent active session for user
-                session = self.session_manager.get_most_recent_session(user_id)
+                session = await self.session_manager.get_most_recent_session(user_id)
                 if session:
                     return session["session_id"]
                 
                 # Create new session with initial interview stage
-                session_id = self.session_manager.create_session(user_id)
+                session_id = await self.session_manager.create_session(user_id)
                 
                 # Set initial interview stage
-                self.session_manager.update_session_metadata(
+                await self.session_manager.update_session_metadata(
                     session_id, 
                     {STAGE_KEY: InterviewStage.INTRODUCTION.value}
                 )
@@ -1284,30 +1289,26 @@ class AIInterviewer:
             logger.info(f"Created fallback session {session_id} for user {user_id}")
             return session_id
     
-    def list_active_sessions(self) -> Dict[str, Dict[str, Any]]:
+    async def list_active_sessions(self) -> dict:
         """
         List all active interview sessions.
-        
         Returns:
             Dictionary of active sessions
         """
         try:
             if self.session_manager:
-                # Get sessions from MongoDB
-                sessions = self.session_manager.list_active_sessions()
+                # Get sessions from MongoDB (await the coroutine)
+                sessions = await self.session_manager.list_active_sessions()
                 return {s["session_id"]: s for s in sessions}
             else:
                 # Filter out expired sessions from in-memory storage
                 now = datetime.now()
                 active_sessions = {}
-                
                 for session_id, session_data in self.active_sessions.items():
                     last_active = datetime.fromisoformat(session_data.get("last_active", ""))
                     time_diff = (now - last_active).total_seconds() / 60
-                    
                     if time_diff < 60:  # 1 hour timeout
                         active_sessions[session_id] = session_data
-                
                 return active_sessions
         except Exception as e:
             logger.error(f"Error listing active sessions: {e}")

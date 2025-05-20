@@ -48,9 +48,6 @@ class SessionManager:
         self.db = self.client[database_name]
         self.collection = self.db[collection_name]
         
-        # Create indexes
-        asyncio.create_task(self._create_indexes())
-        
         logger.info(f"Session manager initialized with {connection_uri}")
     
     async def _create_indexes(self):
