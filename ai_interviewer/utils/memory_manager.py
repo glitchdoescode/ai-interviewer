@@ -224,7 +224,11 @@ class InterviewMemoryManager:
         """
         try:
             namespace = ("user", user_id)
-            self.store.put(namespace, key, value)
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return False
+            store.put(namespace, key, value)
             return True
         except Exception as e:
             logger.error(f"Error saving user memory: {e}")
@@ -243,11 +247,16 @@ class InterviewMemoryManager:
         """
         try:
             namespace = ("candidate_profiles",)
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return False
+            
             # Add timestamp to the profile data
             profile_data["updated_at"] = datetime.now().isoformat()
             
             # Check if profile already exists
-            existing_profiles = list(self.store.search(namespace, filter={"user_id": user_id}))
+            existing_profiles = list(store.search(namespace, filter={"user_id": user_id}))
             
             if existing_profiles:
                 # Update existing profile
@@ -255,14 +264,14 @@ class InterviewMemoryManager:
                 current_data = existing_profiles[0].value
                 # Merge with new data, preserving history where appropriate
                 merged_data = self._merge_profile_data(current_data, profile_data)
-                self.store.put(namespace, profile_id, merged_data)
+                store.put(namespace, profile_id, merged_data)
                 logger.info(f"Updated candidate profile for user {user_id}")
             else:
                 # Create new profile
                 profile_id = str(uuid.uuid4())
                 profile_data["user_id"] = user_id
                 profile_data["created_at"] = datetime.now().isoformat()
-                self.store.put(namespace, profile_id, profile_data)
+                store.put(namespace, profile_id, profile_data)
                 logger.info(f"Created new candidate profile for user {user_id}")
             
             return True
@@ -282,7 +291,12 @@ class InterviewMemoryManager:
         """
         try:
             namespace = ("candidate_profiles",)
-            profiles = list(self.store.search(namespace, filter={"user_id": user_id}))
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return None
+            
+            profiles = list(store.search(namespace, filter={"user_id": user_id}))
             
             if profiles:
                 return profiles[0].value
@@ -306,6 +320,11 @@ class InterviewMemoryManager:
         """
         try:
             namespace = ("interview_memories", memory_type)
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return False
+            
             memory_id = f"{session_id}_{datetime.now().isoformat()}"
             
             # Add metadata
@@ -313,7 +332,7 @@ class InterviewMemoryManager:
             memory_data["created_at"] = datetime.now().isoformat()
             memory_data["memory_type"] = memory_type
             
-            self.store.put(namespace, memory_id, memory_data)
+            store.put(namespace, memory_id, memory_data)
             logger.info(f"Saved {memory_type} memory for session {session_id}")
             return True
         except Exception as e:
@@ -332,9 +351,14 @@ class InterviewMemoryManager:
             List of memory items
         """
         try:
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return []
+            
             if memory_type:
                 namespace = ("interview_memories", memory_type)
-                memories = list(self.store.search(namespace, filter={"session_id": session_id}))
+                memories = list(store.search(namespace, filter={"session_id": session_id}))
             else:
                 # Search across all memory types
                 all_memories = []
@@ -342,7 +366,7 @@ class InterviewMemoryManager:
                 
                 for mem_type in memory_types:
                     namespace = ("interview_memories", mem_type)
-                    memories = list(self.store.search(namespace, filter={"session_id": session_id}))
+                    memories = list(store.search(namespace, filter={"session_id": session_id}))
                     all_memories.extend([m.value for m in memories])
                 
                 return all_memories
@@ -366,14 +390,19 @@ class InterviewMemoryManager:
             List of matching memory items
         """
         try:
+            store = self.get_store()
+            if store is None:
+                logger.error("Store not initialized")
+                return []
+            
             all_results = []
             
             # Search in candidate profiles
             namespace = ("candidate_profiles",)
             if user_id:
-                profiles = list(self.store.search(namespace, filter={"user_id": user_id}))
+                profiles = list(store.search(namespace, filter={"user_id": user_id}))
             else:
-                profiles = list(self.store.search(namespace))
+                profiles = list(store.search(namespace))
             
             # Add matching profiles
             for profile in profiles:
@@ -390,9 +419,9 @@ class InterviewMemoryManager:
             for mem_type in memory_types:
                 namespace = ("interview_memories", mem_type)
                 if user_id:
-                    memories = list(self.store.search(namespace, filter={"user_id": user_id}))
+                    memories = list(store.search(namespace, filter={"user_id": user_id}))
                 else:
-                    memories = list(self.store.search(namespace))
+                    memories = list(store.search(namespace))
                 
                 # Add matching memories
                 for memory in memories:
