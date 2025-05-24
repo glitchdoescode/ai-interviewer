@@ -1,129 +1,207 @@
-"""
-Configuration module for AI Interviewer.
-
-This module provides configuration settings and utilities for the AI Interviewer.
-"""
+"""Configuration loader for AI Interviewer."""
 import os
-import logging
-from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+import yaml
+import logging
+from typing import Optional
 
-# Load environment variables from .env file if it exists
-load_dotenv()
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# MongoDB configuration
-MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
-MONGODB_DATABASE = os.environ.get("MONGODB_DATABASE", "ai_interviewer")
-MONGODB_SESSIONS_COLLECTION = os.environ.get("MONGODB_SESSIONS_COLLECTION", "interview_sessions")
-MONGODB_METADATA_COLLECTION = os.environ.get("MONGODB_METADATA_COLLECTION", "interview_metadata")
+# Load environment variables from .env file
+load_dotenv()
 
-# LLM configuration
-LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-1.5-pro-latest")
-LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
-SYSTEM_NAME = os.environ.get("SYSTEM_NAME", "Dhruv")
-
-# Session configuration
-SESSION_TIMEOUT_MINUTES = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "60"))
-MAX_SESSION_HISTORY = int(os.environ.get("MAX_SESSION_HISTORY", "50"))
-
-# Speech configuration
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
-SPEECH_RECORDING_DURATION = float(os.environ.get("SPEECH_RECORDING_DURATION", "30.0"))  # Max recording duration
-SPEECH_SAMPLE_RATE = int(os.environ.get("SPEECH_SAMPLE_RATE", "16000"))
-SPEECH_TTS_VOICE = os.environ.get("SPEECH_TTS_VOICE", "nova")
-SPEECH_SILENCE_THRESHOLD = float(os.environ.get("SPEECH_SILENCE_THRESHOLD", "0.03"))  # Volume threshold to detect silence
-SPEECH_SILENCE_DURATION = float(os.environ.get("SPEECH_SILENCE_DURATION", "2.0"))  # Seconds of silence to stop recording
-
-def get_db_config() -> Dict[str, str]:
-    """
-    Get MongoDB configuration.
-    
-    Returns:
-        Dictionary with MongoDB configuration
-    """
-    return {
-        "uri": MONGODB_URI,
-        "database": MONGODB_DATABASE,
-        "sessions_collection": MONGODB_SESSIONS_COLLECTION,
-        "metadata_collection": MONGODB_METADATA_COLLECTION,
+# Default configuration values
+DEFAULT_CONFIG = {
+    "llm": {
+        "provider": "google_genai",  # or "openai", "anthropic"
+        "model": "gemini-pro",
+        "temperature": 0.7,
+        "system_name": "AI Interviewer"
+    },
+    "gemini_live": {
+        "api_key": None, # Loaded from environment
+        "project_id": None, # Optional, for Vertex AI
+        "location": None, # Optional, for Vertex AI
+        "stt_model_id": "gemini-2.0-flash-exp", # Model for API key usage
+        "tts_model_id": "gemini-2.0-flash-exp", # Model for API key usage
+        "tts_voice": "Puck"
+    },
+    "database": {
+        "provider": "mongodb",
+        "uri": "mongodb://localhost:27017/",
+        "database": "ai_interviewer_db",
+        "sessions_collection": "interview_sessions",
+        "metadata_collection": "session_metadata", # For SessionManager
+        "store_collection": "interview_memory_store" # For InterviewMemoryManager
+    },
+    "speech": {
+        "provider": "deepgram", # or "google_cloud_speech"
+        "api_key": None, # Loaded from environment
+        "tts_voice": "nova" # Default Deepgram voice
+    },
+    "code_execution": {
+        "sandbox_type": "docker", # or "judge0"
+        "timeout_seconds": 10,
+        "max_output_chars": 5000
+    },
+    "rubric": {
+        "qa_default_weight": 0.6,
+        "coding_default_weight": 0.4
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S"
     }
+}
 
-def get_llm_config() -> Dict[str, Any]:
-    """
-    Get LLM configuration.
+def load_config() -> dict:
+    """Load configuration from config.yaml or use defaults."""
+    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml")
     
-    Returns:
-        Dictionary with LLM configuration
-    """
-    return {
-        "model": LLM_MODEL,
-        "temperature": LLM_TEMPERATURE,
-        "system_name": SYSTEM_NAME,
-    }
+    config = DEFAULT_CONFIG.copy() # Start with defaults
 
-def get_session_config() -> Dict[str, Any]:
-    """
-    Get session configuration.
-    
-    Returns:
-        Dictionary with session configuration
-    """
-    return {
-        "timeout_minutes": SESSION_TIMEOUT_MINUTES,
-        "max_history": MAX_SESSION_HISTORY,
-    }
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                yaml_config = yaml.safe_load(f)
+            
+            # Deep merge YAML config into defaults
+            if yaml_config:
+                for key, value in yaml_config.items():
+                    if isinstance(value, dict) and isinstance(config.get(key), dict):
+                        config[key].update(value)
+                    else:
+                        config[key] = value
+            logger.info("Loaded configuration from config.yaml")
+        except Exception as e:
+            logger.error(f"Error loading config.yaml: {e}. Using default configuration.")
+    else:
+        logger.info("config.yaml not found. Using default configuration.")
 
-def get_config_value(key: str, default: Optional[Any] = None) -> Any:
-    """
-    Get a configuration value from environment variables.
+    # Override with environment variables where available
+    # LLM
+    config["llm"]["provider"] = os.environ.get("LLM_PROVIDER", config["llm"]["provider"])
+    config["llm"]["model"] = os.environ.get("LLM_MODEL", config["llm"]["model"])
+    config["llm"]["system_name"] = os.environ.get("SYSTEM_NAME", config["llm"]["system_name"])
+    if os.environ.get("LLM_TEMPERATURE"):
+        try:
+            config["llm"]["temperature"] = float(os.environ.get("LLM_TEMPERATURE"))
+        except ValueError:
+            logger.warning("Invalid LLM_TEMPERATURE in .env, using default.")
+
+    # Gemini Live API
+    config["gemini_live"]["api_key"] = os.environ.get("GEMINI_API_KEY", config["gemini_live"]["api_key"])
+    config["gemini_live"]["project_id"] = os.environ.get("GEMINI_PROJECT_ID", config["gemini_live"]["project_id"])
+    config["gemini_live"]["location"] = os.environ.get("GEMINI_LOCATION", config["gemini_live"]["location"])
+    config["gemini_live"]["stt_model_id"] = os.environ.get("GEMINI_STT_MODEL_ID", config["gemini_live"]["stt_model_id"])
+    config["gemini_live"]["tts_model_id"] = os.environ.get("GEMINI_TTS_MODEL_ID", config["gemini_live"]["tts_model_id"])
+    config["gemini_live"]["tts_voice"] = os.environ.get("GEMINI_TTS_VOICE", config["gemini_live"]["tts_voice"])
+
+
+    # Database
+    config["database"]["uri"] = os.environ.get("MONGODB_URI", config["database"]["uri"])
+    config["database"]["database"] = os.environ.get("MONGODB_DATABASE", config["database"]["database"])
+    config["database"]["sessions_collection"] = os.environ.get("MONGODB_SESSIONS_COLLECTION", config["database"]["sessions_collection"])
+    config["database"]["metadata_collection"] = os.environ.get("MONGODB_METADATA_COLLECTION", config["database"]["metadata_collection"])
+    config["database"]["store_collection"] = os.environ.get("MONGODB_STORE_COLLECTION", config["database"]["store_collection"])
+
+    # Speech (Deepgram)
+    config["speech"]["provider"] = os.environ.get("SPEECH_PROVIDER", config["speech"]["provider"])
+    config["speech"]["api_key"] = os.environ.get("DEEPGRAM_API_KEY", config["speech"]["api_key"])
+    config["speech"]["tts_voice"] = os.environ.get("DEEPGRAM_TTS_VOICE", config["speech"]["tts_voice"])
     
-    Args:
-        key: Configuration key
-        default: Default value if not found
+    # Logging
+    config["logging"]["level"] = os.environ.get("LOG_LEVEL", config["logging"]["level"]).upper()
+
+    # Validate critical API keys
+    if config["llm"]["provider"] == "google_genai" and not os.environ.get("GOOGLE_API_KEY"):
+        logger.warning("GOOGLE_API_KEY environment variable not set for Google GenAI.")
+    if config["speech"]["provider"] == "deepgram" and not config["speech"]["api_key"]:
+        logger.warning("DEEPGRAM_API_KEY environment variable not set for Deepgram.")
+    if not config["gemini_live"]["api_key"]:
+        logger.warning("GEMINI_API_KEY environment variable not set for Gemini Live API.")
+
+
+    return config
+
+# Load configuration once
+CONFIG = load_config()
+
+def get_llm_config() -> dict:
+    """Get LLM configuration."""
+    return CONFIG.get("llm", {})
+
+def get_gemini_live_config() -> dict:
+    """Get Gemini Live API configuration."""
+    return CONFIG.get("gemini_live", {})
+
+def get_db_config() -> dict:
+    """Get database configuration."""
+    return CONFIG.get("database", {})
+
+def get_speech_config() -> dict:
+    """Get speech configuration."""
+    return CONFIG.get("speech", {})
+    
+def get_code_execution_config() -> dict:
+    """Get code execution configuration."""
+    return CONFIG.get("code_execution", {})
+
+def get_rubric_config() -> dict:
+    """Get rubric configuration."""
+    return CONFIG.get("rubric", {})
+
+def get_logging_config() -> dict:
+    """Get logging configuration."""
+    return CONFIG.get("logging", {})
+
+def log_config(level: Optional[str] = None, print_config: bool = False):
+    """Configure application-wide logging and optionally print the config."""
+    log_cfg = get_logging_config()
+    log_level = level or log_cfg.get("level", "INFO").upper()
+    
+    # Ensure basicConfig is called only once or use a more robust setup
+    # For simplicity here, we assume this is called early.
+    # In a larger app, consider a dedicated logging setup module.
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format=log_cfg.get("format"),
+        datefmt=log_cfg.get("datefmt")
+    )
+    
+    logger.info(f"Logging configured to level: {log_level}")
+    
+    if print_config:
+        # Be careful about printing sensitive information like API keys
+        # Create a redacted version of the config for printing
+        import copy
+        printable_config = copy.deepcopy(CONFIG)
+        if printable_config.get("gemini_live", {}).get("api_key"):
+            printable_config["gemini_live"]["api_key"] = "***REDACTED***"
+        if printable_config.get("speech", {}).get("api_key"):
+            printable_config["speech"]["api_key"] = "***REDACTED***"
+        if printable_config.get("llm", {}).get("api_key"): # If any LLM provider uses 'api_key'
+            printable_config["llm"]["api_key"] = "***REDACTED***"
+        if "GOOGLE_API_KEY" in printable_config.get("llm", {}): # Example for Google
+             printable_config["llm"]["GOOGLE_API_KEY"] = "***REDACTED***"
         
-    Returns:
-        Configuration value
-    """
-    return os.environ.get(key, default)
+        logger.info(f"Current configuration (redacted):\n{yaml.dump(printable_config, indent=2)}")
 
-def get_speech_config() -> Dict[str, Any]:
-    """
-    Get speech configuration.
+if __name__ == "__main__":
+    # Example of using the config
+    log_config(print_config=True) # Configure logging and print the (redacted) config
     
-    Returns:
-        Dictionary with speech configuration
-    """
-    return {
-        "api_key": DEEPGRAM_API_KEY,
-        "recording_duration": SPEECH_RECORDING_DURATION,
-        "sample_rate": SPEECH_SAMPLE_RATE,
-        "tts_voice": SPEECH_TTS_VOICE,
-        "silence_threshold": SPEECH_SILENCE_THRESHOLD,
-        "silence_duration": SPEECH_SILENCE_DURATION,
-    }
-
-def log_config():
-    """Log current configuration values (excluding sensitive information)."""
-    logger.info("Current configuration:")
-    logger.info(f"- MongoDB Database: {MONGODB_DATABASE}")
-    logger.info(f"- Sessions Collection: {MONGODB_SESSIONS_COLLECTION}")
-    logger.info(f"- Metadata Collection: {MONGODB_METADATA_COLLECTION}")
-    logger.info(f"- LLM Model: {LLM_MODEL}")
-    logger.info(f"- LLM Temperature: {LLM_TEMPERATURE}")
-    logger.info(f"- System Name: {SYSTEM_NAME}")
-    logger.info(f"- Session Timeout: {SESSION_TIMEOUT_MINUTES} minutes")
-    logger.info(f"- Max Session History: {MAX_SESSION_HISTORY} messages")
-    logger.info(f"- Speech TTS Voice: {SPEECH_TTS_VOICE}")
-    logger.info(f"- Speech Recording Max Duration: {SPEECH_RECORDING_DURATION} seconds")
-    logger.info(f"- Speech Sample Rate: {SPEECH_SAMPLE_RATE} Hz")
-    logger.info(f"- Speech Silence Threshold: {SPEECH_SILENCE_THRESHOLD}")
-    logger.info(f"- Speech Silence Duration: {SPEECH_SILENCE_DURATION} seconds")
-    logger.info(f"- Deepgram API Key: {'Configured' if DEEPGRAM_API_KEY else 'Not configured'}") 
+    llm_settings = get_llm_config()
+    db_settings = get_db_config()
+    speech_settings = get_speech_config()
+    gemini_live_settings = get_gemini_live_config()
+    
+    logger.info(f"LLM Provider: {llm_settings.get('provider')}")
+    logger.info(f"Database URI: {db_settings.get('uri')}")
+    logger.info(f"Speech Provider: {speech_settings.get('provider')}")
+    logger.info(f"Gemini Live API Key Set: {'Yes' if gemini_live_settings.get('api_key') else 'No'}")
+    logger.info(f"Gemini Live STT Model: {gemini_live_settings.get('stt_model_id')}")
