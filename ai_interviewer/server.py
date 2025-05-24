@@ -153,6 +153,22 @@ except Exception as e:
     voice_handler = None
     voice_enabled = False
 
+# <custom_code>
+# Ensure VoiceHandler is initialized if speech_utils was updated and not re-imported
+if voice_enabled and not voice_handler:
+    try:
+        from ai_interviewer.utils.config import get_speech_config
+        speech_config = get_speech_config()
+        # This assumes VoiceHandler can be re-initialized or its state is managed externally
+        # If VoiceHandler has significant internal state, this might not be ideal
+        from ai_interviewer.utils.speech_utils import VoiceHandler
+        voice_handler = VoiceHandler(api_key=speech_config.get("api_key")) # api_key is for Deepgram fallback
+        logger.info("VoiceHandler re-initialized in server.py")
+    except Exception as e:
+        logger.error(f"Failed to re-initialize VoiceHandler: {e}")
+        voice_enabled = False
+# </custom_code>
+
 # Custom OpenAPI documentation
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
@@ -744,6 +760,10 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             # If it's a dict, extract the transcript
             if transcription_result.get("success", False):
                 transcription = transcription_result.get("transcript", "")
+                # <custom_code>
+                provider = transcription_result.get("provider", "unknown")
+                logger.info(f"Transcription successful via {provider}.")
+                # </custom_code>
             else:
                 # Failed transcription
                 error_msg = transcription_result.get("error", "Unknown transcription error")
@@ -829,12 +849,19 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
                 audio_path = os.path.join(audio_responses_dir, audio_filename)
                 
                 # Generate audio
+                # <custom_code>
+                # Use the updated speak method which handles Gemini/Deepgram logic
+                # The `voice` parameter in `speak` will be used by Deepgram if it falls back.
+                # Gemini voice is configured within `synthesize_speech_gemini` or via gemini_live_config.
                 success = await voice_handler.speak(
                     text=ai_response,
+                    # voice parameter here is for Deepgram if used as fallback.
+                    # Gemini voice is handled internally by speak -> synthesize_speech_gemini
                     voice=speech_config.get("tts_voice", "nova"),
                     output_file=audio_path,
                     play_audio=False
                 )
+                # </custom_code>
                 
                 if success:
                     logger.info(f"Generated audio response at {audio_path}")
@@ -902,6 +929,10 @@ async def upload_audio_file(
             # If it's a dict, extract the transcript
             if transcription_result.get("success", False):
                 transcription = transcription_result.get("transcript", "")
+                # <custom_code>
+                provider = transcription_result.get("provider", "unknown")
+                logger.info(f"Transcription successful via {provider} (file upload).")
+                # </custom_code>
             else:
                 # Failed transcription
                 error_msg = transcription_result.get("error", "Unknown transcription error")
@@ -943,12 +974,15 @@ async def upload_audio_file(
         audio_path = os.path.join(temp_audio_dir, audio_filename)
         
         # Generate speech
+        # <custom_code>
+        # Use the updated speak method
         await voice_handler.speak(
             text=ai_response,
-            voice=speech_config.get("tts_voice", "nova"),
+            voice=speech_config.get("tts_voice", "nova"), # For Deepgram fallback
             output_file=audio_path,
             play_audio=False
         )
+        # </custom_code>
         
         # For simplicity, we're returning a URL that can be used to fetch the audio
         audio_url = f"/api/audio/response/{audio_filename}"

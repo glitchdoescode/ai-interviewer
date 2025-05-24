@@ -21,6 +21,11 @@ import time
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# <custom_code>
+from ai_interviewer.utils.config import get_gemini_live_config
+from ai_interviewer.utils.gemini_live_utils import transcribe_audio_gemini, synthesize_speech_gemini
+# </custom_code>
+
 class DeepgramSTT:
     """
     Speech-to-Text functionality using Deepgram's API.
@@ -561,6 +566,40 @@ class VoiceHandler:
         Returns:
             Dictionary with transcription results or the transcription text
         """
+        # <custom_code>
+        # Prioritize Gemini if available and configured, otherwise fallback to Deepgram or existing
+        gemini_config = get_gemini_live_config()
+        if gemini_config.get("api_key"):
+            logger.info("Using Gemini Live for STT.")
+            try:
+                transcription = await transcribe_audio_gemini(audio_bytes)
+                if transcription:
+                    return {"success": True, "transcript": transcription, "provider": "gemini_live"}
+                else:
+                    logger.warning("Gemini STT failed, falling back to Deepgram if configured.")
+                    # Fallback to Deepgram if Gemini fails and Deepgram is configured
+                    if not self.api_key: # Check if Deepgram specifically is configured
+                        return {"success": False, "error": "Gemini STT failed and Deepgram not configured."}
+            except Exception as e:
+                logger.error(f"Gemini STT attempt failed: {e}. Falling back to Deepgram if configured.")
+                if not self.api_key:
+                     return {"success": False, "error": f"Gemini STT failed ({e}) and Deepgram not configured."}
+        
+        # Fallback to Deepgram or original logic if Gemini is not used or fails
+        if not self.api_key: # This check is for Deepgram API key
+            logger.error("Deepgram API key not available for STT fallback.")
+            # If Gemini was not attempted or failed, and Deepgram isn't configured, return error.
+            # This part of the logic might need refinement based on desired fallback behavior.
+            # If Gemini was attempted, the error/empty transcription from Gemini would have been handled above.
+            # This path is for when Gemini is not configured OR when it failed AND Deepgram is not configured.
+            if not gemini_config.get("api_key"):
+                 return {"success": False, "error": "No STT provider configured."}
+            # If Gemini failed and we are here, it implies Deepgram is also not configured.
+            # The previous Gemini block should handle returning its own failure.
+            # This specific return is if Gemini wasn't even tried AND Deepgram isn't set up.
+
+        logger.info("Using Deepgram for STT.")
+        # </custom_code>
         try:
             # Create a temporary file to store the audio bytes
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
@@ -635,7 +674,7 @@ class VoiceHandler:
                  play_audio: bool = True,
                  output_file: Optional[str] = None) -> bool:
         """
-        Convert text to speech and play/save.
+        Convert text to speech using Deepgram's TTS service.
         
         Args:
             text: Text to convert to speech
@@ -646,6 +685,11 @@ class VoiceHandler:
         Returns:
             True if successful, False otherwise
         """
+        if not self.api_key: # This check is for Deepgram API key
+            logger.error("Deepgram API key not available for TTS.")
+            return False
+        
+        logger.info("Using Deepgram for TTS.")
         params = {"voice": voice}
         
         result = await self.tts.synthesize_speech(
@@ -655,4 +699,34 @@ class VoiceHandler:
             params=params
         )
         
-        return result.get("success", False) 
+        return result.get("success", False)
+    
+    # <custom_code>
+    async def transcribe_audio_bytes_gemini(self, audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> Dict[str, Any]:
+        """Wrapper for Gemini STT if direct call needed, currently integrated into transcribe_audio_bytes"""
+        logger.info("Direct call to transcribe_audio_bytes_gemini (integrated in transcribe_audio_bytes)")
+        # This method is now effectively integrated into transcribe_audio_bytes
+        # but kept for structural similarity or future direct use.
+        transcription = await transcribe_audio_gemini(audio_bytes)
+        if transcription:
+            return {"success": True, "transcript": transcription, "provider": "gemini_live"}
+        return {"success": False, "error": "Gemini STT failed in direct wrapper.", "provider": "gemini_live"}
+
+    async def speak_gemini(self, text: str, voice: Optional[str] = None, play_audio: bool = True, output_file: Optional[str] = None) -> bool:
+        """Wrapper for Gemini TTS if direct call needed, currently integrated into speak"""
+        logger.info("Direct call to speak_gemini (integrated in speak)")
+        gemini_config = get_gemini_live_config()
+        # Use the voice from arg if provided, else from config, else default in synthesize_speech_gemini
+        # Note: synthesize_speech_gemini already has its own voice fallback logic using config.
+        # We pass `text` directly; `synthesize_speech_gemini` handles voice selection based on its own logic.
+        audio_data = await synthesize_speech_gemini(text)
+        if audio_data:
+            if output_file:
+                with open(output_file, 'wb') as f:
+                    f.write(audio_data)
+                logger.info(f"Gemini TTS (direct wrapper): Saved audio to {output_file}")
+            if play_audio:
+                await self.tts._play_audio(audio_data) # Reuse DeepgramTTS's player for now
+            return True
+        return False
+    # </custom_code> 

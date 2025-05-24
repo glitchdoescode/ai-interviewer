@@ -36,3 +36,5 @@ slowapi>=0.1.9
 
 # Secure Code Execution
 docker>=7.0.0
+
+google-genai>=0.0.0
