@@ -10,6 +10,11 @@ from google.genai.types import (
     Content,
     GenerateContentConfig,
     SafetySetting,
+    LiveConnectConfig, 
+    SpeechConfig,
+    VoiceConfig,
+    PrebuiltVoiceConfig,
+    Part
 )
 from ai_interviewer.utils.config import get_gemini_live_config
 from google import genai
@@ -117,11 +122,11 @@ async def transcribe_audio_gemini(audio_bytes: bytes) -> str:
         content = genai_types.Content(
             role="user",
             parts=[{
-                "inline_data": {
-                    "mime_type": "audio/wav",
-                    "data": audio_base64
-                }
-            }]
+                    "inline_data": {
+                        "mime_type": "audio/wav",
+                        "data": audio_base64
+                    }
+                }]
         )
         
         logger.info("Sending audio to Gemini for transcription")
@@ -144,50 +149,68 @@ async def transcribe_audio_gemini(audio_bytes: bytes) -> str:
         logger.error(f"Error in Gemini transcription: {str(e)}")
         return ""
 
-async def synthesize_speech_gemini(text: str) -> bytes:
+async def synthesize_speech_gemini(text_input: str, voice_name: str = "Aoede") -> bytes:
     """
-    Synthesizes speech from text using Gemini Live API.
+    Synthesizes speech from text using Gemini TTS API and returns audio data.
 
     Args:
-        text: The text to synthesize.
+        text_input: The text to synthesize.
+        voice_name: The prebuilt voice name to use. Must be one of the allowed voices:
+                   achernar, achird, algenib, algieba, alnilam, aoede, autonoe, callirrhoe, 
+                   charon, despina, enceladus, erinome, fenrir, gacrux, iapetus, kore, 
+                   laomedeia, leda, orus, puck, pulcherrima, rasalgethi, sadachbia, 
+                   sadaltager, schedar, sulafat, umbriel, vindemiatrix, zephyr, zubenelgenubi
 
     Returns:
         The synthesized audio data in bytes, or empty bytes if synthesis fails.
     """
-    config = get_gemini_live_config()
-    api_key = config.get("api_key")
-    model_id = config.get("tts_model_id", "gemini-pro")
-    voice_name = config.get("tts_voice", "Puck")
+    gem_config = get_gemini_live_config()
+    api_key = gem_config.get("api_key")
 
     if not api_key:
-        logger.error("Gemini API key not configured.")
+        logger.error("Gemini API key not configured for TTS.")
         return b""
 
+    # Ensure voice_name is one of the allowed voices
+    allowed_voices = [
+        "achernar", "achird", "algenib", "algieba", "alnilam", "aoede", "autonoe", 
+        "callirrhoe", "charon", "despina", "enceladus", "erinome", "fenrir", "gacrux", 
+        "iapetus", "kore", "laomedeia", "leda", "orus", "puck", "pulcherrima", 
+        "rasalgethi", "sadachbia", "sadaltager", "schedar", "sulafat", "umbriel", 
+        "vindemiatrix", "zephyr", "zubenelgenubi"
+    ]
+    
+    if voice_name.lower() not in [v.lower() for v in allowed_voices]:
+        logger.warning(f"Voice '{voice_name}' not in allowed list. Using 'Aoede' instead.")
+        voice_name = "Aoede"  # Default to a known working voice
+
     try:
-        # Initialize client with just the API key
         client = genai.Client(api_key=api_key)
         
-        # Create the content with text
-        content = genai_types.Content(
-            role="user",
-            parts=[{"text": text}]
-        )
+        logger.info(f"Generating TTS with model: gemini-2.5-flash-preview-tts, voice: {voice_name}")
         
-        logger.info(f"Generating speech with model: {model_id}, voice: {voice_name}")
-        
-        # Use the correct method call format
         response = client.models.generate_content(
-            model=model_id,
-            contents=[content]
+            model="gemini-2.5-flash-preview-tts",
+            contents=text_input,
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=genai_types.SpeechConfig(
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                            voice_name=voice_name,
+                        )
+                    )
+                ),
+            )
         )
         
-        if response and hasattr(response, 'audio'):
-            audio_data = response.audio
-            logger.info(f"Synthesized audio data length: {len(audio_data)} bytes")
+        if response.candidates and response.candidates[0].content.parts:
+            audio_data = response.candidates[0].content.parts[0].inline_data.data
+            logger.info(f"Successfully generated {len(audio_data)} bytes of audio data.")
             return audio_data
-        
-        logger.warning("No audio data received from Gemini TTS")
-        return b""
+        else:
+            logger.warning("No audio data received from Gemini TTS.")
+            return b""
 
     except Exception as e:
         logger.error(f"Error during Gemini TTS: {e}", exc_info=True)

@@ -9,8 +9,10 @@ import asyncio
 import logging
 import base64
 import re
+import wave # Add this import
 from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
+import inspect # <--- Import inspect
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,8 +27,9 @@ from slowapi.errors import RateLimitExceeded
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
+
 from ai_interviewer.utils.speech_utils import VoiceHandler
-from ai_interviewer.utils.config import get_llm_config, get_db_config
+from ai_interviewer.utils.config import get_llm_config, get_db_config, get_speech_config
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
 from ai_interviewer.utils.memory_manager import InterviewMemoryManager
 from langgraph.types import interrupt, Command
@@ -41,7 +44,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
+logger.info(f"AIInterviewer class loaded from: {inspect.getfile(AIInterviewer)}") # <--- Add this log
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
@@ -127,47 +130,37 @@ try:
     
     # Make sure the summarization model is initialized
     if not hasattr(interviewer, 'summarization_model'):
-        llm_config = get_llm_config()
+        llm_config_val = get_llm_config() # Renamed to avoid conflict
         interviewer.summarization_model = ChatGoogleGenerativeAI(
-            model=llm_config["model"],
+            model=llm_config_val["model"],
             temperature=0.1
         )
         logger.info("Added summarization model to interviewer instance")
     
+    # ==> ADD THIS CHECK <==
+    if not hasattr(interviewer, 'run_interview'):
+        logger.critical("CRITICAL: AIInterviewer instance does NOT have 'run_interview' method at startup!")
+        # Optionally raise an error here to prevent server from starting with a broken interviewer
+        # raise RuntimeError("AIInterviewer is missing the run_interview method.")
+    else:
+        logger.info("CONFIRMED: AIInterviewer instance has 'run_interview' method at startup.")
+    # ==> END OF CHECK <==
+
     logger.info("AI Interviewer initialized successfully with async memory management")
 except Exception as e:
     logger.critical(f"Failed to initialize AI Interviewer: {e}")
-    # In a production environment, you might want to exit the application
-    # sys.exit(1)
     raise
 
 # Initialize VoiceHandler for speech processing
 try:
-    from ai_interviewer.utils.config import get_speech_config
-    speech_config = get_speech_config()
-    voice_handler = VoiceHandler(api_key=speech_config.get("api_key"))
+    speech_config = get_speech_config() # Needed for tts_voice later
+    voice_handler = VoiceHandler() # Correct: No api_key argument
     voice_enabled = True
     logger.info("Voice processing enabled")
 except Exception as e:
-    logger.warning(f"Voice processing disabled: {e}")
+    logger.warning(f"Voice processing disabled: {e}", exc_info=True)
     voice_handler = None
     voice_enabled = False
-
-# <custom_code>
-# Ensure VoiceHandler is initialized if speech_utils was updated and not re-imported
-if voice_enabled and not voice_handler:
-    try:
-        from ai_interviewer.utils.config import get_speech_config
-        speech_config = get_speech_config()
-        # This assumes VoiceHandler can be re-initialized or its state is managed externally
-        # If VoiceHandler has significant internal state, this might not be ideal
-        from ai_interviewer.utils.speech_utils import VoiceHandler
-        voice_handler = VoiceHandler(api_key=speech_config.get("api_key")) # api_key is for Deepgram fallback
-        logger.info("VoiceHandler re-initialized in server.py")
-    except Exception as e:
-        logger.error(f"Failed to re-initialize VoiceHandler: {e}")
-        voice_enabled = False
-# </custom_code>
 
 # Custom OpenAPI documentation
 @app.get("/docs", include_in_schema=False)
@@ -688,105 +681,57 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
                 logger.info(f"Restored session data with candidate: {candidate_name_before or 'Unknown'}")
         
         # Extract base64 data from data URI format
-        # Expected format: data:audio/wav;base64,BASE64_DATA
-        audio_data = request_data.audio_data
-        has_data_uri = "data:audio/" in audio_data
-        logger.info(f"Audio has data URI format: {has_data_uri}")
+        audio_data_str = request_data.audio_data
+        if "base64," in audio_data_str:
+            parts = audio_data_str.split("base64,")
+            audio_data_str = parts[1]
         
-        if "base64," in audio_data:
-            parts = audio_data.split("base64,")
-            mime_type = parts[0].split("data:")[1].split(";")[0] if len(parts) > 1 and "data:" in parts[0] else "unknown"
-            audio_data = parts[1]
-            logger.info(f"Extracted base64 data, MIME type: {mime_type}, length: {len(audio_data)}")
-        
-        # Decode base64 audio
         try:
-            audio_bytes = base64.b64decode(audio_data)
-            logger.info(f"Decoded audio bytes, size: {len(audio_bytes)} bytes")
-            
-            # Validate audio data is substantial enough
-            if len(audio_bytes) < 1000:
-                logger.warning(f"Audio data too small: {len(audio_bytes)} bytes, likely silent or corrupt")
-                raise HTTPException(status_code=422, detail="Audio data too small or empty")
-            
-            # Log audio format detection
-            if len(audio_bytes) >= 16:
-                header_hex = audio_bytes[:16].hex()
-                logger.info(f"Audio header (hex): {header_hex}")
-                
-                # Detect common audio formats
-                is_wav = header_hex.startswith("52494646")  # "RIFF"
-                is_webm = header_hex.startswith("1a45dfa3")
-                is_mp3 = header_hex.startswith("494433") or header_hex.startswith("fffb")
-                
-                logger.info(f"Audio format detection - WAV: {is_wav}, WebM: {is_webm}, MP3: {is_mp3}")
-            
-            # Save a sample for debugging
-            debug_sample_path = "/tmp/audio_debug_sample.raw"
-            with open(debug_sample_path, "wb") as f:
-                f.write(audio_bytes[:min(8000, len(audio_bytes))])
-            logger.info(f"Debug audio sample saved to {debug_sample_path}")
-            
+            audio_bytes = base64.b64decode(audio_data_str)
         except Exception as e:
             logger.error(f"Error decoding base64 audio data: {e}")
             raise HTTPException(status_code=422, detail=f"Invalid base64 audio data: {str(e)}")
         
-        # Log transcription parameters
-        logger.info(f"Transcribing with sample_rate={request_data.sample_rate}, channels={request_data.channels}")
-        
-        # Transcribe the audio with error handling
-        try:
-            transcription_result = await voice_handler.transcribe_audio_bytes(
-                audio_bytes,
-                sample_rate=request_data.sample_rate,
-                channels=request_data.channels
+        if len(audio_bytes) < 200: # Minimal check for valid audio
+            logger.warning(f"Audio data too small: {len(audio_bytes)} bytes, likely silent or corrupt")
+            # Return a default response instead of erroring out, to keep flow smooth
+            transcription = "I couldn't hear you clearly. Could you please repeat that?"
+            ai_response = "I'm sorry, I didn't catch that. Could you say it again?"
+            session_id = request_data.session_id or interviewer._get_or_create_session(user_id) # Ensure session_id
+            metadata = {}
+            if interviewer.session_manager:
+                current_session = interviewer.session_manager.get_session(session_id)
+                if current_session: metadata = current_session.get("metadata", {})
+
+            return AudioTranscriptionResponse(
+                transcription=transcription,
+                response=ai_response,
+                session_id=session_id,
+                interview_stage=metadata.get("interview_stage"),
+                audio_response_url=None, # No audio to respond with
+                job_role=metadata.get("job_role"),
+                requires_coding=metadata.get("requires_coding")
             )
             
-            # Log detailed transcription results
-            logger.info(f"Transcription result type: {type(transcription_result)}")
-            if isinstance(transcription_result, dict):
-                logger.info(f"Transcription result dict: {transcription_result}")
-            else:
-                logger.info(f"Transcription result: '{transcription_result}'")
-        except Exception as e:
-            logger.error(f"Transcription service error: {e}")
-            raise HTTPException(status_code=500, detail=f"Transcription service failed: {str(e)}")
+        transcription_result = await voice_handler.transcribe_audio_bytes(
+            audio_bytes,
+            sample_rate=request_data.sample_rate, # Gemini will use its optimal/required rate
+            channels=request_data.channels # Gemini will use its optimal/required channels
+        )
         
-        # Handle different return types from transcribe_audio_bytes
-        if isinstance(transcription_result, str):
-            # If it's a string, use it directly as the transcript
-            transcription = transcription_result
-        elif isinstance(transcription_result, dict):
-            # If it's a dict, extract the transcript
-            if transcription_result.get("success", False):
-                transcription = transcription_result.get("transcript", "")
-                # <custom_code>
-                provider = transcription_result.get("provider", "unknown")
-                logger.info(f"Transcription successful via {provider}.")
-                # </custom_code>
-            else:
-                # Failed transcription
-                error_msg = transcription_result.get("error", "Unknown transcription error")
-                logger.error(f"Transcription failed: {error_msg}")
-                raise HTTPException(status_code=422, detail=f"Failed to transcribe audio: {error_msg}")
+        if isinstance(transcription_result, dict) and transcription_result.get("success", False):
+            transcription = transcription_result.get("transcript", "")
+            provider = transcription_result.get("provider", "gemini")
+            logger.info(f"Transcription successful via {provider}.")
         else:
-            # Unexpected return type
-            logger.error(f"Unexpected transcription result type: {type(transcription_result)}")
-            raise HTTPException(status_code=500, detail="Internal transcription error")
+            error_msg = transcription_result.get("error", "Unknown transcription error") if isinstance(transcription_result, dict) else "Transcription failed"
+            logger.error(f"Transcription failed: {error_msg}")
+            # Default message for smoother UX
+            transcription = "I'm having a bit of trouble understanding the audio."
         
-        # Check if we have a valid transcription
-        if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
-            # Use a default message instead of returning an error
-            logger.info("Empty transcription detected, using default message")
-            transcription = "Hello, I'd like to continue our interview."
-        
-        # Check transcription for name pattern before invoking the interviewer
-        name_pattern = re.search(r"(?i)my name is ([A-Za-z][a-z]+)", transcription)
-        if name_pattern:
-            potential_name = name_pattern.group(1).strip()
-            logger.info(f"Potential name detected in transcription: {potential_name}")
+        if not transcription.strip():
+            transcription = "I couldn't hear anything clearly."
 
-        # Process the transcribed message with job role parameters
         ai_response, session_id = await interviewer.run_interview(
             user_id, 
             transcription, 
@@ -798,79 +743,43 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             requires_coding=request_data.requires_coding
         )
         
-        # Get session metadata if available
         metadata = {}
         if interviewer.session_manager:
-            # Verify session exists
             session = interviewer.session_manager.get_session(session_id)
-            if not session:
-                logger.error(f"Session {session_id} not found after run_interview. Creating backup session.")
-                # Create emergency backup session
-                try:
-                    interviewer.session_manager.create_session(
-                        user_id, 
-                        {
-                            "interview_stage": "introduction",
-                            "created_at": datetime.now().isoformat(),
-                            "last_active": datetime.now().isoformat(),
-                            "backup_created": True
-                        }
-                    )
-                    # Try to get session again
-                    session = interviewer.session_manager.get_session(session_id)
-                except Exception as e:
-                    logger.error(f"Error creating backup session: {e}")
-            
             if session and "metadata" in session:
                 metadata = session["metadata"]
-                candidate_name_after = metadata.get('candidate_name')
-                
-                # Log candidate name for debugging
-                logger.info(f"Session metadata has candidate_name: {candidate_name_after or 'No name found'}")
-                
-                # Check if candidate name changed
-                if candidate_name_before != candidate_name_after and candidate_name_after:
-                    logger.info(f"Candidate name changed from '{candidate_name_before or 'Unknown'}' to '{candidate_name_after}'")
         
-        # Optional: Generate audio response
         audio_response_url = None
-        try:
-            if voice_handler:
-                # Create a unique filename for the audio response
-                audio_filename = f"{session_id}_{int(datetime.now().timestamp())}.wav"
-                
-                # Use a path relative to the application directory
-                app_dir = os.path.dirname(os.path.abspath(__file__))
-                audio_responses_dir = os.path.join(app_dir, "audio_responses")
-                
-                # Ensure directory exists
-                os.makedirs(audio_responses_dir, exist_ok=True)
-                
-                audio_path = os.path.join(audio_responses_dir, audio_filename)
-                
-                # Generate audio
-                # <custom_code>
-                # Use the updated speak method which handles Gemini/Deepgram logic
-                # The `voice` parameter in `speak` will be used by Deepgram if it falls back.
-                # Gemini voice is configured within `synthesize_speech_gemini` or via gemini_live_config.
-                success = await voice_handler.speak(
-                    text=ai_response,
-                    # voice parameter here is for Deepgram if used as fallback.
-                    # Gemini voice is handled internally by speak -> synthesize_speech_gemini
-                    voice=speech_config.get("tts_voice", "nova"),
-                    output_file=audio_path,
-                    play_audio=False
-                )
-                # </custom_code>
-                
-                if success:
-                    logger.info(f"Generated audio response at {audio_path}")
-                    audio_response_url = f"/api/audio/response/{audio_filename}"
-                else:
-                    logger.warning(f"Failed to generate audio response")
-        except Exception as e:
-            logger.warning(f"Error generating audio response: {e}")
-            # Continue without audio response
+        synthesized_audio_bytes = await voice_handler.speak(
+            text=ai_response,
+            voice=speech_config.get("tts_voice", "Aoede"), 
+            play_audio=False # Server does not play audio
+        )
+        
+        if synthesized_audio_bytes:
+            audio_filename = f"{session_id}_{int(datetime.now().timestamp())}.wav"
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            audio_responses_dir = os.path.join(app_dir, "audio_responses")
+            os.makedirs(audio_responses_dir, exist_ok=True)
+            audio_path = os.path.join(audio_responses_dir, audio_filename)
+            
+            # Write a proper WAV file
+            try:
+                with wave.open(audio_path, 'wb') as wf:
+                    wf.setnchannels(1)      # Mono - typical for Gemini TTS
+                    wf.setsampwidth(2)      # 16-bit PCM - typical for Gemini TTS
+                    wf.setframerate(24000)  # Standard Gemini TTS output rate
+                    wf.writeframes(synthesized_audio_bytes)
+                logger.info(f"Generated audio response at {audio_path} as proper WAV.")
+            except Exception as e:
+                logger.error(f"Error writing WAV file {audio_path}: {e}. Saving raw bytes as fallback.")
+                # Fallback: Save raw bytes if wave writing fails (though this might be unplayable)
+                with open(audio_path, 'wb') as f:
+                    f.write(synthesized_audio_bytes)
+
+            audio_response_url = f"/api/audio/response/{audio_filename}"
+        else:
+            logger.warning(f"Failed to generate audio response with Gemini TTS.")
         
         return AudioTranscriptionResponse(
             transcription=transcription,
@@ -884,120 +793,127 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing audio: {e}")
+        logger.error(f"Error processing audio: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/audio/upload", response_model=AudioTranscriptionResponse)
 async def upload_audio_file(
+    request: Request, # Added request parameter for logging
     file: UploadFile = File(...),
-    user_id: Optional[str] = None,
-    session_id: Optional[str] = None
+    user_id: Optional[str] = None, # Changed from Form to Query to match how it might be sent
+    session_id: Optional[str] = None, # Changed from Form to Query
+    job_role: Optional[str] = None,
+    seniority_level: Optional[str] = None,
+    required_skills: Optional[List[str]] = None, # This will be tricky with form-data, consider JSON payload for complex types
+    job_description: Optional[str] = None,
+    requires_coding: Optional[bool] = None
 ):
-    """
-    Upload audio file, transcribe it, and get AI interviewer response.
-    
-    Args:
-        file: Uploaded audio file
-        user_id: User ID (generated if not provided)
-        session_id: Session ID (if continuing a session)
-        
-    Returns:
-        AudioTranscriptionResponse with transcription and AI response
-    """
     if not voice_enabled or not voice_handler:
         raise HTTPException(status_code=501, detail="Voice processing not available")
     
     try:
-        # Generate a user ID if not provided
         user_id = user_id or f"api-user-{uuid.uuid4()}"
-        
-        # Read the uploaded file
         audio_bytes = await file.read()
-        
-        # Transcribe the audio
-        transcription_result = await voice_handler.transcribe_audio_bytes(
-            audio_bytes,
-            sample_rate=16000,  # Default sample rate
-            channels=1          # Default channels
-        )
-        
-        # Handle different return types from transcribe_audio_bytes
-        if isinstance(transcription_result, str):
-            # If it's a string, use it directly as the transcript
-            transcription = transcription_result
-        elif isinstance(transcription_result, dict):
-            # If it's a dict, extract the transcript
-            if transcription_result.get("success", False):
-                transcription = transcription_result.get("transcript", "")
-                # <custom_code>
-                provider = transcription_result.get("provider", "unknown")
-                logger.info(f"Transcription successful via {provider} (file upload).")
-                # </custom_code>
-            else:
-                # Failed transcription
-                error_msg = transcription_result.get("error", "Unknown transcription error")
-                logger.error(f"Transcription failed: {error_msg}")
-                raise HTTPException(status_code=422, detail=f"Failed to transcribe audio: {error_msg}")
-        else:
-            # Unexpected return type
-            logger.error(f"Unexpected transcription result type: {type(transcription_result)}")
-            raise HTTPException(status_code=500, detail="Internal transcription error")
-        
-        # Check if we have a valid transcription
-        if not transcription or not isinstance(transcription, str) or transcription.strip() == "":
-            # Use a default message instead of returning an error
-            logger.info("Empty transcription detected, using default message")
-            transcription = "Hello, I'd like to continue our interview."
+
+        if len(audio_bytes) < 200:
+            logger.warning(f"Uploaded audio file too small: {len(audio_bytes)} bytes.")
+            # Provide a default response
+            transcription = "The uploaded audio was too short or unclear. Could you please try again?"
+            ai_response = "I'm sorry, I couldn't process the uploaded audio. Please ensure it's clear and try again."
+            # Ensure session_id logic is robust
+            current_session_id = session_id or interviewer._get_or_create_session(user_id)
+            metadata = {}
+            if interviewer.session_manager:
+                current_session = interviewer.session_manager.get_session(current_session_id)
+                if current_session: metadata = current_session.get("metadata", {})
             
-        # Process the transcribed message
-        ai_response, new_session_id = await interviewer.run_interview(
-            user_id, transcription, session_id
+            return AudioTranscriptionResponse(
+                transcription=transcription,
+                response=ai_response,
+                session_id=current_session_id,
+                interview_stage=metadata.get("interview_stage"),
+                audio_response_url=None,
+                job_role=metadata.get("job_role"),
+                requires_coding=metadata.get("requires_coding")
+            )
+
+        transcription_result = await voice_handler.transcribe_audio_bytes(
+            audio_bytes # Sample rate and channels will be handled by Gemini
         )
         
-        # Get session metadata if available
+        if isinstance(transcription_result, dict) and transcription_result.get("success", False):
+            transcription = transcription_result.get("transcript", "")
+            provider = transcription_result.get("provider", "gemini")
+            logger.info(f"Transcription successful via {provider} (file upload).")
+        else:
+            error_msg = transcription_result.get("error", "Unknown transcription error") if isinstance(transcription_result, dict) else "Transcription failed"
+            logger.error(f"Transcription failed: {error_msg}")
+            transcription = "I had trouble understanding the uploaded audio file."
+
+        if not transcription.strip():
+            transcription = "The uploaded audio file seems to be silent or unclear."
+            
+        ai_response, new_session_id = await interviewer.run_interview(
+            user_id, 
+            transcription, 
+            session_id, # Pass original session_id
+            job_role=job_role,
+            seniority_level=seniority_level,
+            required_skills=required_skills,
+            job_description=job_description,
+            requires_coding=requires_coding
+        )
+        
         metadata = {}
         if interviewer.session_manager:
             session = interviewer.session_manager.get_session(new_session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
-        # Generate speech response
-        audio_filename = f"response_{uuid.uuid4()}.wav"
-        
-        # Use a path relative to the application directory
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_audio_dir = os.path.join(app_dir, "temp_audio")
-        
-        # Create temp directory if it doesn't exist
-        os.makedirs(temp_audio_dir, exist_ok=True)
-        
-        audio_path = os.path.join(temp_audio_dir, audio_filename)
-        
-        # Generate speech
-        # <custom_code>
-        # Use the updated speak method
-        await voice_handler.speak(
+        audio_response_url = None
+        synthesized_audio_bytes = await voice_handler.speak(
             text=ai_response,
-            voice=speech_config.get("tts_voice", "nova"), # For Deepgram fallback
-            output_file=audio_path,
+            voice=speech_config.get("tts_voice", "Aoede"),
             play_audio=False
         )
-        # </custom_code>
         
-        # For simplicity, we're returning a URL that can be used to fetch the audio
-        audio_url = f"/api/audio/response/{audio_filename}"
-        
+        if synthesized_audio_bytes:
+            audio_filename = f"response_{new_session_id}_{int(datetime.now().timestamp())}.wav"
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            audio_responses_dir = os.path.join(app_dir, "audio_responses")
+            os.makedirs(audio_responses_dir, exist_ok=True)
+            audio_path = os.path.join(audio_responses_dir, audio_filename)
+            
+            # Write a proper WAV file
+            try:
+                with wave.open(audio_path, 'wb') as wf:
+                    wf.setnchannels(1)      # Mono
+                    wf.setsampwidth(2)      # 16-bit PCM
+                    wf.setframerate(24000)  # Gemini TTS standard rate
+                    wf.writeframes(synthesized_audio_bytes)
+                logger.info(f"Generated audio response for upload at {audio_path} as proper WAV.")
+            except Exception as e:
+                logger.error(f"Error writing WAV file {audio_path} for upload: {e}. Saving raw bytes as fallback.")
+                with open(audio_path, 'wb') as f:
+                    f.write(synthesized_audio_bytes)
+            
+            audio_response_url = f"/api/audio/response/{audio_filename}"
+        else:
+            logger.warning(f"Failed to generate audio response for uploaded file with Gemini TTS.")
+            
         return AudioTranscriptionResponse(
             transcription=transcription,
             response=ai_response,
             session_id=new_session_id,
             interview_stage=metadata.get("interview_stage"),
-            audio_response_url=audio_url,
+            audio_response_url=audio_response_url,
             job_role=metadata.get("job_role"),
             requires_coding=metadata.get("requires_coding")
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error processing audio file: {e}")
+        logger.error(f"Error processing audio file upload: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audio/response/{filename}")

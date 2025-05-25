@@ -338,16 +338,16 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   [ ] Research and evaluate alternative TTS services if needed
     *   [ ] Create A/B testing mechanism for voice quality comparison
 
-*   **Task S2.2: LiveKit Integration for Real-time Audio**
-    *   [ ] Set up LiveKit server and add required dependencies
-    *   [ ] Modify `server.py` to handle LiveKit room management and tokens
-    *   [ ] Implement real-time audio streaming:
-        *   [ ] Client-to-server audio via LiveKit
-        *   [ ] Server-to-Deepgram STT streaming
-        *   [ ] LLM-to-Deepgram TTS streaming
-        *   [ ] Server-to-client audio via LiveKit
-    *   [ ] Update frontend to use LiveKit client SDK
-    *   [ ] Measure and optimize latency in audio transmission
+*   **Task S2.2: Gemini Integration for Real-time Audio**
+    *   [x] Set up Gemini API and add required dependencies
+    *   [x] Modify `server.py` to handle Gemini audio processing
+    *   [x] Implement real-time audio streaming:
+        *   [x] Client-to-server audio via Gemini
+        *   [x] Server-to-Gemini STT streaming
+        *   [x] LLM-to-Gemini TTS streaming
+        *   [x] Server-to-client audio via Gemini
+    *   [x] Update frontend to use Gemini audio endpoints
+    *   [x] Measure and optimize latency in audio transmission
 
 ### Iteration S3: Security & Quality Improvements
 *   **Task S3.1: Code Execution Sandbox Security**

@@ -19,7 +19,7 @@ DEFAULT_CONFIG = {
         "provider": "google_genai",  # or "openai", "anthropic"
         "model": "gemini-pro",
         "temperature": 0.7,
-        "system_name": "AI Interviewer"
+        "system_name": "Dhruv"
     },
     "gemini_live": {
         "api_key": None, # Loaded from environment
