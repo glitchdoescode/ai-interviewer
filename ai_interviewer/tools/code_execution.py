@@ -10,6 +10,7 @@ import logging
 import traceback
 import ast
 import time
+import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -50,7 +51,7 @@ def get_docker_sandbox() -> Optional[DockerSandbox]:
     return _docker_sandbox
 
 @tool
-def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:
+async def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> Dict:
     """
     Execute candidate code in a secure sandbox with resource limits.
     
@@ -72,7 +73,7 @@ def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> 
         if sandbox is not None:
             # Execute code in Docker sandbox
             logger.info("Using Docker sandbox for secure execution")
-            results = sandbox.execute_code(
+            results = await sandbox.execute_code(
                 language=language,
                 code=code,
                 test_cases=test_cases
@@ -92,7 +93,7 @@ def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> 
             logger.warning("Docker not available, falling back to legacy CodeExecutor")
             
             if language.lower() == "python":
-                results = CodeExecutor.execute_python_code(code, test_cases)
+                results = await CodeExecutor.execute_python_code(code, test_cases)
                 return {
                     "status": results.get("status", "error"),
                     "pass_count": results.get("passed", 0),
@@ -123,7 +124,6 @@ def execute_candidate_code(language: str, code: str, test_cases: List[Dict]) -> 
             "errors": str(e)
         }
 
-
 class CodeExecutor:
     """
     Safely executes code and evaluates it against test cases.
@@ -133,7 +133,7 @@ class CodeExecutor:
     """
 
     @staticmethod
-    def execute_python_code(code: str, test_cases: List[Dict[str, Any]], 
+    async def execute_python_code(code: str, test_cases: List[Dict[str, Any]], 
                             function_name: Optional[str] = None,
                             timeout: int = 5) -> Dict[str, Any]:
         """
@@ -152,7 +152,7 @@ class CodeExecutor:
         sandbox = get_docker_sandbox()
         if sandbox:
             logger.info("Using Docker sandbox for Python code execution")
-            return sandbox.execute_code(
+            return await sandbox.execute_code(
                 language="python",
                 code=code,
                 test_cases=test_cases,
@@ -177,7 +177,7 @@ class CodeExecutor:
         # Extract the function name if not provided
         if not function_name:
             try:
-                function_name = CodeExecutor._extract_python_function_name(code)
+                function_name = await asyncio.to_thread(CodeExecutor._extract_python_function_name, code)
             except Exception as e:
                 logger.error(f"Error extracting function name: {e}")
                 results["status"] = "error"
@@ -189,8 +189,8 @@ class CodeExecutor:
             # Create namespace
             namespace = {}
             
-            # Execute code in the namespace
-            exec(code, namespace)
+            # Execute code in the namespace using asyncio.to_thread for CPU-bound operation
+            await asyncio.to_thread(exec, code, namespace)
             
             # Check if function exists
             if function_name not in namespace:
@@ -199,109 +199,90 @@ class CodeExecutor:
                 return results
             
             # Get the function
-            function = namespace[function_name]
+            func = namespace[function_name]
             
-            # Execute test cases
-            total_time = 0
+            # Run test cases
+            start_time = time.time()
             
-            for i, test_case in enumerate(test_cases):
-                test_input = test_case["input"]
-                expected_output = test_case["expected_output"]
-                
-                # Prepare test result
+            for test_case in test_cases:
                 test_result = {
-                    "test_case_id": i + 1,
-                    "input": test_input,
-                    "expected_output": expected_output,
-                    "is_hidden": test_case.get("is_hidden", False),
-                    "explanation": test_case.get("explanation", ""),
+                    "test_case": test_case,
                     "passed": False,
-                    "execution_time": 0,
-                    "memory_usage": 0,
                     "output": None,
-                    "error": None
+                    "error": None,
+                    "execution_time": 0
                 }
                 
-                # Capture stdout
-                stdout_buffer = io.StringIO()
-                stderr_buffer = io.StringIO()
-                
                 try:
-                    # Measure execution time
-                    start_time = time.time()
+                    # Capture stdout and stderr
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
                     
-                    # Execute with stdout/stderr redirection
-                    with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                        if isinstance(test_input, (list, tuple)) and not isinstance(test_input, str):
-                            actual_output = function(*test_input)
-                        elif isinstance(test_input, dict):
-                            actual_output = function(**test_input)
-                        else:
-                            actual_output = function(test_input)
-                    
-                    # Calculate execution time
-                    execution_time = time.time() - start_time
-                    total_time += execution_time
-                    
-                    # Get stdout content
-                    stdout_content = stdout_buffer.getvalue()
-                    stderr_content = stderr_buffer.getvalue()
-                    
-                    # Check if output matches expected output
-                    if CodeExecutor._check_output_equality(actual_output, expected_output):
-                        test_result["passed"] = True
-                        results["passed"] += 1
-                    else:
-                        test_result["passed"] = False
-                        results["failed"] += 1
-                    
-                    # Add actual output and execution information
-                    test_result["output"] = actual_output
-                    test_result["execution_time"] = execution_time
-                    
-                    # Add stdout/stderr if any
-                    if stdout_content:
-                        test_result["stdout"] = stdout_content
-                    if stderr_content:
-                        test_result["stderr"] = stderr_content
+                    # Execute test case with timeout using asyncio.wait_for
+                    test_start = time.time()
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        # Run the function call in a separate thread to allow timeout
+                        args = test_case.get("input", [])
+                        if not isinstance(args, (list, tuple)):
+                            args = [args]
+                        
+                        try:
+                            output = await asyncio.wait_for(
+                                asyncio.to_thread(func, *args),
+                                timeout=timeout
+                            )
+                            
+                            test_result["output"] = output
+                            test_result["stdout"] = stdout.getvalue()
+                            test_result["stderr"] = stderr.getvalue()
+                            
+                            # Check output
+                            expected = test_case.get("expected")
+                            test_result["passed"] = await asyncio.to_thread(
+                                CodeExecutor._check_output_equality,
+                                output,
+                                expected
+                            )
+                            
+                            if test_result["passed"]:
+                                results["passed"] += 1
+                            else:
+                                results["failed"] += 1
+                                test_result["error"] = f"Expected {expected}, but got {output}"
+                            
+                        except asyncio.TimeoutError:
+                            test_result["error"] = f"Execution timed out after {timeout} seconds"
+                            results["failed"] += 1
+                            
+                    test_result["execution_time"] = time.time() - test_start
                     
                 except Exception as e:
-                    # Handle exceptions
-                    test_result["passed"] = False
                     test_result["error"] = str(e)
                     test_result["traceback"] = traceback.format_exc()
-                    test_result["stderr"] = stderr_buffer.getvalue()
                     results["failed"] += 1
                 
-                # Add test result
                 results["test_results"].append(test_result)
             
-            # Calculate overall metrics
-            results["execution_time"] = total_time
-            results["all_passed"] = results["failed"] == 0
+            results["execution_time"] = time.time() - start_time
             
-            # Add detailed metrics
-            results["detailed_metrics"] = {
-                "avg_execution_time": total_time / len(test_cases) if test_cases else 0,
-                "max_execution_time": max((t["execution_time"] for t in results["test_results"]), default=0),
-                "success_rate": results["passed"] / len(test_cases) if test_cases else 0
-            }
+            # Calculate pass rate
+            total_tests = len(test_cases)
+            results["pass_rate"] = (results["passed"] / total_tests) if total_tests > 0 else 0
             
             return results
             
         except Exception as e:
-            # Handle exceptions during code execution setup
-            logger.error(f"Error executing code: {e}")
+            logger.error(f"Error executing Python code: {e}")
             results["status"] = "error"
             results["error_message"] = str(e)
             results["traceback"] = traceback.format_exc()
             return results
-    
+
     @staticmethod
-    def execute_javascript_code(code: str, test_cases: List[Dict[str, Any]],
+    async def execute_javascript_code(code: str, test_cases: List[Dict[str, Any]],
                                function_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        Execute JavaScript code using Node.js in a controlled environment.
+        Execute JavaScript code against provided test cases.
         
         Args:
             code: JavaScript code to execute
@@ -311,104 +292,138 @@ class CodeExecutor:
         Returns:
             Dictionary with execution results
         """
-        # First, try using the Docker sandbox if available
+        # Try using the Docker sandbox
         sandbox = get_docker_sandbox()
         if sandbox:
             logger.info("Using Docker sandbox for JavaScript code execution")
-            return sandbox.execute_code(
+            return await sandbox.execute_code(
                 language="javascript",
                 code=code,
                 test_cases=test_cases,
                 function_name=function_name
             )
-            
-        # Fall back to placeholder if Docker is not available
-        logger.warning("Docker sandbox not available, JavaScript execution not supported in legacy mode")
-        
-        # Placeholder implementation - would use subprocess to call Node.js in real implementation
-        return {
-            "status": "not_implemented",
-            "message": "JavaScript execution requires Docker. Please install Docker to enable JavaScript code execution."
-        }
-    
+        else:
+            return {
+                "status": "error",
+                "error_message": "JavaScript execution requires Docker sandbox",
+                "passed": 0,
+                "failed": len(test_cases),
+                "test_results": []
+            }
+
     @staticmethod
     def _extract_python_function_name(code: str) -> str:
-        """
-        Extract the name of the first function defined in the code.
-        
-        Args:
-            code: Python code to analyze
-            
-        Returns:
-            The name of the first function found
-            
-        Raises:
-            ValueError: If no function definition is found
-        """
+        """Extract the first function name from Python code."""
         try:
             tree = ast.parse(code)
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef):
                     return node.name
-            
             raise ValueError("No function definition found in code")
         except Exception as e:
-            raise ValueError(f"Error parsing code: {e}")
-    
+            raise ValueError(f"Error parsing Python code: {str(e)}")
+
     @staticmethod
     def _check_output_equality(actual: Any, expected: Any) -> bool:
         """
-        Check if actual output equals expected output with appropriate type handling.
+        Check if actual output matches expected output.
         
-        Args:
-            actual: Actual output from code execution
-            expected: Expected output for comparison
-            
-        Returns:
-            True if outputs match, otherwise False
+        Handles various Python data types and structures.
         """
-        # Handle None specifically
+        # Handle None
         if actual is None and expected is None:
             return True
         
-        # Handle different types of collections
-        if isinstance(expected, list) and isinstance(actual, list):
-            # Check lengths
-            if len(expected) != len(actual):
+        # Handle different types
+        if type(actual) != type(expected):
+            return False
+        
+        # Handle lists and tuples
+        if isinstance(actual, (list, tuple)):
+            if len(actual) != len(expected):
                 return False
-            
-            # Check each element
             return all(CodeExecutor._check_output_equality(a, e) for a, e in zip(actual, expected))
         
         # Handle dictionaries
-        if isinstance(expected, dict) and isinstance(actual, dict):
-            # Check keys
-            if set(expected.keys()) != set(actual.keys()):
+        if isinstance(actual, dict):
+            if len(actual) != len(expected):
                 return False
-            
-            # Check values
-            return all(CodeExecutor._check_output_equality(actual[k], v) for k, v in expected.items())
+            if set(actual.keys()) != set(expected.keys()):
+                return False
+            return all(CodeExecutor._check_output_equality(actual[k], expected[k]) for k in actual)
         
-        # Direct comparison for other types
+        # Handle sets
+        if isinstance(actual, set):
+            return actual == expected
+        
+        # Handle numeric types with tolerance for floating point
+        if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+            if isinstance(actual, float) or isinstance(expected, float):
+                return abs(actual - expected) < 1e-6
+            return actual == expected
+        
+        # Default comparison
         return actual == expected
-
 
 class SafetyChecker:
     """
-    Check code for potentially unsafe operations.
+    Checks code for potential security issues.
+    
+    This class provides static methods for analyzing code
+    to identify potential security risks before execution.
     """
     
     @staticmethod
-    def check_python_code_safety(code: str) -> Tuple[bool, str]:
+    async def check_python_code_safety(code: str) -> Tuple[bool, str]:
         """
-        Check Python code for unsafe operations.
+        Check Python code for potential security issues.
         
         Args:
-            code: Python code to check
+            code: Python code to analyze
             
         Returns:
             Tuple of (is_safe, message)
         """
-        # Deprecated: Now handled by Docker sandbox
-        # We keep this for backward compatibility
-        return True, "Safety checks now performed by Docker sandbox" 
+        try:
+            # Parse code to AST - this is CPU-bound so use to_thread
+            tree = await asyncio.to_thread(ast.parse, code)
+            
+            # Look for dangerous operations
+            dangerous_calls = []
+            
+            for node in ast.walk(tree):
+                # Check for system calls
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        func_name = node.func.id
+                        if func_name in ['eval', 'exec', 'compile']:
+                            dangerous_calls.append(f"Use of {func_name}()")
+                    elif isinstance(node.func, ast.Attribute):
+                        if isinstance(node.func.value, ast.Name):
+                            # Check for os.system, os.popen, etc.
+                            if node.func.value.id == 'os':
+                                attr = node.func.attr
+                                if attr in ['system', 'popen', 'spawn', 'exec']:
+                                    dangerous_calls.append(f"Use of os.{attr}()")
+                            # Check for subprocess calls
+                            elif node.func.value.id == 'subprocess':
+                                attr = node.func.attr
+                                if attr in ['call', 'run', 'Popen']:
+                                    dangerous_calls.append(f"Use of subprocess.{attr}()")
+                
+                # Check for imports
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for name in node.names:
+                        module = name.name.split('.')[0]
+                        if module in ['os', 'subprocess', 'sys']:
+                            dangerous_calls.append(f"Import of {module} module")
+            
+            if dangerous_calls:
+                return False, f"Potentially unsafe code detected: {', '.join(dangerous_calls)}"
+            
+            return True, "Code appears safe"
+            
+        except SyntaxError as e:
+            return False, f"Syntax error in code: {str(e)}"
+        except Exception as e:
+            return False, f"Error analyzing code safety: {str(e)}"

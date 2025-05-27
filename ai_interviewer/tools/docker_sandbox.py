@@ -14,6 +14,7 @@ import shutil
 from typing import Dict, List, Optional, Any, Tuple
 import docker
 from docker.errors import DockerException, ImageNotFound, ContainerError
+import asyncio
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class DockerSandbox:
             logger.error(f"Failed to initialize Docker client: {e}")
             raise RuntimeError(f"Docker not available: {e}")
     
-    def execute_code(
+    async def execute_code(
         self,
         language: str,
         code: str,
@@ -75,9 +76,9 @@ class DockerSandbox:
         
         # Choose execution handler based on language
         if language == "python":
-            return self._execute_python(code, test_cases, function_name, memory_limit, cpu_limit, timeout, network_disabled)
+            return await self._execute_python(code, test_cases, function_name, memory_limit, cpu_limit, timeout, network_disabled)
         elif language in ["javascript", "js"]:
-            return self._execute_javascript(code, test_cases, function_name, memory_limit, cpu_limit, timeout, network_disabled)
+            return await self._execute_javascript(code, test_cases, function_name, memory_limit, cpu_limit, timeout, network_disabled)
         else:
             return {
                 "status": "error",
@@ -85,7 +86,7 @@ class DockerSandbox:
                 "error": True
             }
     
-    def _execute_python(
+    async def _execute_python(
         self,
         code: str,
         test_cases: List[Dict[str, Any]],
@@ -111,28 +112,30 @@ class DockerSandbox:
             Dictionary with execution results
         """
         # Create a temporary directory for the execution files
-        temp_dir = tempfile.mkdtemp(prefix="ai_interviewer_")
+        temp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="ai_interviewer_")
         
         try:
             # Create the runner script
-            with open(os.path.join(temp_dir, "code.py"), "w") as f:
-                f.write(code)
+            code_py_path = os.path.join(temp_dir, "code.py")
+            await asyncio.to_thread(self._write_file, code_py_path, code)
                 
             # Create the test runner script
             runner_code = self._generate_python_test_runner(test_cases, function_name)
-            with open(os.path.join(temp_dir, "runner.py"), "w") as f:
-                f.write(runner_code)
+            runner_py_path = os.path.join(temp_dir, "runner.py")
+            await asyncio.to_thread(self._write_file, runner_py_path, runner_code)
                 
             # Create test cases file
-            with open(os.path.join(temp_dir, "test_cases.json"), "w") as f:
-                json.dump(test_cases, f)
+            test_cases_json_path = os.path.join(temp_dir, "test_cases.json")
+            await asyncio.to_thread(self._write_json_file, test_cases_json_path, test_cases)
                 
             # Run the container
             container_name = f"ai-interviewer-python-{uuid.uuid4().hex[:8]}"
+            container = None
             
             try:
                 # Prepare container settings
                 container_settings = {
+                    "image": "python:3.10-slim",
                     "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
                     "working_dir": "/app",
                     "command": ["python", "runner.py"],
@@ -141,36 +144,36 @@ class DockerSandbox:
                     "network_disabled": network_disabled,
                     "name": container_name,
                     "detach": True,
-                    "read_only": True,  # Make container filesystem read-only for extra security
-                    "auto_remove": True,  # Automatically remove container when it exits
+                    "read_only": True,
+                    "auto_remove": True,
                 }
                 
                 # Run the container
-                container = self.client.containers.run(
-                    "python:3.10-slim",  # Use slim Python image
+                container = await asyncio.to_thread(
+                    self.client.containers.run,
                     **container_settings
                 )
                 
                 # Wait for container to complete with timeout
                 try:
-                    container.wait(timeout=timeout)
-                except:
-                    # If timeout or error, force stop
-                    try:
-                        container.stop(timeout=1)
-                    except:
-                        pass
-                    
+                    await asyncio.to_thread(container.wait, timeout=timeout)
+                except Exception as e:
+                    if container:
+                        try:
+                            await asyncio.to_thread(container.stop, timeout=1)
+                        except Exception as stop_exc:
+                            logger.warning(f"Failed to stop container {container_name} during timeout handling: {stop_exc}")
                     return {
                         "status": "error",
-                        "message": "Execution timed out",
+                        "message": f"Execution timed out or error during wait: {str(e)}",
                         "execution_time": timeout,
                         "error": True
                     }
                 
                 # Get container logs
                 try:
-                    logs = container.logs().decode("utf-8")
+                    logs_bytes = await asyncio.to_thread(container.logs)
+                    logs = logs_bytes.decode("utf-8")
                     
                     # Parse the JSON output from the runner
                     try:
@@ -187,22 +190,22 @@ class DockerSandbox:
                             # No JSON results found, return error
                             return {
                                 "status": "error",
-                                "message": "Failed to parse execution results",
+                                "message": "Failed to parse execution results from logs",
                                 "logs": logs,
                                 "error": True
                             }
                     except json.JSONDecodeError:
                         return {
                             "status": "error",
-                            "message": "Failed to parse execution results JSON",
+                            "message": "Failed to parse execution results JSON from logs",
                             "logs": logs,
                             "error": True
                         }
-                except:
-                    # If failed to get logs, return error
+                except Exception as log_exc:
+                    logger.error(f"Error retrieving logs for container {container_name}: {log_exc}")
                     return {
                         "status": "error",
-                        "message": "Failed to retrieve execution logs",
+                        "message": f"Failed to retrieve execution logs: {str(log_exc)}",
                         "error": True
                     }
                 
@@ -211,7 +214,7 @@ class DockerSandbox:
                 return {
                     "status": "error",
                     "message": f"Container execution failed: {str(e)}",
-                    "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") else "",
+                    "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") and e.stderr else "",
                     "error": True
                 }
             except ImageNotFound:
@@ -229,12 +232,19 @@ class DockerSandbox:
                     "message": f"Execution error: {str(e)}",
                     "error": True
                 }
-                
+            finally:
+                if container:
+                    try:
+                        pass
+                    except DockerException as e:
+                        logger.warning(f"Error during explicit container cleanup for {container_name}: {e}")
+                        
         finally:
             # Clean up temporary directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            if os.path.exists(temp_dir):
+                 await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
     
-    def _execute_javascript(
+    async def _execute_javascript(
         self,
         code: str,
         test_cases: List[Dict[str, Any]],
@@ -260,129 +270,142 @@ class DockerSandbox:
             Dictionary with execution results
         """
         # Create a temporary directory for the execution files
-        temp_dir = tempfile.mkdtemp(prefix="ai_interviewer_")
-        
+        temp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="ai_interviewer_js_")
+        container = None
+
         try:
-            # Create the solution file
-            with open(os.path.join(temp_dir, "code.js"), "w") as f:
-                f.write(code)
-                
+            # Create the runner script
+            code_js_path = os.path.join(temp_dir, "code.js")
+            await asyncio.to_thread(self._write_file, code_js_path, code)
+
             # Create the test runner script
             runner_code = self._generate_javascript_test_runner(test_cases, function_name)
-            with open(os.path.join(temp_dir, "runner.js"), "w") as f:
-                f.write(runner_code)
-                
+            runner_js_path = os.path.join(temp_dir, "runner.js")
+            await asyncio.to_thread(self._write_file, runner_js_path, runner_code)
+
             # Create test cases file
-            with open(os.path.join(temp_dir, "test_cases.json"), "w") as f:
-                json.dump(test_cases, f)
-                
+            test_cases_json_path = os.path.join(temp_dir, "test_cases.json")
+            await asyncio.to_thread(self._write_json_file, test_cases_json_path, test_cases)
+
             # Run the container
-            container_name = f"ai-interviewer-node-{uuid.uuid4().hex[:8]}"
+            container_name = f"ai-interviewer-js-{uuid.uuid4().hex[:8]}"
             
             try:
                 # Prepare container settings
                 container_settings = {
+                    "image": "node:18-slim",
                     "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
                     "working_dir": "/app",
                     "command": ["node", "runner.js"],
                     "mem_limit": memory_limit,
-                    "cpu_quota": int(cpu_limit * 100000),  # Docker CPU quota in microseconds
+                    "cpu_quota": int(cpu_limit * 100000),
                     "network_disabled": network_disabled,
                     "name": container_name,
                     "detach": True,
-                    "read_only": True,  # Make container filesystem read-only for extra security
-                    "auto_remove": True,  # Automatically remove container when it exits
+                    "read_only": True,
+                    "auto_remove": True,
                 }
-                
+
                 # Run the container
-                container = self.client.containers.run(
-                    "node:16-slim",  # Use slim Node.js image
+                container = await asyncio.to_thread(
+                    self.client.containers.run,
                     **container_settings
                 )
-                
+
                 # Wait for container to complete with timeout
                 try:
-                    container.wait(timeout=timeout)
-                except:
-                    # If timeout or error, force stop
-                    try:
-                        container.stop(timeout=1)
-                    except:
-                        pass
-                    
+                    await asyncio.to_thread(container.wait, timeout=timeout)
+                except Exception as e:
+                    if container:
+                        try:
+                            await asyncio.to_thread(container.stop, timeout=1)
+                        except Exception as stop_exc:
+                            logger.warning(f"Failed to stop container {container_name} during timeout handling: {stop_exc}")
                     return {
                         "status": "error",
-                        "message": "Execution timed out",
+                        "message": f"Execution timed out or error during wait: {str(e)}",
                         "execution_time": timeout,
                         "error": True
                     }
-                
+
                 # Get container logs
                 try:
-                    logs = container.logs().decode("utf-8")
-                    
+                    logs_bytes = await asyncio.to_thread(container.logs)
+                    logs = logs_bytes.decode("utf-8")
+
                     # Parse the JSON output from the runner
                     try:
-                        # Find JSON output in logs
                         json_start = logs.find("__RESULTS_JSON_START__")
                         json_end = logs.find("__RESULTS_JSON_END__")
-                        
+
                         if json_start >= 0 and json_end > json_start:
                             json_data = logs[json_start + len("__RESULTS_JSON_START__"):json_end].strip()
                             results = json.loads(json_data)
                             results["logs"] = logs
                             return results
                         else:
-                            # No JSON results found, return error
                             return {
                                 "status": "error",
-                                "message": "Failed to parse execution results",
+                                "message": "Failed to parse execution results from logs",
                                 "logs": logs,
                                 "error": True
                             }
                     except json.JSONDecodeError:
                         return {
                             "status": "error",
-                            "message": "Failed to parse execution results JSON",
+                            "message": "Failed to parse execution results JSON from logs",
                             "logs": logs,
                             "error": True
                         }
-                except:
-                    # If failed to get logs, return error
+                except Exception as log_exc:
+                    logger.error(f"Error retrieving logs for container {container_name}: {log_exc}")
                     return {
                         "status": "error",
-                        "message": "Failed to retrieve execution logs",
+                        "message": f"Failed to retrieve execution logs: {str(log_exc)}",
                         "error": True
                     }
-                
+
             except ContainerError as e:
-                # Container run failed
                 return {
                     "status": "error",
                     "message": f"Container execution failed: {str(e)}",
-                    "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") else "",
+                    "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") and e.stderr else "",
                     "error": True
                 }
             except ImageNotFound:
-                # Node.js image not found
                 return {
                     "status": "error",
                     "message": "Node.js Docker image not found",
                     "error": True
                 }
             except Exception as e:
-                # Other exceptions
                 logger.error(f"Docker execution error: {str(e)}")
                 return {
                     "status": "error",
                     "message": f"Execution error: {str(e)}",
                     "error": True
                 }
-                
+            finally:
+                if container:
+                    try:
+                        pass
+                    except DockerException as e:
+                        logger.warning(f"Error during explicit container cleanup for {container_name}: {e}")
+
         finally:
             # Clean up temporary directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
-    
+            if os.path.exists(temp_dir):
+                 await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+    # Helper methods for file operations to be used with asyncio.to_thread
+    def _write_file(self, file_path: str, content: str):
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def _write_json_file(self, file_path: str, data: Any):
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
     @staticmethod
     def _generate_python_test_runner(test_cases: List[Dict[str, Any]], function_name: Optional[str] = None) -> str:
         """
@@ -420,7 +443,7 @@ def extract_function_name(code):
                 return node.name
         raise ValueError("No function definition found in code")
     except Exception as e:
-        raise ValueError(f"Error parsing code: {e}")
+        raise ValueError(f"Error parsing code: {{str(e)}}")
 
 # Determine the function name
 function_name = "{}"
@@ -428,10 +451,10 @@ if not function_name:
     try:
         function_name = extract_function_name(code)
     except Exception as e:
-        print(f"Error extracting function name: {{e}}")
+        print(f"Error extracting function name: {{str(e)}}")
         results = {{
             "status": "error",
-            "error_message": f"Could not identify a function to test: {{e}}"
+            "error_message": f"Could not identify a function to test: {{str(e)}}"
         }}
         print("__RESULTS_JSON_START__")
         print(json.dumps(results))
