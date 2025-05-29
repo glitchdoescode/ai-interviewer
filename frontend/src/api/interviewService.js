@@ -482,6 +482,29 @@ export const testAudioTranscription = async () => {
   }
 };
 
+/**
+ * Generate a coding problem for the interview
+ * @param {string} jobRole - Job role for which to generate the problem
+ * @param {string} difficulty - Difficulty level (easy, medium, hard)
+ * @param {Array} skills - Array of skills to target
+ * @returns {Promise} Promise with response data containing the generated problem
+ */
+export const generateCodingProblem = async (jobRole, difficulty = 'medium', skills = []) => {
+  try {
+    const requestBody = {
+      job_role: jobRole,
+      difficulty: difficulty,
+      skills: skills,
+      problem_type: 'algorithmic' // Default to algorithmic problems
+    };
+    
+    const response = await api.post('/coding/generate-problem', requestBody);
+    return response.data;
+  } catch (error) {
+    return handleApiError(error, 'Failed to generate coding problem');
+  }
+};
+
 // Set up a response interceptor for global error handling
 api.interceptors.response.use(
   response => response,
@@ -513,7 +536,8 @@ const interviewService = {
   getChallengeHint,
   continueAfterCodingChallenge,
   getJobRoles,
-  testAudioTranscription
+  testAudioTranscription,
+  generateCodingProblem
 };
 
 export default interviewService; 

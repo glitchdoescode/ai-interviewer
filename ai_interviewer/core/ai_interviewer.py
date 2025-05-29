@@ -60,6 +60,11 @@ from ai_interviewer.tools.question_tools import (
     generate_interview_question,
     analyze_candidate_response
 )
+from ai_interviewer.tools.problem_generation_tool import (
+    generate_coding_challenge_from_jd,
+    submit_code_for_generated_challenge,
+    get_hint_for_generated_challenge
+)
 
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
@@ -132,12 +137,17 @@ HANDLING SPECIAL SITUATIONS:
 - When the candidate asks about the company/role: Provide encouraging, realistic information
 
 ADAPTING TO INTERVIEW STAGES:
-- Introduction: Focus on building rapport and understanding the candidate's background
-- Technical Questions: Assess depth of knowledge with progressive difficulty
-- Coding Challenge: Evaluate problem-solving process, not just the solution. Only move to this stage if the role requires coding.
-- Behavioral Questions: Look for evidence of soft skills and experience
+- Introduction: Focus on building rapport and understanding the candidate's background. Keep this brief, just 2-3 exchanges before moving to technical questions.
+- Technical Questions: Assess depth of knowledge with progressive difficulty. Ask 3-4 technical questions before moving on.
+- Coding Challenge: IMPORTANT - When you reach this stage, you MUST use the generate_coding_challenge_from_jd tool to generate a coding problem based on the candidate's job role and required skills. Do not create your own coding challenge description - use the tool to generate a customized challenge.
+- Behavioral Questions: Look for evidence of soft skills and experience. Ask 2-3 behavioral questions.
 - Feedback: Be constructive, balanced, and specific
 - Conclusion: End on a positive note with clear next steps
+
+TOOLS USAGE:
+- generate_coding_challenge_from_jd: ALWAYS use this tool when you reach the coding_challenge stage to generate an appropriate coding challenge based on the job description and required skills.
+- analyze_candidate_response: Use this tool to evaluate technical answers more deeply.
+- generate_interview_question: Use this tool to generate high-quality technical questions based on the required skills.
 
 If unsure how to respond to something unusual, stay professional and steer the conversation back to relevant technical topics.
 """
@@ -285,7 +295,8 @@ class AIInterviewer:
                 job_role: str = "Software Engineering",
                 seniority_level: str = "Mid-level",
                 required_skills: List[str] = None,
-                job_description: str = ""):
+                job_description: str = "",
+                auto_migrate: bool = True):
         """
         Initialize the AI Interviewer with the necessary components.
         
@@ -296,6 +307,7 @@ class AIInterviewer:
             seniority_level: Default seniority level
             required_skills: Default required skills
             job_description: Default job description
+            auto_migrate: Whether to automatically migrate old tool call formats
         """
         log_config()
         
@@ -385,6 +397,10 @@ class AIInterviewer:
                     collection_name=db_config["metadata_collection"],
                 )
                 
+                # If auto_migrate is enabled, perform a quick tool call format migration
+                if auto_migrate:
+                    self._migrate_tool_calls(mongodb_uri, db_config["database"], db_config["sessions_collection"])
+                
                 logger.info("MongoDB memory manager initialized successfully")
             except Exception as e:
                 # If there's an error with MongoDB, fall back to in-memory persistence
@@ -412,9 +428,17 @@ class AIInterviewer:
         """Set up the tools for the interviewer."""
         # Define tools
         self.tools = [
+            # Prioritize problem generation tools
+            generate_coding_challenge_from_jd,
+            submit_code_for_generated_challenge,
+            get_hint_for_generated_challenge,
+            
+            # Include original tools for backward compatibility
             start_coding_challenge,
             submit_code_for_challenge,
             get_coding_hint,
+            
+            # Other tools
             suggest_code_improvements,
             complete_code,
             review_code_section,
@@ -454,6 +478,56 @@ class AIInterviewer:
                     # Extract messages from dictionary
                     messages = state.get("messages", [])
                     candidate_name = state.get("candidate_name", "")
+                    interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
+                    job_role = state.get("job_role", "")
+                    requires_coding = state.get("requires_coding", True)
+                    
+                    # Get additional info for coding challenge generation
+                    seniority_level = state.get("seniority_level", "Mid-level")
+                    required_skills = state.get("required_skills", ["Programming", "Problem-solving"])
+                    job_description = state.get("job_description", f"A {seniority_level} {job_role} position")
+                    
+                    # Special handling for coding challenge stage
+                    last_msg = messages[-1] if messages else None
+                    if (interview_stage == InterviewStage.CODING_CHALLENGE.value and 
+                        isinstance(last_msg, AIMessage) and 
+                        (not hasattr(last_msg, 'tool_calls') or 
+                         not any(call.get('name') in ['start_coding_challenge', 'generate_coding_challenge_from_jd'] 
+                                for call in (last_msg.tool_calls or [])))):
+                        
+                        # No coding challenge tool was called, but we're in the coding stage
+                        # Let's add a special message to force the tool usage
+                        logger.info("In coding_challenge stage but no tool used - forcing generate_coding_challenge_from_jd tool")
+                        
+                        # Create a fake tool call for generate_coding_challenge_from_jd
+                        if requires_coding:
+                            difficulty_level = "intermediate" 
+                            if seniority_level.lower() == "junior":
+                                difficulty_level = "beginner"
+                            elif seniority_level.lower() in ["senior", "lead", "principal"]:
+                                difficulty_level = "advanced"
+                                
+                            fake_tool_call = {
+                                "name": "generate_coding_challenge_from_jd",
+                                "args": {
+                                    "job_description": job_description,
+                                    "skills_required": required_skills,
+                                    "difficulty_level": difficulty_level
+                                },
+                                "id": f"tool_{uuid.uuid4().hex[:8]}"
+                            }
+                            
+                            # If the last message is an AI message, add the tool call to it
+                            if isinstance(last_msg, AIMessage):
+                                if not hasattr(last_msg, 'tool_calls'):
+                                    last_msg.tool_calls = []
+                                last_msg.tool_calls.append(fake_tool_call)
+                                messages[-1] = last_msg
+                    
+                    # Ensure tool_calls are in the correct format before executing
+                    # This helps with backward compatibility
+                    if messages and isinstance(messages[-1], AIMessage) and hasattr(messages[-1], 'tool_calls'):
+                        self._normalize_tool_calls(messages[-1].tool_calls)
                     
                     # Execute tools using the ToolNode with messages
                     tool_result = self.tool_node.invoke({"messages": messages})
@@ -479,6 +553,56 @@ class AIInterviewer:
                     # Extract messages from InterviewState
                     messages = state.messages
                     candidate_name = state.candidate_name
+                    interview_stage = state.interview_stage
+                    job_role = state.job_role
+                    requires_coding = state.requires_coding
+                    
+                    # Get additional info for coding challenge generation
+                    seniority_level = state.seniority_level
+                    required_skills = state.required_skills
+                    job_description = state.job_description
+                    
+                    # Special handling for coding challenge stage
+                    last_msg = messages[-1] if messages else None
+                    if (interview_stage == InterviewStage.CODING_CHALLENGE.value and 
+                        isinstance(last_msg, AIMessage) and 
+                        (not hasattr(last_msg, 'tool_calls') or 
+                         not any(call.get('name') in ['start_coding_challenge', 'generate_coding_challenge_from_jd'] 
+                                for call in (last_msg.tool_calls or [])))):
+                        
+                        # No coding challenge tool was called, but we're in the coding stage
+                        # Let's add a special message to force the tool usage
+                        logger.info("In coding_challenge stage but no tool used - forcing generate_coding_challenge_from_jd tool")
+                        
+                        # Create a fake tool call for generate_coding_challenge_from_jd
+                        if requires_coding:
+                            difficulty_level = "intermediate" 
+                            if seniority_level.lower() == "junior":
+                                difficulty_level = "beginner"
+                            elif seniority_level.lower() in ["senior", "lead", "principal"]:
+                                difficulty_level = "advanced"
+                                
+                            fake_tool_call = {
+                                "name": "generate_coding_challenge_from_jd",
+                                "args": {
+                                    "job_description": job_description,
+                                    "skills_required": required_skills,
+                                    "difficulty_level": difficulty_level
+                                },
+                                "id": f"tool_{uuid.uuid4().hex[:8]}"
+                            }
+                            
+                            # If the last message is an AI message, add the tool call to it
+                            if isinstance(last_msg, AIMessage):
+                                if not hasattr(last_msg, 'tool_calls'):
+                                    last_msg.tool_calls = []
+                                last_msg.tool_calls.append(fake_tool_call)
+                                messages[-1] = last_msg
+                    
+                    # Ensure tool_calls are in the correct format before executing
+                    # This helps with backward compatibility
+                    if messages and isinstance(messages[-1], AIMessage) and hasattr(messages[-1], 'tool_calls'):
+                        self._normalize_tool_calls(messages[-1].tool_calls)
                     
                     # Execute tools using the ToolNode with messages
                     tool_result = self.tool_node.invoke({"messages": messages})
@@ -504,6 +628,7 @@ class AIInterviewer:
                         seniority_level=state.seniority_level,
                         required_skills=state.required_skills,
                         job_description=state.job_description,
+                        requires_coding=state.requires_coding,
                         interview_stage=state.interview_stage,
                         session_id=state.session_id,
                         user_id=state.user_id,
@@ -732,6 +857,7 @@ class AIInterviewer:
             messages = state["messages"]
             message_count = state.get("message_count", 0)
             max_messages = state.get("max_messages_before_summary", 20)
+            interview_stage = state.get("interview_stage", "introduction")
         else:
             # Assume it's a MessagesState or InterviewState object
             if not hasattr(state, "messages") or not state.messages:
@@ -740,6 +866,7 @@ class AIInterviewer:
             messages = state.messages
             message_count = getattr(state, "message_count", 0)
             max_messages = getattr(state, "max_messages_before_summary", 20)
+            interview_stage = getattr(state, "interview_stage", "introduction")
         
         # Check if we need to manage context due to message length
         if len(messages) > max_messages:
@@ -748,6 +875,10 @@ class AIInterviewer:
         # Look for the last AI message
         for message in reversed(messages):
             if isinstance(message, AIMessage):
+                # Always route to tools node in coding_challenge stage to ensure tool is used
+                if interview_stage == "coding_challenge":
+                    return "tools"
+                    
                 # Check if it has tool calls
                 if hasattr(message, "tool_calls") and message.tool_calls:
                     return "tools"
@@ -805,6 +936,14 @@ class AIInterviewer:
                 conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
             )
             
+            # Add extra instructions for specific stages
+            if interview_stage == InterviewStage.CODING_CHALLENGE.value:
+                system_prompt += "\n\nIMPORTANT: You are now in the CODING_CHALLENGE stage. You MUST use the generate_coding_challenge_from_jd tool to generate a coding challenge for the candidate. DO NOT create your own coding challenge description."
+            elif interview_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+                system_prompt += "\n\nIMPORTANT: You are now in the TECHNICAL_QUESTIONS stage. Ask relevant technical questions based on the required skills and job description. Use the generate_interview_question tool if needed."
+            elif interview_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
+                system_prompt += "\n\nIMPORTANT: You are now in the BEHAVIORAL_QUESTIONS stage. Ask behavioral questions to assess soft skills and past experiences relevant to the role."
+            
             # Build the full prompt with system message and conversation history
             prompt_parts = [f"System: {system_prompt}"]
             for msg in messages:
@@ -859,6 +998,10 @@ class AIInterviewer:
             # Update state
             state["messages"] = messages + [ai_message]
             state["interview_stage"] = new_stage
+            
+            # Log stage transition if it occurred
+            if new_stage != current_stage_val:
+                logger.info(f"Interview stage transitioned from {current_stage_val} to {new_stage}")
             
             # Update message count
             state["message_count"] = state.get("message_count", 0) + 1
@@ -1376,15 +1519,123 @@ class AIInterviewer:
     def _determine_interview_stage(self, messages: List[BaseMessage], ai_message: AIMessage, current_stage: str) -> str:
         """
         Determines the next stage of the interview based on the conversation.
-        Placeholder implementation.
+        
+        Args:
+            messages: Previous messages in the conversation
+            ai_message: The most recent AI message
+            current_stage: The current interview stage
+            
+        Returns:
+            Updated interview stage based on conversation flow
         """
-        # TODO: Implement proper logic to transition interview stages.
-        # For now, this placeholder will prevent crashes.
-        # Example: if "coding challenge" in ai_message.content.lower():
-        # return InterviewStage.CODING_CHALLENGE.value
-        logger.info(f"Placeholder _determine_interview_stage called. Current stage: {current_stage}. Returning current stage for now.")
+        # Extract AI message content
+        ai_content = safe_extract_content(ai_message).lower()
+        
+        # Check for tool calls that might indicate a stage transition
+        if hasattr(ai_message, 'tool_calls') and ai_message.tool_calls:
+            for tool_call in ai_message.tool_calls:
+                # Check specifically for the generate_coding_challenge_from_jd tool
+                if tool_call.get('name') == 'generate_coding_challenge_from_jd':
+                    # If a coding challenge is started, immediately move to CODING_CHALLENGE_WAITING
+                    # This ensures the UI will show the coding challenge interface
+                    logger.info("Detected generate_coding_challenge_from_jd tool call, transitioning to CODING_CHALLENGE_WAITING stage")
+                    return InterviewStage.CODING_CHALLENGE_WAITING.value
+        
+        # Count the number of messages to determine progress
+        message_count = len(messages)
+        
+        # Determine stage transitions based on current stage and message count
+        if current_stage == InterviewStage.INTRODUCTION.value:
+            # After just 2-3 exchanges, move to technical questions
+            if message_count >= 3:
+                logger.info("Transitioning from INTRODUCTION to TECHNICAL_QUESTIONS based on message count")
+                return InterviewStage.TECHNICAL_QUESTIONS.value
+            
+        elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+            # After 3-4 technical questions, move to coding challenge
+            if message_count >= 7:
+                logger.info("Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE based on message count")
+                return InterviewStage.CODING_CHALLENGE.value
+            
+        elif current_stage == InterviewStage.CODING_CHALLENGE.value:
+            # If we're in coding challenge stage but not waiting yet, transition to waiting
+            # This ensures the UI will display the challenge
+            if message_count >= 9:
+                logger.info("Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING based on message count")
+                return InterviewStage.CODING_CHALLENGE_WAITING.value
+                
+        elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
+            # Move to behavioral questions after coding challenge is complete
+            if message_count >= 11:
+                logger.info("Transitioning from CODING_CHALLENGE_WAITING to BEHAVIORAL_QUESTIONS based on message count")
+                return InterviewStage.BEHAVIORAL_QUESTIONS.value
+                
+        elif current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
+            # After 2-3 behavioral questions, move to feedback
+            if message_count >= 14:
+                logger.info("Transitioning from BEHAVIORAL_QUESTIONS to FEEDBACK based on message count")
+                return InterviewStage.FEEDBACK.value
+                
+        elif current_stage == InterviewStage.FEEDBACK.value:
+            # Final transition to conclusion
+            if message_count >= 16:
+                logger.info("Transitioning from FEEDBACK to CONCLUSION based on message count")
+                return InterviewStage.CONCLUSION.value
+        
+        # If no transition is detected, remain in the current stage
         return current_stage
 
     async def resume_interview(self, session_id: str, user_id: str) -> Tuple[Optional[InterviewState], str]:
         # Implementation of resume_interview method
         pass
+
+    def _migrate_tool_calls(self, mongodb_uri: str, db_name: str, collection_name: str) -> None:
+        """
+        Migrate tool calls from 'arguments' to 'args' format to prevent deserialization errors.
+        
+        Args:
+            mongodb_uri: MongoDB connection URI
+            db_name: Database name
+            collection_name: Collection name for checkpoints
+        """
+        try:
+            # Import the migration utility function
+            from ai_interviewer.utils.db_utils import migrate_tool_call_format
+            from pymongo import MongoClient
+            
+            # Connect to MongoDB
+            client = MongoClient(mongodb_uri)
+            
+            # Run migration
+            logger.info("Running quick tool call format migration to prevent deserialization errors")
+            result = migrate_tool_call_format(client, db_name, collection_name)
+            
+            if "error" not in result:
+                logger.info(f"Tool call migration complete: {result}")
+            else:
+                logger.warning(f"Tool call migration failed: {result['error']}")
+                
+            client.close()
+        except Exception as e:
+            logger.warning(f"Error during tool call migration: {e}")
+            logger.warning("Continuing without migration - some sessions may experience errors")
+
+    def _normalize_tool_calls(self, tool_calls):
+        """
+        Normalize tool calls to ensure they use 'args' instead of 'arguments'.
+        This helps with backward compatibility and prevents deserialization errors.
+        
+        Args:
+            tool_calls: List of tool calls to normalize
+        """
+        if not tool_calls:
+            return
+            
+        for tool_call in tool_calls:
+            # Convert 'arguments' to 'args' if present
+            if "arguments" in tool_call and "args" not in tool_call:
+                tool_call["args"] = tool_call.pop("arguments")
+                
+            # Ensure each tool call has an ID
+            if "id" not in tool_call:
+                tool_call["id"] = f"tool_{uuid.uuid4().hex[:8]}"

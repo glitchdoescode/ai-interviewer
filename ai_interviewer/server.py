@@ -36,6 +36,7 @@ from langgraph.types import interrupt, Command
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
+from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd
 
 # Set up logging
 logging.basicConfig(
@@ -70,8 +71,8 @@ app = FastAPI(
     Authentication will be added in a future update.
     """,
     version="1.0.0",
-    docs_url=None,
-    redoc_url=None,
+    docs_url="/api/docs",  # Enable default Swagger UI at /api/docs
+    redoc_url="/api/redoc",  # Enable ReDoc at /api/redoc
 )
 
 # Add rate limiter exception handler
@@ -305,6 +306,7 @@ class ErrorResponse(BaseModel):
                 "detail": "Session not found or invalid user ID"
             }
         }
+
 
 # Exception handler for general exceptions
 @app.exception_handler(Exception)
@@ -993,25 +995,29 @@ async def health_check():
 # Mount the React frontend static files
 frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend/build")
 if os.path.exists(frontend_build_path):
-    app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="frontend")
-    logger.info(f"Frontend mounted from {frontend_build_path}")
-else:
-    logger.warning(f"Frontend build directory not found at {frontend_build_path}. Frontend will not be served.")
-
-    # Fallback route to handle React Router's client-side routing
+    # Mount the static files under /static path
+    app.mount("/static", StaticFiles(directory=os.path.join(frontend_build_path, "static")), name="static")
+    
+    # Use a catch-all route for serving the frontend, but only after all API routes are defined
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """
         Serve the React SPA for any non-API routes to handle client-side routing.
         """
-        # Only intercept non-API and non-static routes
-        if not full_path.startswith("api/") and not full_path.startswith("static/"):
-            index_path = os.path.join(frontend_build_path, "index.html")
-            if os.path.exists(index_path):
-                return FileResponse(index_path)
+        # Don't interfere with API routes
+        if full_path.startswith("api/") or full_path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="Not found")
+            
+        index_path = os.path.join(frontend_build_path, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
         
         # If we get here, the path wasn't found
         raise HTTPException(status_code=404, detail="Not found")
+    
+    logger.info(f"Frontend catch-all route registered for {frontend_build_path}")
+else:
+    logger.warning(f"Frontend build directory not found at {frontend_build_path}. Frontend will not be served.")
 
 # Define models for coding challenge requests/responses
 class CodingSubmissionRequest(BaseModel):
@@ -1062,6 +1068,8 @@ class ChallengeCompleteRequest(BaseModel):
         }
 
 # Add routes for handling coding challenges
+
+
 
 @app.post(
     "/api/coding/submit",
@@ -1944,6 +1952,90 @@ async def extract_interview_insights(request: Request, req_data: ExtractInsights
         logger.error(f"Error extracting insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class ProblemGenerationRequest(BaseModel):
+    """Request model for problem generation."""
+    job_description: str = Field(..., description="Description of the job position")
+    skills_required: List[str] = Field(..., description="List of required technical skills")
+    difficulty_level: str = Field("intermediate", description="Desired difficulty level (beginner, intermediate, advanced)")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "job_description": "We're looking for a Python backend developer with strong experience in API development and data structures.",
+                "skills_required": ["Python", "FastAPI", "Data Structures", "Algorithms"],
+                "difficulty_level": "intermediate"
+            }
+        }
+
+class CodingProblemResponse(BaseModel):
+    """Response model for coding problem generation."""
+    problem_statement: str = Field(..., description="Clear description of the problem")
+    test_cases: List[Dict[str, Any]] = Field(..., description="List of test cases")
+    reference_solution: str = Field(..., description="Reference solution in Python")
+    difficulty_level: str = Field(..., description="Difficulty level of the problem")
+    skills_targeted: List[str] = Field(..., description="Skills being tested")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "problem_statement": "Write a function that finds the most frequent element in a list",
+                "test_cases": [
+                    {"input": [1, 2, 2, 3], "expected_output": 2}
+                ],
+                "reference_solution": "def find_most_frequent(lst):\n    return max(set(lst), key=lst.count)",
+                "difficulty_level": "intermediate",
+                "skills_targeted": ["Python", "Data Structures"]
+            }
+        }
+
+@app.post(
+    "/api/coding/generate-problem",
+    response_model=CodingProblemResponse,
+    responses={
+        200: {"description": "Successfully generated coding problem"},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("10/minute")
+async def generate_coding_problem(request: Request, req_data: ProblemGenerationRequest):
+    """
+    Generate a coding problem based on job description and required skills.
+    """
+    try:
+        # Log detailed request information
+        logger.info("=== PROBLEM GENERATION REQUEST RECEIVED ===")
+        logger.info(f"Client IP: {request.client.host}")
+        logger.info(f"Job Description: {req_data.job_description[:50]}...")
+        logger.info(f"Skills Required: {req_data.skills_required}")
+        logger.info(f"Difficulty Level: {req_data.difficulty_level}")
+        
+        # Call the problem generation tool using the invoke method
+        logger.info("Calling generate_coding_challenge_from_jd tool...")
+        result = generate_coding_challenge_from_jd.invoke({
+            "job_description": req_data.job_description,
+            "skills_required": req_data.skills_required,
+            "difficulty_level": req_data.difficulty_level
+        })
+        
+        # Log the successful response
+        logger.info("Problem generation successful!")
+        logger.info(f"Problem Statement (first 50 chars): {result.get('problem_statement', '')[:50]}...")
+        logger.info(f"Number of Test Cases: {len(result.get('test_cases', []))}")
+        logger.info(f"Skills Targeted: {result.get('skills_targeted', [])}")
+        
+        return result
+    except Exception as e:
+        logger.error("=== PROBLEM GENERATION ERROR ===")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error(f"Stack trace:", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate coding problem: {str(e)}"
+        )
+
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
     Start the FastAPI server.
@@ -2110,6 +2202,8 @@ async def get_candidate_profile(request: Request, user_id: str):
             status_code=500,
             detail=f"Failed to retrieve candidate profile: {str(e)}"
         )
+
+
 
 if __name__ == "__main__":
     # Run the server directly if this module is executed

@@ -30,7 +30,8 @@ import {
   continueInterview, 
   transcribeAndRespond,
   continueAfterCodingChallenge,
-  getChallengeHint
+  getChallengeHint,
+  generateCodingProblem
 } from '../api/interviewService';
 import { Link } from 'react-router-dom';
 
@@ -49,12 +50,13 @@ const ChatInterface = ({ jobRoleData }) => {
     loading,
     error,
     voiceMode,
-    // Remove unused interviewStage
+    interviewStage,
     setSessionId,
     addMessage,
     setLoading,
     setError,
     setVoiceMode,
+    setInterviewStage,
   } = useInterview();
 
   const [messageInput, setMessageInput] = useState('');
@@ -133,15 +135,16 @@ const ChatInterface = ({ jobRoleData }) => {
         // Check if the message contains coding challenge data
         // This could be embedded in a tool_call from the LLM
         if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
-          const startCodingChallengeTool = lastMessage.tool_calls.find(
-            tool => tool.name === 'start_coding_challenge'
+          // Look for either the old or new coding challenge tool
+          const codingChallengeTool = lastMessage.tool_calls.find(
+            tool => tool.name === 'start_coding_challenge' || tool.name === 'generate_coding_challenge_from_jd'
           );
           
-          if (startCodingChallengeTool && startCodingChallengeTool.result) {
+          if (codingChallengeTool && codingChallengeTool.result) {
             try {
-              const challengeData = typeof startCodingChallengeTool.result === 'string' 
-                ? JSON.parse(startCodingChallengeTool.result) 
-                : startCodingChallengeTool.result;
+              const challengeData = typeof codingChallengeTool.result === 'string' 
+                ? JSON.parse(codingChallengeTool.result) 
+                : codingChallengeTool.result;
                 
               if (challengeData.status === 'success') {
                 setCurrentCodingChallenge(challengeData);
@@ -155,6 +158,48 @@ const ChatInterface = ({ jobRoleData }) => {
       }
     }
   }, [messages]);
+
+  // Monitor interview stage changes and automatically generate coding challenge when needed
+  useEffect(() => {
+    const handleCodingChallengeStage = async () => {
+      // Check if we're in coding challenge stage but don't have a challenge yet
+      if (interviewStage === 'coding_challenge' && !currentCodingChallenge && !isWaitingForCodingChallenge) {
+        try {
+          console.log('Interview stage changed to coding_challenge. Generating coding problem...');
+          setLoading(true);
+          
+          // Generate a coding problem based on the job role
+          const problemResponse = await generateCodingProblem(
+            jobRoleData?.role_name || 'Software Developer',
+            'medium', // Default difficulty
+            jobRoleData?.required_skills || ['programming']
+          );
+          
+          if (problemResponse && problemResponse.challenge) {
+            // Set the current coding challenge
+            setCurrentCodingChallenge(problemResponse.challenge);
+            setIsWaitingForCodingChallenge(true);
+            
+            // Notify the user
+            toast({
+              title: 'Coding Challenge',
+              description: 'A coding challenge has been generated based on your interview progress.',
+              status: 'info',
+              duration: 5000,
+              isClosable: true,
+            });
+          }
+        } catch (err) {
+          console.error('Error generating coding challenge:', err);
+          setError('Failed to generate coding challenge. Please try again.');
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+    
+    handleCodingChallengeStage();
+  }, [interviewStage, currentCodingChallenge, isWaitingForCodingChallenge, jobRoleData, setLoading, setError, toast]);
 
   // Function to handle sending a new message
   const handleSendMessage = async () => {
@@ -207,6 +252,12 @@ const ChatInterface = ({ jobRoleData }) => {
         tool_calls: response.tool_calls
       });
       
+      // Update interview stage if provided in the response
+      if (response.interview_stage) {
+        console.log('Updating interview stage to:', response.interview_stage);
+        setInterviewStage(response.interview_stage);
+      }
+      
       // Clear any errors
       setError(null);
     } catch (err) {
@@ -248,95 +299,78 @@ const ChatInterface = ({ jobRoleData }) => {
         // Send audio for transcription and get response
         const response = await transcribeAndRespond(audioBase64, userId, sessionId, jobRoleData);
         
-        console.log('Audio response received:', response);
+        // Update the user message with the transcribed text
+        // Find the last user message and update it
+        const updatedMessages = [...messages];
+        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+          if (updatedMessages[i].role === 'user' && updatedMessages[i].loading) {
+            updatedMessages[i] = {
+              role: 'user',
+              content: response.transcription || '(No speech detected)',
+            };
+            break;
+          }
+        }
         
-        // Update user message with transcription
-        addMessage({
-          role: 'user',
-          content: response.transcription,
-        });
-        
-        // If we don't have a session ID yet, set it
-        if (!sessionId) {
-          setSessionId(response.session_id);
+        // Update messages with transcription
+        if (updatedMessages.length !== messages.length) {
+          console.error('Failed to update transcription message.');
         }
         
         // Add AI response
         addMessage({
           role: 'assistant',
           content: response.response,
-          audioUrl: response.audio_response_url,
           tool_calls: response.tool_calls
         });
+
+        // Update interview stage if provided in the response
+        if (response.interview_stage) {
+          console.log('Updating interview stage to:', response.interview_stage);
+          setInterviewStage(response.interview_stage);
+        }
+        
+        // Clear any errors
+        setError(null);
       } catch (err) {
-        console.error('Error processing voice recording:', err);
-        setError('Failed to process audio. Please try again.');
-        // Add error message
-        addMessage({
-          role: 'system',
-          content: `Error: ${err.message || 'Failed to process audio'}`,
-          isError: true,
-        });
+        console.error('Error processing voice input:', err);
+        
+        // Update the temporary message with error info
+        const updatedMessages = [...messages];
+        for (let i = updatedMessages.length - 1; i >= 0; i--) {
+          if (updatedMessages[i].role === 'user' && updatedMessages[i].loading) {
+            updatedMessages[i] = {
+              role: 'user',
+              content: err.isNoSpeech 
+                ? '(No speech detected. Please try again.)' 
+                : '(Error transcribing audio. Please try again.)',
+              error: true
+            };
+            break;
+          }
+        }
+        
+        // Set error message
+        setError(err.isVoiceUnavailable 
+          ? 'Voice processing is not available.' 
+          : 'Failed to process voice input. Please try again.'
+        );
       } finally {
         setLoading(false);
       }
     } else {
       // Start recording
       try {
-        setLoading(true);
-        
-        // First check permission status
-        const hasPermission = await checkPermissionStatus();
-        
-        if (!hasPermission && !permissionGranted) {
-          setShowPermissionHelp(true);
-          setLoading(false);
-          return;
-        }
-        
-        // Show initialization message
-        if (!permissionGranted) {
-          addMessage({
-            role: 'system',
-            content: 'Requesting microphone permission...',
-            isSystem: true,
-          });
-        }
-        
-        const started = await startRecording();
-        
-        if (!started) {
-          throw new Error(audioError || 'Failed to start recording');
-        }
-        
-        // Show recording started message
-        addMessage({
-          role: 'system',
-          content: 'Recording started. Speak now and click the stop button when finished.',
-          isSystem: true,
-        });
+        await initRecording();
+        startRecording();
       } catch (err) {
-        console.error('Error starting voice recording:', err);
+        console.error('Error starting recording:', err);
+        setError('Failed to start recording. Please check microphone permissions.');
         
-        // Show a helpful message based on the error
-        let errorMessage = 'Could not start recording.';
-        if (err.message?.includes('permission') || err.name === 'NotAllowedError') {
-          errorMessage = 'Microphone permission denied. Please allow it in your browser settings.';
+        // If permission issues, show help
+        if (err.name === 'NotAllowedError' || err.message.includes('permission')) {
           setShowPermissionHelp(true);
-        } else if (err.message?.includes('AudioContext')) {
-          errorMessage = 'Audio system initialization failed. Try clicking the button again.';
         }
-        
-        setError(errorMessage);
-        
-        // Add error message to chat
-        addMessage({
-          role: 'system',
-          content: `Error: ${errorMessage}`,
-          isError: true,
-        });
-      } finally {
-        setLoading(false);
       }
     }
   };
@@ -419,11 +453,11 @@ const ChatInterface = ({ jobRoleData }) => {
             if (
               message.role === 'assistant' && 
               message.tool_calls && 
-              message.tool_calls.some(call => call.name === 'start_coding_challenge')
+              message.tool_calls.some(call => call.name === 'start_coding_challenge' || call.name === 'generate_coding_challenge_from_jd')
             ) {
               // Extract the coding challenge data
               const codingChallenge = message.tool_calls.find(
-                call => call.name === 'start_coding_challenge'
+                call => call.name === 'start_coding_challenge' || call.name === 'generate_coding_challenge_from_jd'
               ).result;
               
               // Store the coding challenge for later use
