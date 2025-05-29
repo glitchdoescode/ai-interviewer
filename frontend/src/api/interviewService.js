@@ -13,6 +13,24 @@ const api = axios.create({
   timeout: 30000, // 30 seconds
 });
 
+// Add a request interceptor to include the auth token
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+      console.log('Interceptor: Token added to Authorization header'); // For debugging
+    } else {
+      console.log('Interceptor: No token found in localStorage'); // For debugging
+    }
+    return config;
+  },
+  (error) => {
+    console.error('Interceptor Error:', error); // For debugging
+    return Promise.reject(error);
+  }
+);
+
 // Global error handler function
 const handleApiError = (error, customMessage = null) => {
   // Extract the most useful error information

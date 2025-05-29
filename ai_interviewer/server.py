@@ -13,6 +13,7 @@ import wave # Add this import
 from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
 import inspect # <--- Import inspect
+import contextlib # Add for lifespan manager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
+from starlette.middleware.sessions import SessionMiddleware # <--- ADD IMPORT
 
 from ai_interviewer.core.ai_interviewer import AIInterviewer
 
@@ -38,6 +40,16 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd
 
+# Auth imports
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from ai_interviewer.auth import routes as auth_routes
+from ai_interviewer.auth.config import settings as auth_settings
+from ai_interviewer.auth.security import get_current_active_user # <--- IMPORT
+from ai_interviewer.models.user_models import User # <--- IMPORT
+from ai_interviewer.auth.security import RoleChecker
+from ai_interviewer.models.user_models import UserRole
+from starlette import status
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -49,10 +61,77 @@ logger.info(f"AIInterviewer class loaded from: {inspect.getfile(AIInterviewer)}"
 # Setup rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
+# Global variable for the memory manager, initialized to None
+memory_manager: Optional[InterviewMemoryManager] = None 
+interviewer: Optional[AIInterviewer] = None # Also make interviewer global and initialized in lifespan
+
+@contextlib.asynccontextmanager
+async def lifespan(app_instance: FastAPI): # app_instance is the conventional name, FastAPI passes itself.
+    logger.critical("--- LIFESPAN FUNCTION CALLED ---") 
+    try:
+        logger.info("Lifespan: Startup phase started.")
+        # global memory_manager, interviewer # No longer need to modify globals here directly for app state
+        
+        # Initialize memory_manager
+        logger.info("Lifespan: Attempting to setup memory_manager...")
+        local_memory_manager = await setup_memory_manager_async()
+        app_instance.state.memory_manager = local_memory_manager # Store in app state
+        logger.info(f"Lifespan: memory_manager initialized and stored in app.state: {app_instance.state.memory_manager}")
+        if hasattr(app_instance.state.memory_manager, 'db') and app_instance.state.memory_manager.db is not None:
+            logger.info(f"Lifespan: app.state.memory_manager.db successfully configured: {app_instance.state.memory_manager.db}")
+        else:
+            logger.error("Lifespan: app.state.memory_manager.db is NOT configured after setup!")
+            
+        # Initialize interviewer
+        logger.info("Lifespan: Attempting to setup interviewer...")
+        local_interviewer = await setup_ai_interviewer_async(app_instance.state.memory_manager) # Pass memory_manager if needed
+        app_instance.state.interviewer = local_interviewer # Store in app state
+        logger.info(f"Lifespan: interviewer initialized and stored in app.state: {app_instance.state.interviewer}")
+
+        logger.info("Lifespan: Startup phase completed successfully.")
+        yield
+    except Exception as e:
+        logger.critical(f"LIFESPAN EXCEPTION DURING STARTUP: {e}", exc_info=True)
+        raise
+    finally:
+        logger.info("Lifespan: Shutdown phase started.")
+        # Cleanup logic moved from deprecated on_event
+        active_interviewer = getattr(app_instance.state, 'interviewer', None)
+        if active_interviewer and hasattr(active_interviewer, 'cleanup'):
+            try:
+                active_interviewer.cleanup()
+                logger.info("AI Interviewer resources cleaned up during lifespan shutdown")
+            except Exception as e:
+                logger.error(f"Error cleaning up AI Interviewer during lifespan shutdown: {e}")
+
+        active_memory_manager = getattr(app_instance.state, 'memory_manager', None)
+        if active_memory_manager:
+            try:
+                if hasattr(active_memory_manager, 'use_async') and active_memory_manager.use_async:
+                    if hasattr(active_memory_manager, 'aclose'):
+                        await active_memory_manager.aclose()
+                        logger.info("Async memory manager closed during lifespan shutdown")
+                elif hasattr(active_memory_manager, 'close'):
+                    active_memory_manager.close()
+                    logger.info("Sync memory manager closed during lifespan shutdown")
+            except Exception as e:
+                logger.error(f"Error closing memory manager during lifespan shutdown: {e}")
+        
+        # Clean up voice handler resources
+        # voice_handler is still global for now, consider moving to app.state if it makes sense
+        global voice_handler 
+        if 'voice_handler' in globals() and voice_handler and hasattr(voice_handler, 'close'):
+            try:
+                voice_handler.close()
+                logger.info("Voice handler resources cleaned up during lifespan shutdown")
+            except Exception as e:
+                logger.error(f"Error cleaning up voice handler during lifespan shutdown: {e}")
+        logger.info("Lifespan: Shutdown phase completed.")
+
 # Initialize FastAPI app with enhanced metadata for OpenAPI docs
 app = FastAPI(
     title="AI Interviewer API",
-    description="""
+    description=f"""
     REST API for the AI Technical Interviewer platform.
     
     This API provides endpoints for conducting technical interviews with AI,
@@ -68,16 +147,28 @@ app = FastAPI(
     
     ## Authentication
     
-    Authentication will be added in a future update.
+    Authentication is handled via JWT Bearer tokens. Use the {auth_settings.API_V1_STR}/auth/token endpoint to log in.
+    Register new users at {auth_settings.API_V1_STR}/auth/register.
     """,
     version="1.0.0",
     docs_url="/api/docs",  # Enable default Swagger UI at /api/docs
     redoc_url="/api/redoc",  # Enable ReDoc at /api/redoc
+    lifespan=lifespan  # <--- ADD LIFESPAN MANAGER HERE
 )
+logger.info(f"FastAPI app created. Registered lifespan: {app.router.lifespan}") # <--- NEW LOG to check registration
 
 # Add rate limiter exception handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Add SessionMiddleware for session management (e.g., for OAuth state)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=auth_settings.SECRET_KEY, # Use the secret key from your settings
+    # session_cookie="your_session_cookie_name", # Optional: customize cookie name
+    # max_age=14 * 24 * 60 * 60,  # Optional: cookie expiry in seconds (e.g., 14 days)
+    # https_only=True, # Optional: for production, ensure served over HTTPS
+)
 
 # Add CORS middleware to allow cross-origin requests
 app.add_middleware(
@@ -88,69 +179,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize AI Interviewer instance
-# Apply a patch to make sure the interview instance has access to the summarization model
-try:
-    # Initialize memory manager first
+# Dependency for monitoring request timing (MOVED EARLIER)
+async def log_request_time(request: Request):
+    request.state.start_time = datetime.now()
+    yield
+    process_time = (datetime.now() - request.state.start_time).total_seconds() * 1000
+    logger.info(f"Request to {request.url.path} took {process_time:.2f}ms")
+
+# Include authentication routes
+app.include_router(
+    auth_routes.router,
+    prefix=f"{auth_settings.API_V1_STR}/auth",
+    tags=["Authentication"],
+    dependencies=[Depends(log_request_time)]
+)
+
+# Async function to setup memory manager (adapted from existing code)
+async def setup_memory_manager_async():
     db_config = get_db_config()
+    logger.info(f"Attempting to initialize InterviewMemoryManager with db_config: {db_config}")
+    mm = InterviewMemoryManager(
+        connection_uri=db_config["uri"],
+        db_name=db_config["database"],
+        checkpoint_collection=db_config["sessions_collection"],
+        store_collection="interview_memory_store",
+        use_async=True
+    )
+    logger.info(f"InterviewMemoryManager instance created: {mm}")
+    if hasattr(mm, 'db'):
+        logger.info(f"InterviewMemoryManager instance mm.db immediately after init: {mm.db}")
+    else:
+        logger.warning("InterviewMemoryManager instance mm has NO 'db' attribute immediately after init.")
     
-    # Create a proper async setup function
-    async def setup_memory_manager():
-        # Create the memory manager
-        memory_manager = InterviewMemoryManager(
-            connection_uri=db_config["uri"],
-            db_name=db_config["database"],
-            checkpoint_collection=db_config["sessions_collection"],
-            store_collection="interview_memory_store",
-            use_async=True  # Explicitly use async mode
-        )
+    await mm.async_setup()
+    logger.info("InterviewMemoryManager mm.async_setup() completed.")
+    if hasattr(mm, 'db'):
+        logger.info(f"InterviewMemoryManager instance mm.db after async_setup: {mm.db}")
+    else:
+        logger.warning("InterviewMemoryManager instance mm has NO 'db' attribute after async_setup.")
         
-        # Initialize the AsyncMongoDBSaver in an async context
-        await memory_manager.async_setup()
-        return memory_manager
-    
-    # Use asyncio.run() to properly create and run the event loop
-    try:
-        # Check if we already have a running event loop
-        try:
-            loop = asyncio.get_running_loop()
-            # If we're in a running event loop, create a new task
-            memory_manager_task = loop.create_task(setup_memory_manager())
-            memory_manager = loop.run_until_complete(memory_manager_task)
-        except RuntimeError:
-            # No running event loop, use asyncio.run() instead
-            memory_manager = asyncio.run(setup_memory_manager())
-        
-        logger.info("Memory manager initialized and setup successfully")
-    except Exception as e:
-        logger.error(f"Error setting up memory manager: {e}")
-        raise
-    
-    # Initialize AIInterviewer with MongoDB persistence
-    interviewer = AIInterviewer(use_mongodb=True)
-    
-    # Make sure the summarization model is initialized
-    if not hasattr(interviewer, 'summarization_model'):
-        llm_config_val = get_llm_config() # Renamed to avoid conflict
-        interviewer.summarization_model = ChatGoogleGenerativeAI(
+    logger.info("Memory manager initialized and setup successfully via lifespan event.")
+    return mm
+
+# Async function to setup AIInterviewer instance
+async def setup_ai_interviewer_async(mm_instance: Optional[InterviewMemoryManager] = None): # Accept memory_manager
+    # Pass the already initialized memory_manager if provided, or let AIInterviewer initialize its own
+    interviewer_instance = AIInterviewer(use_mongodb=True, memory_manager_instance=mm_instance)
+    if not hasattr(interviewer_instance, 'summarization_model'):
+        llm_config_val = get_llm_config()
+        interviewer_instance.summarization_model = ChatGoogleGenerativeAI(
             model=llm_config_val["model"],
             temperature=0.1
         )
-        logger.info("Added summarization model to interviewer instance")
+        logger.info("Added summarization model to interviewer instance via lifespan event.")
     
-    # ==> ADD THIS CHECK <==
-    if not hasattr(interviewer, 'run_interview'):
-        logger.critical("CRITICAL: AIInterviewer instance does NOT have 'run_interview' method at startup!")
-        # Optionally raise an error here to prevent server from starting with a broken interviewer
-        # raise RuntimeError("AIInterviewer is missing the run_interview method.")
+    if not hasattr(interviewer_instance, 'run_interview'):
+        logger.critical("CRITICAL: AIInterviewer instance does NOT have 'run_interview' method during lifespan setup!")
     else:
-        logger.info("CONFIRMED: AIInterviewer instance has 'run_interview' method at startup.")
-    # ==> END OF CHECK <==
+        logger.info("CONFIRMED: AIInterviewer instance has 'run_interview' method during lifespan setup.")
+    logger.info("AI Interviewer initialized successfully via lifespan event.")
+    return interviewer_instance
 
-    logger.info("AI Interviewer initialized successfully with async memory management")
-except Exception as e:
-    logger.critical(f"Failed to initialize AI Interviewer: {e}")
-    raise
+# Dependency to get the database instance is now in ai_interviewer.core.database
+# async def get_motor_db(request: Request) -> AsyncIOMotorDatabase: # Add request: Request
+#     # global memory_manager # No longer access global
+#     # logger.info(f"get_motor_db called. Current global memory_manager: {memory_manager}")
+#     
+#     mm = getattr(request.app.state, 'memory_manager', None)
+#     logger.info(f"get_motor_db called. App state memory_manager: {mm}")
+# 
+#     if mm and hasattr(mm, 'db'):
+#         logger.info(f"get_motor_db: app.state.memory_manager.db: {mm.db}")
+#     elif mm:
+#         logger.warning("get_motor_db: app.state.memory_manager exists but has NO 'db' attribute.")
+#     else:
+#         logger.warning("get_motor_db: app.state.memory_manager is None.")
+# 
+#     if not mm or not hasattr(mm, 'db') or mm.db is None:
+#         logger.error("Database client (app.state.memory_manager.db) not available or not initialized.")
+#         raise HTTPException(status_code=503, detail="Database service not available or not initialized.")
+#     return mm.db
 
 # Initialize VoiceHandler for speech processing
 try:
@@ -354,13 +462,6 @@ async def shutdown_event():
     
     logger.info("Server shutdown complete")
 
-# Dependency for monitoring request timing
-async def log_request_time(request: Request):
-    request.state.start_time = datetime.now()
-    yield
-    process_time = (datetime.now() - request.state.start_time).total_seconds() * 1000
-    logger.info(f"Request to {request.url.path} took {process_time:.2f}ms")
-
 # Define some default job roles
 DEFAULT_JOB_ROLES = [
     JobRole(
@@ -461,12 +562,15 @@ async def get_job_roles(request: Request):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("10/minute")
-async def start_interview(request: Request, request_data: MessageRequest):
+async def start_interview(
+    request: Request, 
+    request_data: MessageRequest,
+    current_user: User = Depends(get_current_active_user) # <--- ADD DEPENDENCY
+):
     """
-    Start a new interview session.
+    Start a new interview session for the authenticated user.
     
-    This endpoint initiates a new AI interview session with the provided message.
-    If no user_id is provided, a random one will be generated.
+    The user_id from the JWT token will be used.
     
     Args:
         request_data: MessageRequest containing the user's message and optional user ID
@@ -475,11 +579,16 @@ async def start_interview(request: Request, request_data: MessageRequest):
         MessageResponse with the AI's response and session ID
     """
     try:
-        # Generate a user ID if not provided
-        user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
+        # Use user_id from the authenticated user
+        user_id = current_user.id # <--- USE ID FROM TOKEN
         
+        active_interviewer = request.app.state.interviewer # <--- Get from app.state
+        if not active_interviewer:
+            logger.error("Interviewer not available in app state for start_interview")
+            raise HTTPException(status_code=503, detail="Interview service not available.")
+
         # Process the user message with job role parameters
-        ai_response, session_id = await interviewer.run_interview(
+        ai_response, session_id = await active_interviewer.run_interview(
             user_id, 
             request_data.message,
             job_role=request_data.job_role,
@@ -491,8 +600,8 @@ async def start_interview(request: Request, request_data: MessageRequest):
         
         # Get session metadata if available
         metadata = {}
-        if interviewer.session_manager:
-            session = interviewer.session_manager.get_session(session_id)
+        if active_interviewer.session_manager:
+            session = active_interviewer.session_manager.get_session(session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
@@ -520,12 +629,16 @@ async def start_interview(request: Request, request_data: MessageRequest):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("15/minute")
-async def continue_interview(request: Request, session_id: str, request_data: MessageRequest):
+async def continue_interview(
+    request: Request, 
+    session_id: str, 
+    request_data: MessageRequest,
+    current_user: User = Depends(get_current_active_user) # <--- ADD DEPENDENCY
+):
     """
-    Continue an existing interview session.
+    Continue an existing interview session for the authenticated user.
     
-    This endpoint continues an existing interview session using the provided session ID.
-    The user_id must match the one associated with the session.
+    The user_id from the JWT token will be used and validated against the session.
     
     Args:
         session_id: Session ID to continue
@@ -535,13 +648,25 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
         MessageResponse with the AI's response and session ID
     """
     try:
-        # Ensure user ID is provided
-        if not request_data.user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        # Validate that the authenticated user owns this session or has rights to access it.
+        # For now, we'll use current_user.id directly. 
+        # More complex logic (e.g., admin access) can be added later.
+        user_id_from_token = current_user.id
+
+        active_interviewer = request.app.state.interviewer # <--- Get from app.state
+        if not active_interviewer:
+            logger.error("Interviewer not available in app state for continue_interview")
+            raise HTTPException(status_code=503, detail="Interview service not available.")
+        
+        # Original request_data.user_id might be used for logging or other purposes, 
+        # but the authoritative user_id is from the token.
+        # We should ensure that the session being continued belongs to this user.
+        # The AIInterviewer.run_interview should ideally handle this check if session_id is provided.
+        # For now, let's pass the token user_id.
         
         # Process the user message with job role parameters (will only apply if session is new)
-        ai_response, new_session_id = await interviewer.run_interview(
-            request_data.user_id, 
+        ai_response, new_session_id = await active_interviewer.run_interview(
+            user_id_from_token, # <--- USE ID FROM TOKEN
             request_data.message, 
             session_id,
             job_role=request_data.job_role,
@@ -553,8 +678,8 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
         
         # Get session metadata if available
         metadata = {}
-        if interviewer.session_manager:
-            session = interviewer.session_manager.get_session(new_session_id)
+        if active_interviewer.session_manager:
+            session = active_interviewer.session_manager.get_session(new_session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
@@ -586,11 +711,16 @@ async def continue_interview(request: Request, session_id: str, request_data: Me
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def get_user_sessions(request: Request, user_id: str, include_completed: bool = False):
+async def get_user_sessions(
+    request: Request, 
+    user_id: str, # This is the path parameter
+    include_completed: bool = False,
+    current_user: User = Depends(get_current_active_user) # <--- ADD DEPENDENCY
+):
     """
-    Get all sessions for a user.
+    Get all sessions for the authenticated user specified by user_id.
     
-    This endpoint retrieves all interview sessions associated with the provided user ID.
+    Ensures that the user_id in the path matches the authenticated user.
     
     Args:
         user_id: User ID to get sessions for
@@ -600,7 +730,19 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
         List of SessionResponse objects containing session details
     """
     try:
-        sessions = interviewer.get_user_sessions(user_id, include_completed)
+        # Ensure the authenticated user is requesting their own sessions
+        if current_user.id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="You do not have permission to access these sessions."
+            )
+        
+        active_interviewer = request.app.state.interviewer # <--- Get from app.state
+        if not active_interviewer:
+            logger.error("Interviewer not available in app state for get_user_sessions")
+            raise HTTPException(status_code=503, detail="Interview service not available.")
+            
+        sessions = active_interviewer.get_user_sessions(user_id, include_completed)
         
         if not sessions:
             return []
@@ -648,26 +790,36 @@ async def get_user_sessions(request: Request, user_id: str, include_completed: b
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("5/minute")
-async def transcribe_and_respond(request: Request, request_data: AudioTranscriptionRequest):
+async def transcribe_and_respond(
+    request: Request,
+    request_data: AudioTranscriptionRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Transcribe audio and get AI interviewer response.
     
     This endpoint transcribes the provided audio data and sends the transcription
-    to the AI interviewer for a response.
+    to the AI interviewer for a response. The authenticated user's ID will be used.
     
     Args:
         request_data: AudioTranscriptionRequest containing audio data and optional session info
+        current_user: The authenticated user.
         
     Returns:
         AudioTranscriptionResponse with transcription, AI response, and session ID
     """
-    if not voice_enabled or not voice_handler:
+    if not voice_enabled or not voice_handler: # voice_handler is still global for now
         raise HTTPException(status_code=501, detail="Voice processing not available")
     
     try:
-        # Generate a user ID if not provided
-        user_id = request_data.user_id or f"api-user-{uuid.uuid4()}"
+        # Use user_id from the authenticated user
+        user_id = current_user.id
         
+        active_interviewer = request.app.state.interviewer # <--- Get from app.state
+        if not active_interviewer:
+            logger.error("Interviewer not available in app state for transcribe_and_respond")
+            raise HTTPException(status_code=503, detail="Interview service not available.")
+
         # Enhanced logging for audio data debugging
         logger.info(f"Processing audio transcription request from user: {user_id}")
         logger.info(f"Audio data received, length: {len(request_data.audio_data)}")
@@ -675,8 +827,8 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         # Check if we have an existing session with candidate information
         session_data = {}
         candidate_name_before = None
-        if request_data.session_id and interviewer.session_manager:
-            existing_session = interviewer.session_manager.get_session(request_data.session_id)
+        if request_data.session_id and active_interviewer.session_manager: # <--- Use active_interviewer
+            existing_session = active_interviewer.session_manager.get_session(request_data.session_id) # <--- Use active_interviewer
             if existing_session and "metadata" in existing_session:
                 session_data = existing_session["metadata"]
                 candidate_name_before = session_data.get('candidate_name')
@@ -699,10 +851,10 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
             # Return a default response instead of erroring out, to keep flow smooth
             transcription = "I couldn't hear you clearly. Could you please repeat that?"
             ai_response = "I'm sorry, I didn't catch that. Could you say it again?"
-            session_id = request_data.session_id or interviewer._get_or_create_session(user_id) # Ensure session_id
+            session_id = request_data.session_id or active_interviewer._get_or_create_session(user_id) # <--- Use active_interviewer
             metadata = {}
-            if interviewer.session_manager:
-                current_session = interviewer.session_manager.get_session(session_id)
+            if active_interviewer.session_manager: # <--- Use active_interviewer
+                current_session = active_interviewer.session_manager.get_session(session_id) # <--- Use active_interviewer
                 if current_session: metadata = current_session.get("metadata", {})
 
             return AudioTranscriptionResponse(
@@ -734,7 +886,7 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         if not transcription.strip():
             transcription = "I couldn't hear anything clearly."
 
-        ai_response, session_id = await interviewer.run_interview(
+        ai_response, session_id = await active_interviewer.run_interview(
             user_id, 
             transcription, 
             request_data.session_id,
@@ -746,8 +898,8 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
         )
         
         metadata = {}
-        if interviewer.session_manager:
-            session = interviewer.session_manager.get_session(session_id)
+        if active_interviewer.session_manager:
+            session = active_interviewer.session_manager.get_session(session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
@@ -802,20 +954,26 @@ async def transcribe_and_respond(request: Request, request_data: AudioTranscript
 async def upload_audio_file(
     request: Request, # Added request parameter for logging
     file: UploadFile = File(...),
-    user_id: Optional[str] = None, # Changed from Form to Query to match how it might be sent
     session_id: Optional[str] = None, # Changed from Form to Query
     job_role: Optional[str] = None,
     seniority_level: Optional[str] = None,
     required_skills: Optional[List[str]] = None, # This will be tricky with form-data, consider JSON payload for complex types
     job_description: Optional[str] = None,
-    requires_coding: Optional[bool] = None
+    requires_coding: Optional[bool] = None,
+    current_user: User = Depends(get_current_active_user)
 ):
-    if not voice_enabled or not voice_handler:
+    if not voice_enabled or not voice_handler: # voice_handler still global
         raise HTTPException(status_code=501, detail="Voice processing not available")
     
     try:
-        user_id = user_id or f"api-user-{uuid.uuid4()}"
+        # Use user_id from the authenticated user
+        user_id = current_user.id
         audio_bytes = await file.read()
+
+        active_interviewer = request.app.state.interviewer # <--- Get from app.state
+        if not active_interviewer:
+            logger.error("Interviewer not available in app state for upload_audio_file")
+            raise HTTPException(status_code=503, detail="Interview service not available.")
 
         if len(audio_bytes) < 200:
             logger.warning(f"Uploaded audio file too small: {len(audio_bytes)} bytes.")
@@ -823,10 +981,10 @@ async def upload_audio_file(
             transcription = "The uploaded audio was too short or unclear. Could you please try again?"
             ai_response = "I'm sorry, I couldn't process the uploaded audio. Please ensure it's clear and try again."
             # Ensure session_id logic is robust
-            current_session_id = session_id or interviewer._get_or_create_session(user_id)
+            current_session_id = session_id or active_interviewer._get_or_create_session(user_id) # <--- Use active_interviewer
             metadata = {}
-            if interviewer.session_manager:
-                current_session = interviewer.session_manager.get_session(current_session_id)
+            if active_interviewer.session_manager:
+                current_session = active_interviewer.session_manager.get_session(current_session_id)
                 if current_session: metadata = current_session.get("metadata", {})
             
             return AudioTranscriptionResponse(
@@ -855,7 +1013,7 @@ async def upload_audio_file(
         if not transcription.strip():
             transcription = "The uploaded audio file seems to be silent or unclear."
             
-        ai_response, new_session_id = await interviewer.run_interview(
+        ai_response, new_session_id = await active_interviewer.run_interview(
             user_id, 
             transcription, 
             session_id, # Pass original session_id
@@ -867,8 +1025,8 @@ async def upload_audio_file(
         )
         
         metadata = {}
-        if interviewer.session_manager:
-            session = interviewer.session_manager.get_session(new_session_id)
+        if active_interviewer.session_manager:
+            session = active_interviewer.session_manager.get_session(new_session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
@@ -973,7 +1131,7 @@ async def health_check():
     """
     try:
         # Check AI Interviewer is working
-        session_count = len(interviewer.list_active_sessions())
+        session_count = len(interviewer.active_sessions) # <--- CHANGE THIS LINE
         
         # Check voice handler if enabled
         voice_status = "available" if voice_enabled and voice_handler else "unavailable"
@@ -1083,9 +1241,15 @@ class ChallengeCompleteRequest(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("10/minute")
-async def submit_code_solution(request: Request, submission: CodingSubmissionRequest):
+async def submit_code_solution(
+    request: Request,
+    submission: CodingSubmissionRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Submit a candidate's code solution for evaluation.
+    
+    The authenticated user's ID will be used.
     
     This endpoint processes a submitted solution for a coding challenge and returns feedback.
     
@@ -1113,6 +1277,9 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
         # Generate timestamp if not provided
         timestamp = submission.timestamp or datetime.now().isoformat()
         
+        # Use user_id from the authenticated user
+        user_id_from_token = current_user.id
+
         # Call the submit_code_for_challenge tool
         from ai_interviewer.tools.coding_tools import submit_code_for_challenge
         
@@ -1122,9 +1289,13 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
         )
         
         # If session ID is provided, update session state with the completed challenge
-        if submission.session_id and submission.user_id and interviewer.session_manager:
+        if submission.session_id and interviewer.session_manager: # user_id_from_token is now used
             session = interviewer.session_manager.get_session(submission.session_id)
             if session:
+                # Verify session ownership
+                if session.get("user_id") != user_id_from_token:
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
+
                 metadata = session.get("metadata", {})
                 
                 # Update completed challenges list
@@ -1175,9 +1346,15 @@ async def submit_code_solution(request: Request, submission: CodingSubmissionReq
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("15/minute")
-async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
+async def get_coding_hint(
+    request: Request,
+    hint_request: CodingHintRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Get a hint for a coding challenge based on current code.
+    
+    The authenticated user's ID will be used.
     
     This endpoint processes the current code and returns targeted hints to help the candidate.
     
@@ -1191,6 +1368,9 @@ async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
         # Generate timestamp if not provided
         timestamp = hint_request.timestamp or datetime.now().isoformat()
         
+        # Use user_id from the authenticated user
+        user_id_from_token = current_user.id
+
         # Call the get_coding_hint tool
         from ai_interviewer.tools.coding_tools import get_coding_hint
         
@@ -1201,9 +1381,12 @@ async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
         )
         
         # If session ID is provided, store code snapshot for tracking hint requests
-        if hint_request.session_id and hint_request.user_id and interviewer.session_manager:
+        if hint_request.session_id and interviewer.session_manager: # user_id_from_token is now used
             session = interviewer.session_manager.get_session(hint_request.session_id)
             if session:
+                # Verify session ownership
+                if session.get("user_id") != user_id_from_token:
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
                 metadata = session.get("metadata", {})
                 
                 # Store code snapshot for hint request
@@ -1243,9 +1426,16 @@ async def get_coding_hint(request: Request, hint_request: CodingHintRequest):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("15/minute")
-async def continue_after_challenge(request: Request, session_id: str, request_data: ChallengeCompleteRequest):
+async def continue_after_challenge(
+    request: Request,
+    session_id: str,
+    request_data: ChallengeCompleteRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Continue an interview after completing a coding challenge.
+    
+    The authenticated user's ID will be used and verified against the session.
     
     This endpoint continues the interview after a coding challenge has been submitted.
     
@@ -1266,8 +1456,11 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
         MessageResponse with the AI's response and session ID
     """
     try:
-        if not request_data.user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        # Use user_id from the authenticated user
+        user_id_from_token = current_user.id
+        
+        # if not request_data.user_id: # No longer needed from request
+        #     raise HTTPException(status_code=400, detail="User ID is required")
         
         # Get the session
         if not interviewer.session_manager:
@@ -1277,6 +1470,10 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
         if not session:
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
             
+        # Verify session ownership
+        if session.get("user_id") != user_id_from_token:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
+
         # Update metadata to indicate we're resuming from a challenge
         metadata = session.get("metadata", {})
         metadata["resuming_from_challenge"] = True
@@ -1309,7 +1506,7 @@ async def continue_after_challenge(request: Request, session_id: str, request_da
         
         # Continue the interview with enhanced context
         ai_response, new_session_id = await interviewer.run_interview(
-            request_data.user_id,
+            user_id_from_token, # Use ID from token
             message,
             session_id
         )
@@ -1385,12 +1582,18 @@ class ResponseAnalysisRequest(BaseModel):
         429: {"description": "Rate limit exceeded", "model": ErrorResponse},
         500: {"description": "Internal server error", "model": ErrorResponse}
     },
-    dependencies=[Depends(log_request_time)]
+    dependencies=[Depends(log_request_time), Depends(RoleChecker([UserRole.INTERVIEWER, UserRole.ADMIN]))]
 )
 @limiter.limit("20/minute")
-async def generate_question(request: Request, req_data: QuestionGenerationRequest):
+async def generate_question(
+    request: Request,
+    req_data: QuestionGenerationRequest,
+    current_user: User = Depends(RoleChecker([UserRole.INTERVIEWER, UserRole.ADMIN])) # Ensure current_user is populated for RoleChecker
+):
     """
     Generate a dynamic interview question based on job role and other parameters.
+    
+    This endpoint is protected and requires INTERVIEWER or ADMIN role.
     
     This endpoint generates contextually-relevant interview questions that can be
     tailored to specific skill areas, difficulty levels, and previous responses.
@@ -1423,12 +1626,18 @@ async def generate_question(request: Request, req_data: QuestionGenerationReques
         429: {"description": "Rate limit exceeded", "model": ErrorResponse},
         500: {"description": "Internal server error", "model": ErrorResponse}
     },
-    dependencies=[Depends(log_request_time)]
+    dependencies=[Depends(log_request_time), Depends(RoleChecker([UserRole.INTERVIEWER, UserRole.ADMIN]))]
 )
 @limiter.limit("15/minute")
-async def analyze_response(request: Request, req_data: ResponseAnalysisRequest):
+async def analyze_response(
+    request: Request,
+    req_data: ResponseAnalysisRequest,
+    current_user: User = Depends(RoleChecker([UserRole.INTERVIEWER, UserRole.ADMIN])) # Ensure current_user is populated for RoleChecker
+):
     """
     Analyze a candidate's response to identify strengths, weaknesses, and potential follow-up areas.
+    
+    This endpoint is protected and requires INTERVIEWER or ADMIN role.
     
     This endpoint performs a deep analysis of candidate responses including:
     - Key concept extraction
@@ -1484,18 +1693,19 @@ async def get_code_snapshots(
     request: Request, 
     session_id: str, 
     challenge_id: Optional[str] = None,
-    user_id: Optional[str] = None
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get code evolution snapshots for a session.
     
     This endpoint retrieves the history of code submissions and hint requests
     for a session, showing how the candidate's code evolved over time.
+    The authenticated user's ID will be verified against the session.
     
     Args:
         session_id: Session ID to get snapshots for
         challenge_id: Optional challenge ID to filter by
-        user_id: Optional user ID for verification
+        current_user: The authenticated user.
         
     Returns:
         List of code snapshots with metadata, sorted by timestamp
@@ -1509,9 +1719,9 @@ async def get_code_snapshots(
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
             
-        # If user_id is provided, verify it matches the session
-        if user_id and session.get("user_id") != user_id:
-            raise HTTPException(status_code=403, detail="User ID does not match session")
+        # Verify it matches the session's user_id
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner or user lacks permission.")
             
         # Get code snapshots from AIInterviewer
         snapshots = interviewer.get_code_snapshots(session_id, challenge_id)
@@ -1580,9 +1790,15 @@ class SummaryResponse(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def update_context_settings(request: Request, settings: ContextSettingsRequest):
+async def update_context_settings(
+    request: Request,
+    settings: ContextSettingsRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Update context management settings for an interview session.
+    
+    The authenticated user's ID will be verified against the session.
     
     This endpoint allows configuring how the system manages long-running conversations,
     such as the threshold for when to summarize older content.
@@ -1593,6 +1809,10 @@ async def update_context_settings(request: Request, settings: ContextSettingsReq
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {settings.session_id} not found")
         
+        # Verify session ownership
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
+
         # Configure context management settings
         success = interviewer.session_manager.configure_context_management(
             settings.session_id, 
@@ -1626,9 +1846,15 @@ async def update_context_settings(request: Request, settings: ContextSettingsReq
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def get_conversation_summary(request: Request, session_id: str):
+async def get_conversation_summary(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Get the current conversation summary for an interview session.
+    
+    The authenticated user's ID will be verified against the session.
     
     This endpoint retrieves the AI-generated summary of earlier parts of the conversation
     that have been condensed to manage context length.
@@ -1639,6 +1865,10 @@ async def get_conversation_summary(request: Request, session_id: str):
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
         
+        # Verify session ownership
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
+
         # Get the current summary
         summary = interviewer.session_manager.get_conversation_summary(session_id)
         
@@ -1694,9 +1924,15 @@ class ForceSummarizeResponse(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("10/minute")
-async def force_summarize_conversation(request: Request, req_data: ForceSummarizeRequest):
+async def force_summarize_conversation(
+    request: Request,
+    req_data: ForceSummarizeRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Force the system to summarize the current conversation.
+    
+    The authenticated user's ID will be used and verified against the session.
     
     This endpoint manually triggers the context management system to generate a summary
     of the conversation so far, reducing the message history while preserving key information.
@@ -1707,8 +1943,11 @@ async def force_summarize_conversation(request: Request, req_data: ForceSummariz
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
         
-        if session.get("user_id") != req_data.user_id:
-            raise HTTPException(status_code=403, detail="User ID does not match session owner")
+        # Verify user_id from request matches token and session owner
+        if req_data.user_id != current_user.id:
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID in request does not match authenticated user.")
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner")
         
         # Get all messages
         messages = session.get("messages", [])
@@ -1810,16 +2049,22 @@ class InterviewInsightsResponse(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def get_interview_insights(request: Request, session_id: str, user_id: Optional[str] = None):
+async def get_interview_insights(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Get structured insights extracted from the interview for a given session.
+    
+    The authenticated user's ID will be verified against the session.
     
     This endpoint retrieves AI-extracted structured information about the candidate,
     including skills, experiences, and areas of strength/improvement.
     
     Args:
         session_id: Session ID to get insights for
-        user_id: Optional user ID for verification
+        current_user: The authenticated user.
         
     Returns:
         Structured interview insights extracted from the conversation
@@ -1833,9 +2078,9 @@ async def get_interview_insights(request: Request, session_id: str, user_id: Opt
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
             
-        # If user_id is provided, verify it matches the session
-        if user_id and session.get("user_id") != user_id:
-            raise HTTPException(status_code=403, detail="User ID does not match session")
+        # Verify it matches the session's user_id
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner or user lacks permission.")
             
         # Get interview insights from session metadata
         metadata = session.get("metadata", {})
@@ -1904,15 +2149,19 @@ class ExtractInsightsRequest(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("10/minute")
-async def extract_interview_insights(request: Request, req_data: ExtractInsightsRequest):
+async def extract_interview_insights(
+    request: Request,
+    req_data: ExtractInsightsRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Manually trigger the extraction of insights from an interview session.
     
-    This endpoint forces the system to analyze the conversation and extract
-    structured information about the candidate's skills, experiences, and abilities.
+    The authenticated user's ID will be used and verified against the session.
     
     Args:
         req_data: ExtractInsightsRequest containing session ID and user ID
+        current_user: The authenticated user.
         
     Returns:
         Structured interview insights extracted from the conversation
@@ -1923,8 +2172,11 @@ async def extract_interview_insights(request: Request, req_data: ExtractInsights
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
         
-        if session.get("user_id") != req_data.user_id:
-            raise HTTPException(status_code=403, detail="User ID does not match session owner")
+        # Verify user_id from request matches token and session owner
+        if req_data.user_id != current_user.id:
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID in request does not match authenticated user.")
+        if session.get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner")
         
         # Trigger insights extraction
         insights = await interviewer.extract_and_update_insights(req_data.session_id)
@@ -1996,7 +2248,7 @@ class CodingProblemResponse(BaseModel):
         429: {"description": "Rate limit exceeded", "model": ErrorResponse},
         500: {"description": "Internal server error", "model": ErrorResponse}
     },
-    dependencies=[Depends(log_request_time)]
+    dependencies=[Depends(log_request_time), Depends(RoleChecker([UserRole.INTERVIEWER, UserRole.ADMIN]))]
 )
 @limiter.limit("10/minute")
 async def generate_coding_problem(request: Request, req_data: ProblemGenerationRequest):
@@ -2118,11 +2370,25 @@ class EnhancedMemoryResponse(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def search_memories(request: Request, query_data: EnhancedMemoryQuery):
+async def search_memories(
+    request: Request,
+    query_data: EnhancedMemoryQuery,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Search through cross-session memories for a specific user.
+    Ensures the authenticated user can only search their own memories.
     """
     try:
+        # Ensure user is searching their own memories
+        if query_data.user_id != current_user.id:
+            # If we want to allow admins/interviewers to search, we'd add RoleChecker here
+            # and check roles. For now, strict self-search.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only search your own memories."
+            )
+
         if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
             raise HTTPException(
                 status_code=500,
@@ -2178,14 +2444,28 @@ class CandidateProfileResponse(BaseModel):
     dependencies=[Depends(log_request_time)]
 )
 @limiter.limit("30/minute")
-async def get_candidate_profile(request: Request, user_id: str):
+async def get_candidate_profile(
+    request: Request,
+    user_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Get a candidate's profile data from cross-session memory.
+    Ensures the authenticated user can only access their own profile.
     """
     try:
+        # Ensure user is requesting their own profile
+        if user_id != current_user.id:
+            # If we want to allow admins/interviewers to view, we'd add RoleChecker here
+            # and check roles. For now, strict self-access.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only access your own profile."
+            )
+
         if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail="Memory management is not available on this server instance"
             )
         

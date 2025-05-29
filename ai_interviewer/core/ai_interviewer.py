@@ -296,7 +296,8 @@ class AIInterviewer:
                 seniority_level: str = "Mid-level",
                 required_skills: List[str] = None,
                 job_description: str = "",
-                auto_migrate: bool = True):
+                auto_migrate: bool = True,
+                memory_manager_instance: Optional[InterviewMemoryManager] = None):
         """
         Initialize the AI Interviewer with the necessary components.
         
@@ -308,6 +309,7 @@ class AIInterviewer:
             required_skills: Default required skills
             job_description: Default job description
             auto_migrate: Whether to automatically migrate old tool call formats
+            memory_manager_instance: Optional pre-initialized InterviewMemoryManager instance
         """
         log_config()
         
@@ -335,88 +337,65 @@ class AIInterviewer:
             temperature=0.1
         )
         
-        # Set up memory management
-        if use_mongodb:
-            try:
-                # Get database config
-                db_config = get_db_config()
-                mongodb_uri = connection_uri or db_config["uri"]
-                
-                # Initialize the InterviewMemoryManager for both short-term and long-term memory
-                logger.info(f"Initializing Memory Manager with URI {mongodb_uri}")
-                self.memory_manager = InterviewMemoryManager(
-                    connection_uri=mongodb_uri,
-                    db_name=db_config["database"], 
-                    checkpoint_collection=db_config["sessions_collection"],
-                    store_collection="interview_memory_store",
-                    use_async=True  # Default to async checkpointer
-                )
-                
-                # Initialize the checkpointer by calling async_setup
-                try:
-                    # Create an event loop if necessary and call async_setup
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # We're already in an event loop, create a task
-                            asyncio.create_task(self.memory_manager.async_setup())
-                            logger.info("Created task to initialize async memory manager")
-                        else:
-                            # We have an event loop but it's not running
-                            loop.run_until_complete(self.memory_manager.async_setup())
-                            logger.info("Initialized async memory manager in existing event loop")
-                    except RuntimeError:
-                        # No event loop exists, create one
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(self.memory_manager.async_setup())
-                        logger.info("Initialized async memory manager in new event loop")
-                    
-                    # Mark setup as complete
-                    self.memory_manager.async_setup_completed = True
-                except Exception as setup_error:
-                    logger.error(f"Error during memory manager async_setup: {setup_error}")
-                
-                # Get the checkpointer for thread-level memory
-                self.checkpointer = self.memory_manager.get_checkpointer()
-                
-                # Log checkpointer type for better debugging
-                if hasattr(self.checkpointer, 'aget_tuple'):
-                    logger.info(f"Using async MongoDB checkpointer: {self.checkpointer.__class__.__name__}")
-                else:
-                    logger.warning(f"Using synchronous MongoDB checkpointer: {self.checkpointer.__class__.__name__}. This may cause issues with async operations.")
-                
-                # Get the store for cross-thread memory
-                self.store = self.memory_manager.get_store()
-                logger.info(f"Using MongoDB store: {self.store.__class__.__name__}")
-                
-                # Initialize the session manager for backward compatibility
-                self.session_manager = SessionManager(
-                    connection_uri=mongodb_uri,
-                    database_name=db_config["database"],
-                    collection_name=db_config["metadata_collection"],
-                )
-                
-                # If auto_migrate is enabled, perform a quick tool call format migration
-                if auto_migrate:
-                    self._migrate_tool_calls(mongodb_uri, db_config["database"], db_config["sessions_collection"])
-                
-                logger.info("MongoDB memory manager initialized successfully")
-            except Exception as e:
-                # If there's an error with MongoDB, fall back to in-memory persistence
-                logger.warning(f"Failed to connect to MongoDB: {e}. Falling back to in-memory persistence.")
-                self.checkpointer = InMemorySaver()
-                self.session_manager = None
-                self.memory_manager = None
-                self.store = None
-                logger.info("Using in-memory persistence as fallback")
+        # Set up persistence and session management
+        db_config = get_db_config()
+        self.use_mongodb = use_mongodb
+        
+        if memory_manager_instance:
+            logger.info(f"Using provided InterviewMemoryManager instance: {memory_manager_instance}")
+            self.memory_manager = memory_manager_instance
+            # Ensure the provided instance is set up if it has async_setup
+            if hasattr(self.memory_manager, 'async_setup') and not (hasattr(self.memory_manager, 'db') and self.memory_manager.db is not None):
+                logger.info("Provided memory_manager_instance needs async_setup. Running it.")
+                # This might be an issue if called outside an event loop context directly
+                # For now, assume it's handled if called from lifespan
+                # Consider a flag or state in memory_manager to know if it's already setup
+                # For simplicity, we'll assume it's either fully ready or setup_ai_interviewer_async handles this call correctly.
+                pass # The setup_memory_manager_async in server.py should have already run this.
+
+        elif self.use_mongodb:
+            # Initialize InterviewMemoryManager
+            # Use connection_uri if provided, otherwise use db_config
+            resolved_connection_uri = connection_uri or db_config["uri"]
+            logger.info(f"Initializing Memory Manager with URI {resolved_connection_uri}")
+            self.memory_manager = InterviewMemoryManager(
+                connection_uri=resolved_connection_uri,
+                db_name=db_config["database"],
+                checkpoint_collection=db_config["sessions_collection"],
+                store_collection=db_config["store_collection"],
+                use_async=True  # AIInterviewer primarily uses async operations
+            )
+            # The async_setup for memory_manager is typically called by the server's lifespan manager.
+            # If AIInterviewer is used standalone, it might need to handle this.
+            # For now, we assume it's handled externally if self.memory_manager is created here.
+            logger.info("MongoDB memory manager initialized. Ensure async_setup is called if used in async context.")
         else:
-            # Use in-memory persistence
+            self.memory_manager = None
+            logger.info("MongoDB persistence is disabled. Using in-memory for some features.")
+
+        # Initialize SessionManager (depends on memory_manager)
+        if self.memory_manager:
+            self.session_manager = SessionManager(
+                connection_uri=self.memory_manager.connection_uri,
+                database_name=self.memory_manager.db_name,
+                collection_name=db_config["metadata_collection"] # Using the specific metadata collection name from config
+            )
+            self.store = self.memory_manager.get_store() # Get the store from memory_manager
+            logger.info(f"SessionManager initialized with memory manager. Store type: {type(self.store)}")
+            
+            # Set up LangGraph checkpointer
+            self.checkpointer = self.memory_manager.get_checkpointer()
+            if self.checkpointer:
+                 logger.info(f"Using MongoDB checkpointer: {type(self.checkpointer)}")
+            else:
+                logger.warning("Failed to get checkpointer from MongoDB memory_manager. Falling back to InMemorySaver.")
+                self.checkpointer = InMemorySaver() # Fallback
+        else:
+            # Use in-memory persistence for checkpointer and no session/memory manager
             self.checkpointer = InMemorySaver()
             self.session_manager = None
-            self.memory_manager = None
-            self.store = None
-            logger.info("Using in-memory persistence")
+            self.store = None # No persistent store
+            logger.info("Using in-memory persistence for LangGraph checkpointer. Session and memory management disabled.")
         
         # Initialize workflow
         self.workflow = self._initialize_workflow()
@@ -1226,10 +1205,9 @@ class AIInterviewer:
                     self.session_manager.update_session_metadata(session_id, metadata)
                 elif session_id in self.active_sessions: # Update in-memory session metadata
                     self.active_sessions[session_id].update(metadata)
-                    if "messages" not in self.active_sessions[session_id]:
-                         self.active_sessions[session_id]["messages"] = []
-                else: # This case implies _get_or_create_session failed to set up active_sessions
-                    logger.error(f"CRITICAL: In-memory session {session_id} not found after creation attempt.")
+
+                messages = extract_messages_from_transcript(messages)
+                logger.debug(f"Loaded session {session_id} with {len(messages)} messages")
         
         except Exception as e:
             logger.error(f"Error loading session {session_id}: {e}", exc_info=True)

@@ -66,3 +66,5 @@ build/
 .checkpoints/
 
 references/*
+
+node_modules/

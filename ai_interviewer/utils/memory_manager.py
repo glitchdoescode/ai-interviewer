@@ -69,6 +69,7 @@ class InterviewMemoryManager:
             if self.use_async:
                 # Initialize async MongoDB client
                 self.async_client = AsyncIOMotorClient(self.connection_uri)
+                self.db = self.async_client[self.db_name]
                 
                 # Store params for async_checkpointer (don't initialize it yet to avoid "no running event loop" error)
                 self.async_checkpointer = None

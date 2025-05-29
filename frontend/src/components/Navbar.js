@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
+import { Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
   Flex,
@@ -10,18 +10,32 @@ import {
   useColorModeValue,
   Spacer,
   useColorMode,
-  IconButton
+  IconButton,
+  Spinner,
+  Menu,
+  MenuButton,
+  MenuList,
+  MenuItem,
+  MenuDivider,
 } from '@chakra-ui/react';
-import { FaMicrophone, FaMoon, FaSun } from 'react-icons/fa';
+import { FaMicrophone, FaMoon, FaSun, FaUserCircle } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Navbar component for site navigation
  */
 const Navbar = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
   const { colorMode, toggleColorMode } = useColorMode();
+  const { user, token, logout, isLoading } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
 
   return (
     <Box
@@ -84,16 +98,69 @@ const Navbar = () => {
             </Link>
           </HStack>
 
-          {/* Action Buttons */}
-          <Button
-            as={RouterLink}
-            to="/interview"
-            colorScheme="brand"
-            leftIcon={<FaMicrophone />}
-            size="sm"
-          >
-            Start Interview
-          </Button>
+          {/* Action Buttons / User Menu */}
+          <HStack spacing={2}>
+            <Button
+              as={RouterLink}
+              to="/interview"
+              colorScheme="brand"
+              leftIcon={<FaMicrophone />}
+              size="sm"
+            >
+              Start Interview
+            </Button>
+
+            {isLoading ? (
+              <Spinner size="sm" />
+            ) : user && token ? (
+              <Menu>
+                <MenuButton
+                  as={Button}
+                  rounded={'full'}
+                  variant={'link'}
+                  cursor={'pointer'}
+                  minW={0}
+                  size="sm"
+                >
+                  <HStack>
+                    <FaUserCircle size="20px" />
+                    <Text display={{ base: 'none', md: 'inline-flex' }}>{user.username}</Text>
+                  </HStack>
+                </MenuButton>
+                <MenuList>
+                  <MenuItem as={RouterLink} to="/profile">
+                    Profile
+                  </MenuItem>
+                  <MenuItem as={RouterLink} to="/settings">
+                    Settings
+                  </MenuItem>
+                  <MenuDivider />
+                  <MenuItem onClick={handleLogout}>Log Out</MenuItem>
+                </MenuList>
+              </Menu>
+            ) : (
+              <>
+                <Button
+                  as={RouterLink}
+                  to="/login"
+                  variant="outline"
+                  colorScheme="brand"
+                  size="sm"
+                >
+                  Log In
+                </Button>
+                <Button
+                  as={RouterLink}
+                  to="/signup"
+                  variant="ghost"
+                  colorScheme="brand"
+                  size="sm"
+                >
+                  Sign Up
+                </Button>
+              </>
+            )}
+          </HStack>
         </HStack>
 
         {/* Color Mode Toggle */}

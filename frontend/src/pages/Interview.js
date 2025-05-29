@@ -116,9 +116,9 @@ const Interview = () => {
     // If we have job role data, include it in the initial toast notification
     if (selectedJobRole) {
       toast({
-        title: 'Interview Started',
+        title: "Interview Started",
         description: `Your interview for ${selectedJobRole.role_name} (${selectedJobRole.seniority_level}) is ready to begin.`,
-        status: 'success',
+        status: "success",
         duration: 5000,
         isClosable: true,
       });

@@ -7,9 +7,15 @@ import Home from './pages/Home';
 import Interview from './pages/Interview';
 import SessionHistory from './pages/SessionHistory';
 import MicrophoneTest from './pages/MicrophoneTest';
+import LoginPage from './pages/LoginPage';
+import SignupPage from './pages/SignupPage';
 
 // Import context providers
 import { InterviewProvider } from './context/InterviewContext';
+import { AuthProvider } from './context/AuthContext';
+
+// Import ProtectedRoute component
+import ProtectedRoute from './components/ProtectedRoute';
 
 // Define custom theme
 const theme = extendTheme({
@@ -32,15 +38,40 @@ const theme = extendTheme({
 function App() {
   return (
     <ChakraProvider theme={theme}>
-      <InterviewProvider>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/interview" element={<Interview />} />
-          <Route path="/interview/:sessionId" element={<Interview />} />
-          <Route path="/history" element={<SessionHistory />} />
-          <Route path="/microphone-test" element={<MicrophoneTest />} />
-        </Routes>
-      </InterviewProvider>
+      <AuthProvider>
+        <InterviewProvider>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route 
+              path="/interview" 
+              element={
+                <ProtectedRoute>
+                  <Interview />
+                </ProtectedRoute>
+              }
+            />
+            <Route 
+              path="/interview/:sessionId" 
+              element={
+                <ProtectedRoute>
+                  <Interview />
+                </ProtectedRoute>
+              }
+            />
+            <Route 
+              path="/history" 
+              element={
+                <ProtectedRoute>
+                  <SessionHistory />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/microphone-test" element={<MicrophoneTest />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/signup" element={<SignupPage />} />
+          </Routes>
+        </InterviewProvider>
+      </AuthProvider>
     </ChakraProvider>
   );
 }

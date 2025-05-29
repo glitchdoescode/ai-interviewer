@@ -84,40 +84,44 @@ def generate_interview_question(
         })
         
         # Build the prompt
-        prompt = f"""
-You are an expert technical interviewer specializing in {job_role} positions.
+        prompt_parts = [
+            f"You are an expert technical interviewer specializing in {job_role} positions.\n\n"
+            "Your task is to generate ONE insightful, technical interview question that will "
+            "effectively evaluate a candidate's knowledge and skills.\n\n"
+            f"JOB ROLE: {job_role}\n"
+            f"SKILL AREAS TO FOCUS ON: {skill_areas_text}\n"
+            f"DIFFICULTY LEVEL: {difficulty_level}\n"
+            f"EXPECTED DEPTH: {difficulty_params['depth']}\n"
+            f"COMPLEXITY: {difficulty_params['complexity']}\n"
+        ]
 
-Your task is to generate ONE insightful, technical interview question that will effectively evaluate a candidate's knowledge and skills.
+        if current_topic:
+            prompt_parts.append(f"CURRENT TOPIC: {current_topic}\n")
+        if follow_up_to:
+            prompt_parts.append(f"FOLLOW UP TO: {follow_up_to}\n")
+        if conversation_context:
+            prompt_parts.append(f"PREVIOUS CONVERSATION CONTEXT:\n{conversation_context}\n")
 
-JOB ROLE: {job_role}
-SKILL AREAS TO FOCUS ON: {skill_areas_text}
-DIFFICULTY LEVEL: {difficulty_level}
-EXPECTED DEPTH: {difficulty_params['depth']}
-COMPLEXITY: {difficulty_params['complexity']}
+        prompt_parts.extend([
+            "\nREQUIREMENTS FOR THE QUESTION:\n"
+            "1. Be specific and technical, not generic\n"
+            f"2. Focus on the specified skill areas: {skill_areas_text}\n"
+            f"3. Match the appropriate difficulty level ({difficulty_level})\n"
+            "4. Make the question open-ended enough to evaluate depth of knowledge\n"
+            "5. If provided, ensure the question follows up naturally on previous responses\n"
+            "6. Avoid asking questions that have already been asked\n"
+            f"7. Make sure the question aligns with the {job_role} position and its requirements\n"
+            "8. Include enough context for the question to be answerable without additional information\n\n"
+            "RESPONSE FORMAT:\n"
+            "Return your response as a valid JSON object containing:\n"
+            "- \"question\": The interview question\n"
+            "- \"expected_topics\": Key topics/concepts a good answer should address\n"
+            "- \"difficulty\": The actual difficulty of the question (beginner/intermediate/advanced)\n"
+            "- \"skill_areas\": The specific skills this question evaluates\n"
+            "- \"follow_up_questions\": 2-3 potential follow-up questions for deeper exploration"
+        ])
 
-{"CURRENT TOPIC: " + current_topic if current_topic else ""}
-{"FOLLOW UP TO: " + follow_up_to if follow_up_to else ""}
-
-{"PREVIOUS CONVERSATION CONTEXT:\n" + conversation_context if conversation_context else ""}
-
-REQUIREMENTS FOR THE QUESTION:
-1. Be specific and technical, not generic
-2. Focus on the specified skill areas: {skill_areas_text}
-3. Match the appropriate difficulty level ({difficulty_level})
-4. Make the question open-ended enough to evaluate depth of knowledge
-5. If provided, ensure the question follows up naturally on previous responses
-6. Avoid asking questions that have already been asked
-7. Make sure the question aligns with the {job_role} position and its requirements
-8. Include enough context for the question to be answerable without additional information
-
-RESPONSE FORMAT:
-Return your response as a valid JSON object containing:
-- "question": The interview question
-- "expected_topics": Key topics/concepts a good answer should address
-- "difficulty": The actual difficulty of the question (beginner/intermediate/advanced)
-- "skill_areas": The specific skills this question evaluates
-- "follow_up_questions": 2-3 potential follow-up questions for deeper exploration
-"""
+        prompt = ''.join(prompt_parts)
         
         # Call the LLM
         response = model.invoke(prompt)
@@ -357,4 +361,4 @@ Return your analysis as a valid JSON object with the following fields:
             "experience_level": experience_level,
             "error": str(e),
             "generated_from_error": True
-        } 
+        }

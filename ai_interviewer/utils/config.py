@@ -35,7 +35,9 @@ DEFAULT_CONFIG = {
         "database": "ai_interviewer_db",
         "sessions_collection": "interview_sessions",
         "metadata_collection": "session_metadata", # For SessionManager
-        "store_collection": "interview_memory_store" # For InterviewMemoryManager
+        "store_collection": "interview_memory_store", # For InterviewMemoryManager
+        "users_collection": "users", # For user authentication data
+        "password_reset_tokens_collection": "password_reset_tokens" # For password reset tokens
     },
     "speech": {
         "provider": "deepgram", # or "google_cloud_speech"
@@ -108,6 +110,8 @@ def load_config() -> dict:
     config["database"]["sessions_collection"] = os.environ.get("MONGODB_SESSIONS_COLLECTION", config["database"]["sessions_collection"])
     config["database"]["metadata_collection"] = os.environ.get("MONGODB_METADATA_COLLECTION", config["database"]["metadata_collection"])
     config["database"]["store_collection"] = os.environ.get("MONGODB_STORE_COLLECTION", config["database"]["store_collection"])
+    config["database"]["users_collection"] = os.environ.get("MONGODB_USERS_COLLECTION", config["database"]["users_collection"])
+    config["database"]["password_reset_tokens_collection"] = os.environ.get("MONGODB_PASSWORD_RESET_TOKENS_COLLECTION", config["database"]["password_reset_tokens_collection"])
 
     # Speech (Deepgram)
     config["speech"]["provider"] = os.environ.get("SPEECH_PROVIDER", config["speech"]["provider"])
