@@ -24,6 +24,7 @@ import {
 import { FaInfoCircle, FaHistory } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import ChatInterface from '../components/ChatInterface';
+import CodingChallenge from '../components/CodingChallenge';
 import { useInterview } from '../context/InterviewContext';
 import { checkVoiceAvailability } from '../api/interviewService';
 import JobRoleSelector from '../components/JobRoleSelector';
@@ -40,6 +41,7 @@ const Interview = () => {
   const {
     userId,
     sessionId,
+    messages,
     loading,
     error,
     setSessionId,
@@ -54,6 +56,8 @@ const Interview = () => {
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
   const [showJobSelector, setShowJobSelector] = useState(!urlSessionId);
   const [selectedJobRole, setSelectedJobRole] = useState(null);
+  const [currentProblemTitle, setCurrentProblemTitle] = useState('');
+  const [currentProblemDescription, setCurrentProblemDescription] = useState('');
 
   // Check if the requested session ID should be loaded
   useEffect(() => {
@@ -157,6 +161,43 @@ const Interview = () => {
         return 'gray';
     }
   };
+
+  // Effect to extract problem details when stage changes to coding_challenge
+  useEffect(() => {
+    if (interviewStage === 'coding_challenge' && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content) {
+        const aiMessageContent = lastMessage.content;
+        let title = "Coding Challenge";
+        let starterCode = '' // Placeholder for starter code
+        let language = 'python' // Default language
+        let difficulty = 'medium' // Default difficulty
+
+        // Basic extraction - adapt as needed based on AI's actual message format
+        // Example: Looking for "Problem: Two Sum", "Language: Python", "Starter Code: def twoSum..."
+        const titleMatch = aiMessageContent.match(/Problem: ([^\n.:]+)/i) || aiMessageContent.match(/challenge: ([^\n.:]+)/i);
+        if (titleMatch && titleMatch[1]) {
+            title = titleMatch[1].trim();
+        }
+        // Add more sophisticated parsing here if AI provides structured data or specific keywords
+        // For example, if AI message is JSON or has specific markers for starter code, language.
+
+        // For now, we pass the full AI message as description and use defaults for others.
+        setCurrentProblemTitle(title); // This state is used for the challenge object
+        setCurrentProblemDescription(aiMessageContent); // This state is used for the challenge object
+        
+        // Log what will be passed to CodingChallenge
+        console.log("Preparing challenge data for CodingChallenge component:", {
+          title: title,
+          description: aiMessageContent.substring(0,100) + "...",
+          starter_code: starterCode, // Will be empty for now
+          language: language,      // Default for now
+          difficulty: difficulty,  // Default for now 
+          // visible_test_cases: [] // Placeholder
+        });
+      }
+    }
+  }, [interviewStage, messages]);
 
   return (
     <Box minH="100vh" bg="gray.50">
@@ -294,7 +335,25 @@ const Interview = () => {
                     isLoading={loading}
                   />
                 ) : (
-                  <ChatInterface jobRoleData={selectedJobRole} />
+                  interviewStage === 'coding_challenge' || interviewStage === 'coding_challenge_waiting' ? (
+                    <CodingChallenge 
+                      challenge={{
+                        title: currentProblemTitle,
+                        description: currentProblemDescription,
+                        starter_code: '\n# Write your code here\n',
+                        language: 'python', 
+                        difficulty: 'medium', 
+                        time_limit_mins: 30, 
+                        visible_test_cases: [], // Ensure this is always an array
+                        evaluation_criteria: {}, // Ensure this is always an object
+                        challenge_id: currentProblemTitle || "default_challenge_id", 
+                      }}
+                      sessionId={sessionId}
+                      userId={userId}
+                    />
+                  ) : (
+                    <ChatInterface jobRoleData={selectedJobRole} />
+                  )
                 )}
               </GridItem>
             </Grid>

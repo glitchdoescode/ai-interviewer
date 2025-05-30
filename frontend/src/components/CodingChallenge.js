@@ -21,11 +21,12 @@ import {
   AccordionButton,
   AccordionPanel,
   AccordionIcon,
+  Select,
 } from '@chakra-ui/react';
 import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
-import { submitChallengeCode } from '../api/interviewService';
+// import { submitChallengeCode } from '../api/interviewService'; // Comment out for Sprint 1
 
 /**
  * CodingChallenge component for handling coding challenge interactions
@@ -34,9 +35,12 @@ import { submitChallengeCode } from '../api/interviewService';
  * @param {Object} props.challenge Challenge data (title, description, etc.)
  * @param {Function} props.onComplete Callback when challenge is completed
  * @param {Function} props.onRequestHint Callback to request a hint
+ * @param {string} props.sessionId Session ID
+ * @param {string} props.userId User ID
  */
-const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
+const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, userId }) => {
   const [code, setCode] = useState(challenge?.starter_code || '');
+  const [language, setLanguage] = useState(challenge?.language || 'python');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testResults, setTestResults] = useState(null);
   const [feedback, setFeedback] = useState(null);
@@ -77,39 +81,78 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
       return;
     }
     
-    try {
-      setIsSubmitting(true);
-      
-      // Submit the code to the API
-      const result = await submitChallengeCode(challenge.challenge_id, code);
-      
-      setTestResults(result.execution_results);
-      setFeedback(result.feedback);
-      
-      // If the challenge is passed, call the onComplete callback
-      if (result.evaluation?.passed) {
-        onComplete && onComplete(result);
-      }
-      
-      // Show toast notification with result
+    // SPRINT 1: Submit to the logging endpoint
+    setIsSubmitting(true);
+    console.log('CodingChallenge: Submitting code for Sprint 1:', { challenge_id: challenge?.challenge_id || challenge?.title, language, code, sessionId, userId });
+
+    const authToken = localStorage.getItem('authToken'); // Or get from AuthContext
+    if (!authToken) {
       toast({
-        title: result.evaluation?.passed ? 'Challenge Passed!' : 'Submission Received',
-        description: result.evaluation?.passed 
-          ? 'Great job! Your solution passed all test cases.' 
-          : 'Your solution has been evaluated. Check the feedback for details.',
-        status: result.evaluation?.passed ? 'success' : 'info',
-        duration: 5000,
-        isClosable: true,
-      });
-    } catch (error) {
-      console.error('Error submitting code:', error);
-      toast({
-        title: 'Submission Error',
-        description: 'There was an error submitting your code. Please try again.',
+        title: 'Authentication Error',
+        description: 'Auth token not found. Please log in.',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
+      setIsSubmitting(false);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/coding/submit', { // Ensure API prefix is correct (e.g. /api/v1)
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          challenge_id: challenge?.challenge_id || challenge?.title || "default_challenge_id", // Use challenge.challenge_id if available
+          language: language,
+          code: code,
+          user_id: userId,
+          session_id: sessionId
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error('Sprint 1 Submission Error:', response.status, result);
+        toast({
+          title: 'Submission Failed (Sprint 1)',
+          description: result.detail || `Server responded with ${response.status}`,
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+        setTestResults({ error: result.detail || `Server error ${response.status}` });
+        setFeedback(null);
+      } else {
+        console.log('Sprint 1 Submission Response:', result);
+        toast({
+          title: 'Submission Logged (Sprint 1)',
+          description: `Status: ${result.status}`,
+          status: 'info',
+          duration: 5000,
+          isClosable: true,
+        });
+        // For Sprint 1, display a simple message in testResults and feedback
+        setTestResults({ message: result.execution_results?.message || 'Logged, no execution.' });
+        setFeedback({ message: result.feedback?.message || 'No specific feedback for Sprint 1.'});
+        // Optionally call onComplete if you want to signify the end of this interaction for Sprint 1
+        // if (onComplete) onComplete(result); 
+      }
+    } catch (error) {
+      console.error('Error submitting code (Sprint 1):', error);
+      toast({
+        title: 'Network Error (Sprint 1)',
+        description: 'Could not connect to the server. Please try again.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      setTestResults({ error: 'Network error during submission.' });
+      setFeedback(null);
     } finally {
       setIsSubmitting(false);
     }
@@ -193,6 +236,7 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
         <TabList>
           <Tab>Challenge</Tab>
           <Tab>Code Editor</Tab>
+          {/* For Sprint 1, testResults might just be a simple message object */}
           {testResults && <Tab>Results</Tab>}
         </TabList>
         
@@ -211,40 +255,44 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
               <Box>
                 <Heading size="sm" mb={2}>Example Test Cases</Heading>
                 <Accordion allowMultiple>
-                  {challenge.visible_test_cases.map((testCase, index) => (
-                    <AccordionItem key={index}>
-                      <h2>
-                        <AccordionButton>
-                          <Box flex="1" textAlign="left">
-                            Test Case {index + 1}
-                          </Box>
-                          <AccordionIcon />
-                        </AccordionButton>
-                      </h2>
-                      <AccordionPanel pb={4}>
-                        <VStack align="stretch" spacing={2}>
-                          <Box>
-                            <Text fontWeight="bold">Input:</Text>
-                            <Box bg="gray.100" p={2} borderRadius="md">
-                              <Text fontFamily="monospace">{JSON.stringify(testCase.input)}</Text>
+                  {challenge.visible_test_cases && challenge.visible_test_cases.length > 0 ? (
+                    challenge.visible_test_cases.map((testCase, index) => (
+                      <AccordionItem key={index}>
+                        <h2>
+                          <AccordionButton>
+                            <Box flex="1" textAlign="left">
+                              Test Case {index + 1}
                             </Box>
-                          </Box>
-                          <Box>
-                            <Text fontWeight="bold">Expected Output:</Text>
-                            <Box bg="gray.100" p={2} borderRadius="md">
-                              <Text fontFamily="monospace">{JSON.stringify(testCase.expected_output)}</Text>
-                            </Box>
-                          </Box>
-                          {testCase.explanation && (
+                            <AccordionIcon />
+                          </AccordionButton>
+                        </h2>
+                        <AccordionPanel pb={4}>
+                          <VStack align="stretch" spacing={2}>
                             <Box>
-                              <Text fontWeight="bold">Explanation:</Text>
-                              <Text>{testCase.explanation}</Text>
+                              <Text fontWeight="bold">Input:</Text>
+                              <Box bg="gray.100" p={2} borderRadius="md">
+                                <Text fontFamily="monospace">{JSON.stringify(testCase.input)}</Text>
+                              </Box>
                             </Box>
-                          )}
-                        </VStack>
-                      </AccordionPanel>
-                    </AccordionItem>
-                  ))}
+                            <Box>
+                              <Text fontWeight="bold">Expected Output:</Text>
+                              <Box bg="gray.100" p={2} borderRadius="md">
+                                <Text fontFamily="monospace">{JSON.stringify(testCase.expected_output)}</Text>
+                              </Box>
+                            </Box>
+                            {testCase.explanation && (
+                              <Box>
+                                <Text fontWeight="bold">Explanation:</Text>
+                                <Text>{testCase.explanation}</Text>
+                              </Box>
+                            )}
+                          </VStack>
+                        </AccordionPanel>
+                      </AccordionItem>
+                    ))
+                  ) : (
+                    <Text>No visible test cases provided.</Text>
+                  )}
                 </Accordion>
               </Box>
               
@@ -254,12 +302,16 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
               <Box>
                 <Heading size="sm" mb={2}>Evaluation Criteria</Heading>
                 <VStack align="stretch">
-                  {Object.entries(challenge.evaluation_criteria).map(([key, value]) => (
-                    <HStack key={key}>
-                      <Badge colorScheme="blue">{key}</Badge>
-                      <Text>{value}</Text>
-                    </HStack>
-                  ))}
+                  {challenge.evaluation_criteria && Object.keys(challenge.evaluation_criteria).length > 0 ? (
+                    Object.entries(challenge.evaluation_criteria).map(([key, value]) => (
+                      <HStack key={key}>
+                        <Badge colorScheme="blue">{key}</Badge>
+                        <Text>{value}</Text>
+                      </HStack>
+                    ))
+                  ) : (
+                    <Text>No evaluation criteria provided.</Text>
+                  )}
                 </VStack>
               </Box>
             </VStack>
@@ -268,9 +320,15 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint }) => {
           {/* Code Editor Tab */}
           <TabPanel>
             <VStack align="stretch" spacing={4}>
+              <Select value={language} onChange={(e) => setLanguage(e.target.value)} mb={2} focusBorderColor="primary.500">
+                <option value="python">Python</option>
+                <option value="javascript">JavaScript</option>
+                <option value="java">Java</option>
+                {/* Add more languages as needed */}
+              </Select>
               <CodeEditor
                 code={code}
-                language={challenge.language.toLowerCase()}
+                language={language.toLowerCase()}
                 onChange={setCode}
               />
               

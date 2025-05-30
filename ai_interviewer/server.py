@@ -1206,6 +1206,7 @@ else:
 # Define models for coding challenge requests/responses
 class CodingSubmissionRequest(BaseModel):
     challenge_id: str
+    language: str # Added language field
     code: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -1273,92 +1274,26 @@ async def submit_code_solution(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Submit a candidate's code solution for evaluation.
-    
-    The authenticated user's ID will be used.
-    
-    This endpoint processes a submitted solution for a coding challenge and returns feedback.
-    
-    Frontend Implementation Guidelines:
-    1. After calling this endpoint and receiving the evaluation results, store them.
-    2. Present the results to the user and allow them to review/confirm.
-    3. When the user is ready to continue the interview, call:
-       `/api/interview/{session_id}/challenge-complete`
-    4. Pass the evaluation results in both:
-       - As structured data in the `evaluation_summary` field 
-       - As human-readable text in the `message` field
-    
-    This two-step process (submit then complete) allows the frontend to:
-    - Process and display detailed evaluation results to the user
-    - Let the user review their submission before continuing
-    - Ensure the AI interviewer has the full context when providing feedback
-    
-    Args:
-        submission: CodingSubmissionRequest containing the code solution and challenge ID
-        
-    Returns:
-        CodingSubmissionResponse with evaluation results
+    Submit a code solution for a coding challenge.
+    For Sprint 1, this will only log the submission.
     """
-    try:
-        # Generate timestamp if not provided
-        timestamp = submission.timestamp or datetime.now().isoformat()
-        
-        # Use user_id from the authenticated user
-        user_id_from_token = current_user.id
+    logger.info(
+        f"SPRINT 1: Received code submission: "
+        f"Challenge ID: {submission.challenge_id}, "
+        f"Language: {submission.language}, "
+        f"User ID: {submission.user_id}, "
+        f"Session ID: {submission.session_id}, "
+        f"Code: {submission.code[:100]}..." # Log first 100 chars of code
+    )
 
-        # Call the submit_code_for_challenge tool
-        from ai_interviewer.tools.coding_tools import submit_code_for_challenge
-        
-        result = submit_code_for_challenge(
-            challenge_id=submission.challenge_id,
-            candidate_code=submission.code
-        )
-        
-        # If session ID is provided, update session state with the completed challenge
-        if submission.session_id and interviewer.session_manager: # user_id_from_token is now used
-            session = interviewer.session_manager.get_session(submission.session_id)
-            if session:
-                # Verify session ownership
-                if session.get("user_id") != user_id_from_token:
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
-
-                metadata = session.get("metadata", {})
-                
-                # Update completed challenges list
-                challenges = metadata.get("completed_challenges", [])
-                challenges.append({
-                    "challenge_id": submission.challenge_id,
-                    "timestamp": timestamp,
-                    "passed": result.get("evaluation", {}).get("passed", False)
-                })
-                metadata["completed_challenges"] = challenges
-                
-                # Store code snapshot for tracking code evolution
-                code_snapshots = metadata.get("code_snapshots", [])
-                code_snapshots.append({
-                    "challenge_id": submission.challenge_id,
-                    "code": submission.code,
-                    "timestamp": timestamp,
-                    "event_type": "submission",
-                    "execution_results": {
-                        "passed": result.get("evaluation", {}).get("passed", False),
-                        "pass_rate": result.get("evaluation", {}).get("pass_rate", 0),
-                        "execution_time": result.get("execution_results", {}).get("execution_time", 0)
-                    }
-                })
-                metadata["code_snapshots"] = code_snapshots
-                
-                # Update session
-                session["metadata"] = metadata
-                interviewer.session_manager.update_session(submission.session_id, session)
-                
-                # Log the code snapshot event
-                logger.info(f"Stored code snapshot for session {submission.session_id}, challenge {submission.challenge_id}")
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error submitting code solution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # For Sprint 1, return a dummy response
+    return CodingSubmissionResponse(
+        status="SPRINT_1_LOGGED",
+        challenge_id=submission.challenge_id,
+        execution_results={"message": "Submission logged for Sprint 1. No execution."},
+        feedback={"message": "No feedback in Sprint 1."},
+        evaluation={"message": "No evaluation in Sprint 1."}
+    )
 
 @app.post(
     "/api/coding/hint",
