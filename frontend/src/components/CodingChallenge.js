@@ -39,21 +39,24 @@ import { useInterview } from '../context/InterviewContext';
  * @param {string} props.sessionId Session ID
  * @param {string} props.userId User ID
  */
-const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHint, sessionId, userId }) => {
-  const [challenge, setChallenge] = useState(initialChallenge);
-  const [code, setCode] = useState(initialChallenge?.starter_code || '');
-  const [language, setLanguage] = useState(initialChallenge?.language || 'python');
+const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onRequestHint, sessionId, userId }) => {
+  const [currentChallengeDetails, setCurrentChallengeDetails] = useState(initialChallengeData);
+  const [code, setCode] = useState(initialChallengeData?.starter_code || '');
+  const [language, setLanguage] = useState(initialChallengeData?.language || 'python');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [testResults, setTestResults] = useState(null);
-  const [feedback, setFeedback] = useState(null);
+  
   const [isWaitingForUser, setIsWaitingForUser] = useState(true);
   const toast = useToast();
   
-  // New state for Run Code functionality
+  // State for Run Code functionality (Sprint 3)
   const [stdin, setStdin] = useState('');
   const [stdout, setStdout] = useState('');
   const [stderr, setStderr] = useState('');
   const [isRunningCode, setIsRunningCode] = useState(false);
+
+  // New state for Sprint 4: Test Case Evaluation
+  const [evaluationResult, setEvaluationResult] = useState(null);
+  const [isEvaluating, setIsEvaluating] = useState(false);
   
   const { setInterviewStage, jobDetails } = useInterview();
   
@@ -107,20 +110,25 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
       }
 
       // The backend's generate_coding_challenge_from_jd tool returns:
-      // problem_statement, starter_code, language, title
-      setChallenge({
-        title: data.title,
-        description: data.problem_statement, // Ensure your component uses 'description' for problem_statement
-        difficulty: data.difficulty_level || body.difficulty_level, // Or from response if provided
-        language: data.language,
-        time_limit_mins: 30, // Placeholder
-        starter_code: data.starter_code,
-        // challenge_id: data.challenge_id // if your backend provides one
-      });
+      // problem_statement, starter_code, language, title, test_cases, etc.
+      // We should store the whole object.
+      // setCurrentChallengeDetails({
+      //   title: data.title,
+      //   description: data.problem_statement, 
+      //   difficulty: data.difficulty_level || body.difficulty_level, 
+      //   language: data.language,
+      //   time_limit_mins: 30, 
+      //   starter_code: data.starter_code,
+      //   test_cases: data.test_cases, // IMPORTANT: Assuming backend sends this
+      //   challenge_id: data.challenge_id // IMPORTANT
+      // });
+      setCurrentChallengeDetails(data); // Assuming data is the full challenge object from backend
+      
       setCode(data.starter_code || '');
       setLanguage(data.language || 'python');
-      setTestResults(null);
-      setFeedback(null);
+      // setTestResults(null); // Clear old results
+      // setFeedback(null); // Clear old feedback
+      setEvaluationResult(null); // Clear old evaluation results
       toast({
         title: 'New Challenge Loaded',
         description: data.title,
@@ -143,11 +151,11 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
 
   // Fetch challenge when component mounts if no initial challenge is provided
   useEffect(() => {
-    if (!initialChallenge) {
+    if (!initialChallengeData) {
       fetchNewChallenge();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialChallenge]); // Only re-run if initialChallenge changes
+  }, [initialChallengeData]); // Only re-run if initialChallengeData changes
 
   // Set the interview stage to coding challenge
   useEffect(() => {
@@ -265,7 +273,7 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
   const handleSubmit = async () => {
     if (!code.trim()) {
       toast({
-        title: 'Empty Solution',
+        title: 'Empty Code',
         description: 'Please write some code before submitting.',
         status: 'warning',
         duration: 3000,
@@ -273,13 +281,20 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
       });
       return;
     }
-    
-    // SPRINT 1: Submit to the logging endpoint
-    setIsSubmitting(true);
-    console.log('CodingChallenge: Submitting code for Sprint 1:', { challenge_id: challenge?.challenge_id || challenge?.title, language, code, sessionId, userId });
 
-    const authToken = localStorage.getItem('authToken'); // Or get from AuthContext
+    setIsEvaluating(true);
+    setEvaluationResult(null); // Clear previous results
+    toast({
+      title: 'Submitting Solution...',
+      description: 'Evaluating your code against test cases.',
+      status: 'info',
+      duration: null, // Keep open until closed by success/error
+      isClosable: false,
+    });
+
+    const authToken = localStorage.getItem('authToken');
     if (!authToken) {
+      toast.closeAll();
       toast({
         title: 'Authentication Error',
         description: 'Auth token not found. Please log in.',
@@ -287,67 +302,71 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
         duration: 5000,
         isClosable: true,
       });
-      setIsSubmitting(false);
+      setIsEvaluating(false);
       return;
     }
 
     try {
-      const response = await fetch('/api/coding/submit', { // Ensure API prefix is correct (e.g. /api/v1)
+      const response = await fetch('/api/coding/submit', { // Target the new endpoint
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify({
-          challenge_id: challenge?.challenge_id || challenge?.title || "default_challenge_id", // Use challenge.challenge_id if available
           language: language,
           code: code,
-          user_id: userId,
-          session_id: sessionId
+          challenge_data: currentChallengeDetails, // Send the full challenge details
+          // session_id: sessionId, // Optional: if your backend /api/coding/submit needs it directly
         }),
       });
 
+      toast.closeAll(); // Close the "Submitting..." toast
       const result = await response.json();
 
       if (!response.ok) {
-        console.error('Sprint 1 Submission Error:', response.status, result);
-        toast({
-          title: 'Submission Failed (Sprint 1)',
-          description: result.detail || `Server responded with ${response.status}`,
-          status: 'error',
-          duration: 5000,
-          isClosable: true,
-        });
-        setTestResults({ error: result.detail || `Server error ${response.status}` });
-        setFeedback(null);
-      } else {
-        console.log('Sprint 1 Submission Response:', result);
-        toast({
-          title: 'Submission Logged (Sprint 1)',
-          description: `Status: ${result.status}`,
-          status: 'info',
-          duration: 5000,
-          isClosable: true,
-        });
-        // For Sprint 1, display a simple message in testResults and feedback
-        setTestResults({ message: result.execution_results?.message || 'Logged, no execution.' });
-        setFeedback({ message: result.feedback?.message || 'No specific feedback for Sprint 1.'});
-        // Optionally call onComplete if you want to signify the end of this interaction for Sprint 1
-        // if (onComplete) onComplete(result); 
+        // Log the detailed error from the backend if available
+        console.error('Submission Error Response:', result);
+        const errorDetail = result.detail || (result.error_message ? `Evaluation Error: ${result.error_message}` : 'An unknown error occurred during submission.');
+        throw new Error(errorDetail);
       }
-    } catch (error) {
-      console.error('Error submitting code (Sprint 1):', error);
+      
+      setEvaluationResult(result);
       toast({
-        title: 'Network Error (Sprint 1)',
-        description: 'Could not connect to the server. Please try again.',
+        title: 'Evaluation Complete',
+        description: `Passed ${result.overall_summary?.pass_count || 0}/${result.overall_summary?.total_tests || 0} test cases.`,
+        status: result.overall_summary?.all_tests_passed ? 'success' : 'warning',
+        duration: 5000,
+        isClosable: true,
+      });
+
+      // Optionally, call onComplete with the evaluation results if the parent component needs it
+      if (onComplete) {
+        // Decide what to pass to onComplete. The full result might be useful.
+        // It might also include a simple boolean for overall pass/fail.
+        onComplete(result, result.overall_summary?.all_tests_passed || false);
+      }
+
+    } catch (error) {
+      toast.closeAll();
+      console.error('Error submitting code for evaluation:', error);
+      toast({
+        title: 'Submission Error',
+        description: error.message || 'Could not connect to the server or process the submission.',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
-      setTestResults({ error: 'Network error during submission.' });
-      setFeedback(null);
+      // Set a minimal error structure for display if needed
+      setEvaluationResult({ 
+        status: 'error',
+        error_message: error.message || 'Submission failed.',
+        overall_summary: { pass_count: 0, fail_count: 0, total_tests: 0, all_tests_passed: false },
+        test_case_results: [],
+      });
     } finally {
-      setIsSubmitting(false);
+      setIsEvaluating(false);
+      // setIsSubmitting(false); // This was for the old Sprint 1 submission logic, isEvaluating covers it now
     }
   };
   
@@ -372,7 +391,7 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
   };
   
   // If no challenge is provided, show a placeholder and a button to fetch one
-  if (!challenge) {
+  if (!currentChallengeDetails) {
     return (
       <Box p={4} borderRadius="md" borderWidth="1px">
         <VStack spacing={4}>
@@ -399,16 +418,16 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
       {/* Challenge Header */}
       <Box bg="brand.50" p={4} borderBottomWidth="1px">
         <HStack justifyContent="space-between" mb={2}>
-          <Heading size="md">{challenge.title}</Heading>
+          <Heading size="md">{currentChallengeDetails.title}</Heading>
           <HStack>
             <Button size="sm" onClick={fetchNewChallenge} leftIcon={<FaRedo />} colorScheme="gray" variant="outline" mr={2}>
               New Challenge
             </Button>
-            <Badge colorScheme={challenge.difficulty_level === 'easy' ? 'green' : challenge.difficulty_level === 'medium' ? 'orange' : 'red'}>
-              {challenge.difficulty_level?.toUpperCase() || challenge.difficulty?.toUpperCase() || 'N/A'}
+            <Badge colorScheme={currentChallengeDetails.difficulty_level === 'easy' ? 'green' : currentChallengeDetails.difficulty_level === 'medium' ? 'orange' : 'red'}>
+              {currentChallengeDetails.difficulty_level?.toUpperCase() || currentChallengeDetails.difficulty?.toUpperCase() || 'N/A'}
             </Badge>
-            <Badge colorScheme="blue">{challenge.language?.toUpperCase() || 'N/A'}</Badge>
-            <Badge colorScheme="purple">{challenge.time_limit_mins || 'N/A'} min</Badge>
+            <Badge colorScheme="blue">{currentChallengeDetails.language?.toUpperCase() || 'N/A'}</Badge>
+            <Badge colorScheme="purple">{currentChallengeDetails.time_limit_mins || 'N/A'} min</Badge>
           </HStack>
         </HStack>
         
@@ -437,8 +456,8 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
         <TabList>
           <Tab>Challenge</Tab>
           <Tab>Code Editor</Tab>
-          {/* For Sprint 1, testResults might just be a simple message object */}
-          {testResults && <Tab>Results</Tab>}
+          {/* For Sprint 1, evaluationResult might just be a simple message object */}
+          {evaluationResult && <Tab>Results</Tab>}
         </TabList>
         
         <TabPanels>
@@ -447,17 +466,51 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
             <VStack align="stretch" spacing={4}>
               <Box>
                 <Heading size="sm" mb={2}>Problem Description</Heading>
-                <Text whiteSpace="pre-wrap">{challenge.problem_statement || challenge.description}</Text>
+                <Text whiteSpace="pre-wrap">{currentChallengeDetails.problem_statement || currentChallengeDetails.description}</Text>
               </Box>
+              
+              {/* Display Visible Test Cases - Added for Sprint 4 */}
+              {currentChallengeDetails && currentChallengeDetails.visible_test_cases && currentChallengeDetails.visible_test_cases.length > 0 && (
+                <Box mt={4}>
+                  <Heading size="sm" mb={2}>Visible Test Cases</Heading>
+                  <Accordion allowMultiple defaultIndex={[0]}> {/* Open first by default */}
+                    {currentChallengeDetails.visible_test_cases.map((tc, index) => (
+                      <AccordionItem key={index}>
+                        <h2>
+                          <AccordionButton>
+                            <Box flex="1" textAlign="left">
+                              Test Case {index + 1}
+                              {tc.explanation && <Text fontSize="sm" color="gray.500"> ({tc.explanation})</Text>}
+                            </Box>
+                            <AccordionIcon />
+                          </AccordionButton>
+                        </h2>
+                        <AccordionPanel pb={4}>
+                          <VStack align="stretch" spacing={2}>
+                            <Box>
+                              <Text fontWeight="bold">Input:</Text>
+                              <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc.input === 'object' ? JSON.stringify(tc.input, null, 2) : String(tc.input)}</Text>
+                            </Box>
+                            <Box>
+                              <Text fontWeight="bold">Expected Output:</Text>
+                              <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc.expected_output === 'object' ? JSON.stringify(tc.expected_output, null, 2) : String(tc.expected_output)}</Text>
+                            </Box>
+                          </VStack>
+                        </AccordionPanel>
+                      </AccordionItem>
+                    ))}
+                  </Accordion>
+                </Box>
+              )}
               
               <Divider />
               
-              {/* Test Cases */}
+              {/* Example Test Cases */}
               <Box>
                 <Heading size="sm" mb={2}>Example Test Cases</Heading>
                 <Accordion allowMultiple>
-                  {challenge.test_cases && challenge.test_cases.length > 0 ? (
-                    challenge.test_cases.map((testCase, index) => (
+                  {currentChallengeDetails.test_cases && currentChallengeDetails.test_cases.length > 0 ? (
+                    currentChallengeDetails.test_cases.map((testCase, index) => (
                       <AccordionItem key={index}>
                         <h2>
                           <AccordionButton>
@@ -503,8 +556,8 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
               <Box>
                 <Heading size="sm" mb={2}>Evaluation Criteria</Heading>
                 <VStack align="stretch">
-                  {challenge.evaluation_criteria && Object.keys(challenge.evaluation_criteria).length > 0 ? (
-                    Object.entries(challenge.evaluation_criteria).map(([key, value]) => (
+                  {currentChallengeDetails.evaluation_criteria && Object.keys(currentChallengeDetails.evaluation_criteria).length > 0 ? (
+                    Object.entries(currentChallengeDetails.evaluation_criteria).map(([key, value]) => (
                       <HStack key={key}>
                         <Badge colorScheme="blue">{key}</Badge>
                         <Text>{value}</Text>
@@ -599,116 +652,134 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
           </TabPanel>
           
           {/* Results Tab */}
-          {testResults && (
+          {evaluationResult && (
             <TabPanel>
               <VStack align="stretch" spacing={4}>
-                {/* Overall Results */}
-                <Box>
-                  <Heading size="sm" mb={2}>Overall Results</Heading>
-                  <Alert
-                    status={testResults.all_passed ? 'success' : 'warning'}
-                    borderRadius="md"
-                  >
-                    <AlertIcon />
-                    {testResults.all_passed
-                      ? 'All test cases passed!'
-                      : `${testResults.passed_count || 0} out of ${testResults.test_cases?.length || 0} test cases passed.`}
-                  </Alert>
-                </Box>
-                
-                {/* Test Case Results */}
-                {testResults.test_cases && (
+                {/* Overall Summary */}
+                {evaluationResult.overall_summary && (
                   <Box>
-                    <Heading size="sm" mb={2}>Test Case Results</Heading>
-                    <VStack align="stretch" spacing={2}>
-                      {testResults.test_cases.map((testCase, index) => (
-                        <Box
-                          key={index}
-                          p={3}
-                          borderRadius="md"
-                          borderWidth="1px"
-                          borderColor={testCase.passed ? 'green.200' : 'red.200'}
-                          bg={testCase.passed ? 'green.50' : 'red.50'}
-                        >
-                          <HStack justify="space-between" mb={1}>
-                            <Text fontWeight="bold">Test Case {index + 1}</Text>
-                            {testCase.passed ? (
-                              <Badge colorScheme="green">Passed</Badge>
-                            ) : (
-                              <Badge colorScheme="red">Failed</Badge>
-                            )}
-                          </HStack>
-                          
-                          {!testCase.passed && testCase.error && (
-                            <Box mt={2}>
-                              <Text fontWeight="bold" color="red.500">Error:</Text>
-                              <Box bg="red.100" p={2} borderRadius="md" mt={1}>
-                                <Text fontFamily="monospace" fontSize="sm">
-                                  {testCase.error}
-                                </Text>
-                              </Box>
-                            </Box>
-                          )}
-                          
-                          {!testCase.passed && testCase.actual_output !== undefined && (
-                            <Box mt={2}>
-                              <Text fontWeight="bold">Your Output:</Text>
-                              <Box bg="gray.100" p={2} borderRadius="md" mt={1}>
-                                <Text fontFamily="monospace" fontSize="sm">
-                                  {JSON.stringify(testCase.actual_output)}
-                                </Text>
-                              </Box>
-                            </Box>
-                          )}
-                        </Box>
-                      ))}
-                    </VStack>
+                    <Heading size="sm" mb={2}>Overall Results</Heading>
+                    <Alert
+                      status={evaluationResult.overall_summary.all_tests_passed ? 'success' : (evaluationResult.overall_summary.pass_count > 0 ? 'warning' : 'error')}
+                      borderRadius="md"
+                    >
+                      <AlertIcon />
+                      {evaluationResult.overall_summary.all_tests_passed
+                        ? 'All test cases passed!'
+                        : `${evaluationResult.overall_summary.pass_count} out of ${evaluationResult.overall_summary.total_tests} test cases passed.`}
+                    </Alert>
                   </Box>
                 )}
                 
-                {/* Feedback */}
-                {feedback && (
+                {/* Individual Test Case Results */}
+                {evaluationResult.test_case_results && evaluationResult.test_case_results.length > 0 && (
                   <Box>
-                    <Heading size="sm" mb={2}>Feedback</Heading>
-                    <VStack align="stretch" spacing={3}>
-                      <Box>
-                        <Text fontWeight="bold">Summary:</Text>
-                        <Text>{feedback.summary}</Text>
+                    <Heading size="sm" mb={2}>Detailed Test Case Results</Heading>
+                    <Accordion allowMultiple defaultIndex={evaluationResult.test_case_results.map((_, i) => i)}>
+                      {evaluationResult.test_case_results.map((tc_result, index) => (
+                        <AccordionItem key={index} isDisabled={tc_result.is_hidden && !tc_result.passed}> {/* Keep hidden failed tests closed */}
+                          <h2>
+                            <AccordionButton>
+                              <HStack flex="1" textAlign="left">
+                                <Badge colorScheme={tc_result.passed ? 'green' : 'red'}>
+                                  {tc_result.passed ? 'PASS' : 'FAIL'}
+                                </Badge>
+                                <Text>Test Case {tc_result.test_case_id !== undefined ? tc_result.test_case_id : index + 1}</Text>
+                                {tc_result.name && <Text fontSize="sm" color="gray.500">({tc_result.name})</Text>}
+                                {tc_result.is_hidden && <Badge colorScheme="purple" ml={2}>Hidden</Badge>}
+                              </HStack>
+                              <AccordionIcon />
+                            </AccordionButton>
+                          </h2>
+                          <AccordionPanel pb={4}>
+                            <VStack align="stretch" spacing={3}>
+                              {(!tc_result.is_hidden || tc_result.error) && (
+                                <>
+                                  <Box>
+                                    <Text fontWeight="bold">Input:</Text>
+                                    <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.input === 'object' ? JSON.stringify(tc_result.input, null, 2) : String(tc_result.input)}</Text>
+                                  </Box>
+                                  <Box>
+                                    <Text fontWeight="bold">Expected Output:</Text>
+                                    <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.expected_output === 'object' ? JSON.stringify(tc_result.expected_output, null, 2) : String(tc_result.expected_output)}</Text>
+                                  </Box>
+                                </>
+                              )}
+                              <Box>
+                                <Text fontWeight="bold">Actual Output:</Text>
+                                <Text as="pre" p={2} bg={tc_result.passed ? "green.50" : "red.50"} borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.actual_output === 'object' ? JSON.stringify(tc_result.actual_output, null, 2) : String(tc_result.actual_output)}</Text>
+                              </Box>
+                              {tc_result.stdout && (
+                                <Box>
+                                  <Text fontWeight="bold">Stdout:</Text>
+                                  <Text as="pre" p={2} bg="gray.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.stdout}</Text>
+                                </Box>
+                              )}
+                              {tc_result.stderr && (
+                                <Box>
+                                  <Text fontWeight="bold">Stderr:</Text>
+                                  <Text as="pre" p={2} bg="red.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.stderr}</Text>
+                                </Box>
+                              )}
+                              {tc_result.error && (
+                                <Box>
+                                  <Text fontWeight="bold">Error Message:</Text>
+                                  <Text as="pre" p={2} bg="red.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.error}</Text>
+                                </Box>
+                              )}
+                            </VStack>
+                          </AccordionPanel>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  </Box>
+                )}
+               
+                {/* Qualitative Feedback from AI */}
+                {evaluationResult.feedback_summary && (
+                   <Box>
+                     <Heading size="sm" mb={2}>Feedback Summary</Heading>
+                     <Text whiteSpace="pre-wrap">{evaluationResult.feedback_summary}</Text>
+                   </Box>
+                )}
+                {evaluationResult.qualitative_feedback && (
+                  <Box>
+                    <Heading size="sm" mb={2}>Detailed Feedback</Heading>
+                    {evaluationResult.qualitative_feedback.strengths && evaluationResult.qualitative_feedback.strengths.length > 0 && (
+                      <Box mb={2}>
+                        <Text fontWeight="bold">Strengths:</Text>
+                        <VStack align="stretch" spacing={1} pl={4}>
+                          {evaluationResult.qualitative_feedback.strengths.map((item, i) => (<Text key={i}>• {item}</Text>))}
+                        </VStack>
                       </Box>
-                      
-                      {feedback.strengths && feedback.strengths.length > 0 && (
-                        <Box>
-                          <Text fontWeight="bold">Strengths:</Text>
-                          <VStack align="stretch" spacing={1} pl={4}>
-                            {feedback.strengths.map((strength, i) => (
-                              <Text key={i}>• {strength}</Text>
-                            ))}
-                          </VStack>
-                        </Box>
-                      )}
-                      
-                      {feedback.areas_for_improvement && feedback.areas_for_improvement.length > 0 && (
-                        <Box>
-                          <Text fontWeight="bold">Areas for Improvement:</Text>
-                          <VStack align="stretch" spacing={1} pl={4}>
-                            {feedback.areas_for_improvement.map((area, i) => (
-                              <Text key={i}>• {area}</Text>
-                            ))}
-                          </VStack>
-                        </Box>
-                      )}
-                      
-                      {feedback.suggestions && feedback.suggestions.length > 0 && (
-                        <Box>
-                          <Text fontWeight="bold">Suggestions:</Text>
-                          <VStack align="stretch" spacing={1} pl={4}>
-                            {feedback.suggestions.map((suggestion, i) => (
-                              <Text key={i}>• {suggestion}</Text>
-                            ))}
-                          </VStack>
-                        </Box>
-                      )}
-                    </VStack>
+                    )}
+                    {evaluationResult.qualitative_feedback.areas_for_improvement && evaluationResult.qualitative_feedback.areas_for_improvement.length > 0 && (
+                      <Box mb={2}>
+                        <Text fontWeight="bold">Areas for Improvement:</Text>
+                        <VStack align="stretch" spacing={1} pl={4}>
+                          {evaluationResult.qualitative_feedback.areas_for_improvement.map((item, i) => (<Text key={i}>• {item}</Text>))}
+                        </VStack>
+                      </Box>
+                    )}
+                    {evaluationResult.qualitative_feedback.suggestions && evaluationResult.qualitative_feedback.suggestions.length > 0 && (
+                      <Box>
+                        <Text fontWeight="bold">Suggestions:</Text>
+                        <VStack align="stretch" spacing={1} pl={4}>
+                          {evaluationResult.qualitative_feedback.suggestions.map((item, i) => (<Text key={i}>• {item}</Text>))}
+                        </VStack>
+                      </Box>
+                    )}
+                  </Box>
+                )}
+
+                {/* Raw Error Message if submission process itself failed */}
+                {evaluationResult.status === 'error' && evaluationResult.error_message && !evaluationResult.test_case_results?.length && (
+                  <Box>
+                      <Heading size="sm" mb={2}>Submission Error</Heading>
+                      <Alert status="error" borderRadius="md">
+                          <AlertIcon />
+                          {evaluationResult.error_message}
+                      </Alert>
                   </Box>
                 )}
               </VStack>
