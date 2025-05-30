@@ -9,6 +9,7 @@ import logging
 import uuid
 from typing import Dict, List, Any, Optional
 import re
+import asyncio
 
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -45,7 +46,7 @@ class CodingChallenge(BaseModel):
     hints: List[str] = []
 
 @tool
-def generate_coding_challenge_from_jd(
+async def generate_coding_challenge_from_jd(
     job_description: str,
     skills_required: List[str],
     difficulty_level: str = "intermediate"
@@ -74,25 +75,42 @@ def generate_coding_challenge_from_jd(
         )
         
         # Get formatted prompt from template
-        prompt = format_problem_generation_prompt(
+        prompt_text = format_problem_generation_prompt(
             job_description=job_description,
             skills_required=skills_required,
             difficulty_level=difficulty_level
         )
+        logger.debug(f"Formatted prompt for LLM: {prompt_text}")
         
         # Call the LLM
-        response = model.invoke(prompt)
-        response_content = response.content
-        
-        # Extract JSON from the response
-        json_match = re.search(r'```json\s*(.*?)\s*```', response_content, re.DOTALL)
-        if json_match:
-            response_content = json_match.group(1)
-        else:
-            # Try to find JSON object without markdown
-            json_match = re.search(r'(\{.*\})', response_content, re.DOTALL)
-            if json_match:
-                response_content = json_match.group(1)
+        try:
+            logger.info("Attempting to call the LLM for problem generation...")
+            response = await asyncio.wait_for(
+                model.ainvoke(prompt_text), 
+                timeout=90.0  # Add a 90-second timeout
+            )
+            response_content = response.content
+            logger.info("Successfully received response from LLM.")
+            # logger.debug(f"Raw LLM response content: {response_content}")
+
+            # Strip markdown fences if present
+            if response_content.strip().startswith("```json"):
+                # Handles ```json ... ```
+                response_content = response_content.strip()[7:-3].strip()
+            elif response_content.strip().startswith("```"):
+                # Handles ``` ... ```
+                response_content = response_content.strip()[3:-3].strip()
+            
+            # Pre-process the response_content to fix common LLM JSON errors
+            # (Existing pre-processing code, if any, would be here)
+            # Based on current file, there isn't any complex re.sub here anymore.
+
+        except asyncio.TimeoutError:
+            logger.error("LLM call timed out after 90 seconds.")
+            return generate_fallback_challenge(skills_required, difficulty_level, "LLM call timed out.")
+        except Exception as e:
+            logger.error(f"Error during LLM invocation: {e}", exc_info=True)
+            return generate_fallback_challenge(skills_required, difficulty_level, f"LLM invocation error: {e}")
         
         # Parse and validate the response
         try:
@@ -147,7 +165,7 @@ def generate_coding_challenge_from_jd(
             
     except Exception as e:
         logger.error(f"Outer error generating coding challenge: {e}", exc_info=True)
-        return generate_fallback_challenge(skills_required, difficulty_level)
+        return generate_fallback_challenge(skills_required, difficulty_level, f"Outer error: {e}")
 
 @tool
 def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidate_code: str, skill_level: str = "intermediate") -> Dict:
@@ -253,135 +271,105 @@ def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidat
         }
 
 @tool
-def get_hint_for_generated_challenge(challenge_data: Dict[str, Any], current_code: str, error_message: Optional[str] = None) -> Dict:
+async def get_hint_for_generated_challenge(challenge_data: Dict[str, Any], current_code: str, error_message: Optional[str] = None) -> Dict:
     """
-    Get a context-aware hint for a dynamically generated coding challenge.
-    
+    Provide a hint for a given coding challenge, candidate's code, and error message.
     Args:
-        challenge_data: The generated challenge data
-        current_code: Current code implementation
-        error_message: Optional error message to get specific help
-        
+        challenge_data: The challenge data from problem generation.
+        current_code: The candidate's current attempt at solving the problem.
+        error_message: Optional error message from a previous execution attempt.
     Returns:
-        A dictionary containing targeted hints
+        A dictionary containing the generated hint.
     """
     try:
-        challenge_id = challenge_data.get("challenge_id", challenge_data.get("id", "unknown"))
-        logger.info(f"Generating hint for challenge: {challenge_id}")
-        logger.info(f"Challenge data keys available: {list(challenge_data.keys())}")
-        
-        # Extract problem statement and reference solution
         problem_statement = challenge_data.get("problem_statement", "")
         reference_solution = challenge_data.get("reference_solution", "")
         
-        logger.info(f"Problem statement length: {len(problem_statement)}")
-        logger.info(f"Reference solution available: {bool(reference_solution)}")
-        
-        # Create challenge info dictionary
-        challenge_info = {
-            "id": challenge_id,
-            "title": challenge_data.get("title", "Coding Challenge"),
-            "description": problem_statement,
-            "difficulty": challenge_data.get("difficulty_level", "intermediate"),
-            "language": challenge_data.get("language", "python"),
-            "reference_solution": reference_solution,
-            "hints": challenge_data.get("hints", []),
-            "tags": challenge_data.get("skills_targeted", [])
-        }
-        
-        # Use the HintGenerator to get context-aware hints
-        logger.info(f"Generating hints using HintGenerator")
-        hints = HintGenerator.generate_hints(
-            code=current_code,
-            challenge_info=challenge_info,
+        if not problem_statement or not reference_solution:
+            logger.warning("Missing problem statement or reference solution for hint generation.")
+            return {"status": "error", "message": "Challenge data is incomplete for hint generation."}
+
+        llm_config = get_llm_config()
+        model = ChatGoogleGenerativeAI(model=llm_config["model"], temperature=0.3) # Slightly higher temp for creative hints
+
+        prompt = format_hint_generation_prompt(
+            problem_statement=problem_statement,
+            current_code=current_code,
             reference_solution=reference_solution,
-            error_message=error_message,
-            skill_level="intermediate"  # This could be passed as a parameter in the future
+            error_message=error_message
+        )
+        logger.info("Attempting to call LLM for hint generation...")
+        
+        response = await asyncio.wait_for(
+            model.ainvoke(prompt),
+            timeout=30.0 # 30 second timeout for hint generation
         )
         
-        # If we couldn't generate any hints, generate some based on the problem
-        if not hints:
-            logger.info(f"No hints generated by HintGenerator, falling back to problem-based hints")
-            hints = _generate_hints_from_problem(problem_statement, reference_solution, current_code)
-            
-        # If we still have no hints, provide generic ones
-        if not hints:
-            logger.warning(f"Failed to generate specific hints, using generic hints")
-            hints = [
-                "Try breaking the problem down into smaller steps.",
-                "Review the test cases carefully to understand all requirements.",
-                "Consider edge cases in your solution."
-            ]
+        hints_text = response.content
+        logger.info("Successfully received hint response from LLM.")
         
-        logger.info(f"Successfully generated {len(hints)} hints")
+        # Parse numbered hints
+        hints_list = [h.strip() for h in re.findall(r'\\d+\\.\\s*(.*)', hints_text)]
         
-        # Return the hints
+        if not hints_list and hints_text: # Fallback if regex doesn't match but we have content
+            hints_list = [hints_text.strip()]
+
         return {
             "status": "success",
-            "challenge_id": challenge_id,
-            "hints": hints,
-            "related_concepts": challenge_data.get("skills_targeted", [])
+            "hints": hints_list if hints_list else ["Sorry, I could not generate a specific hint right now. Try to break down the problem into smaller steps."],
         }
-        
+    except asyncio.TimeoutError:
+        logger.error("Hint generation LLM call timed out.")
+        return {"status": "error", "message": "Hint generation timed out."}
     except Exception as e:
-        logger.error(f"Error generating coding hint: {e}")
-        import traceback
-        traceback_str = traceback.format_exc()
-        logger.error(f"Detailed traceback: {traceback_str}")
-        return {
-            "status": "error",
-            "message": f"Could not generate hint: {str(e)}",
-            "traceback": traceback_str,
-            "fallback_hints": [
-                "Review your algorithm logic step by step.",
-                "Check for edge cases in your solution.",
-                "Make sure your code handles all the test case scenarios."
-            ]
-        }
+        logger.error(f"Error generating hint: {e}", exc_info=True)
+        return {"status": "error", "message": f"Could not generate hint: {e}"}
 
-def generate_fallback_challenge(skills_required: List[str], difficulty_level: str) -> Dict[str, Any]:
-    """Generate a fallback coding challenge when the LLM fails."""
+def generate_fallback_challenge(skills_required: List[str], difficulty_level: str, error_info: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Generates a static fallback coding challenge if the LLM fails.
+    """
+    logger.warning(f"Generating fallback challenge. Reason: {error_info if error_info else 'Unknown LLM failure.'}")
+    # Simplified fallback based on first skill or generic
+    primary_skill = skills_required[0] if skills_required else "general"
     challenge_id = f"fallback_{uuid.uuid4().hex[:8]}"
-    return {
-        "status": "success",
-        "challenge_id": challenge_id,
-        "id": challenge_id,
-        "title": "Find Most Frequent Element",
-        "problem_statement": "Write a function that finds the most frequent element in a list.",
-        "test_cases": [
-            {"input": [1, 2, 2, 3, 3, 3], "expected_output": 3, "is_hidden": False, "explanation": "Basic test case"},
-            {"input": ["a", "b", "a"], "expected_output": "a", "is_hidden": False, "explanation": "String test case"},
-            {"input": [], "expected_output": None, "is_hidden": False, "explanation": "Empty list test case"}
-        ],
-        "visible_test_cases": [
-            {"input": [1, 2, 2, 3, 3, 3], "expected_output": 3, "explanation": "Basic test case"},
-            {"input": ["a", "b", "a"], "expected_output": "a", "explanation": "String test case"},
-            {"input": [], "expected_output": None, "explanation": "Empty list test case"}
-        ],
-        "reference_solution": """def find_most_frequent(lst):
-    if not lst:
-        return None
-    return max(set(lst), key=lst.count)""",
-        "starter_code": """def find_most_frequent(lst):
-    # Write your code here
-    pass
 
-# Example usage:
-# print(find_most_frequent([1, 2, 2, 3, 3, 3]))  # Should print: 3
-# print(find_most_frequent(["a", "b", "a"]))     # Should print: "a"
-# print(find_most_frequent([]))                  # Should print: None
-""",
+    fallback_data = {
+        "problem_statement": f"This is a fallback coding challenge for {primary_skill} at {difficulty_level} level. Implement a function that reverses a string.",
+        "test_cases": [
+            {"input": "hello", "expected_output": "olleh", "is_hidden": False, "explanation": "Simple case"},
+            {"input": "Python", "expected_output": "nohtyP", "is_hidden": False, "explanation": "Case with capitals"},
+            {"input": "", "expected_output": "", "is_hidden": False, "explanation": "Empty string"}
+        ],
+        "reference_solution": "def reverse_string(s):\\n    return s[::-1]",
         "language": "python",
+        "starter_code": "def reverse_string(s):\\n    # Your code here\\n    pass",
+        "title": f"Fallback: Reverse String ({difficulty_level})",
+        "challenge_id": challenge_id,
+        "id": challenge_id, # For compatibility
         "difficulty_level": difficulty_level,
         "skills_targeted": skills_required,
-        "generated_from_fallback": True,
+        "status": "fallback_success", # Indicate this is a fallback
+        "message": f"A fallback challenge was generated due to an issue. {error_info if error_info else ''}".strip(),
+        "visible_test_cases": [
+            {"input": "hello", "expected_output": "olleh", "explanation": "Simple case"},
+            {"input": "Python", "expected_output": "nohtyP", "explanation": "Case with capitals"},
+            {"input": "", "expected_output": "", "explanation": "Empty string"}
+        ],
         "evaluation_criteria": {
             "correctness": "Code produces correct output for all test cases",
-            "efficiency": "Code uses efficient algorithms and data structures",
-            "code_quality": "Code follows best practices and style guidelines",
-            "documentation": "Code is well-documented with comments and docstrings"
         }
     }
+    # Make test cases compatible with Pydantic model if needed for other parts of system
+    validated_test_cases = []
+    for tc_data in fallback_data["test_cases"]:
+        # Ensure all required fields for TestCase model are present, even if with defaults
+        tc_data.setdefault("is_hidden", False) 
+        tc_data.setdefault("explanation", "")
+        validated_test_cases.append(TestCase(**tc_data)) # Validate against TestCase model
+    fallback_data["test_cases"] = validated_test_cases
+    
+    return fallback_data
 
 def _generate_starter_code(reference_solution: str) -> str:
     """
@@ -450,75 +438,4 @@ def _prepare_visible_test_cases(test_cases: List[Dict]) -> List[Dict]:
                     "explanation": getattr(tc, "explanation", "")
                 })
     
-    return visible_test_cases
-
-def _generate_hints_from_problem(problem_statement: str, reference_solution: str, current_code: str) -> List[str]:
-    """
-    Generate hints based on the problem statement and reference solution when other hint generation fails.
-    
-    Args:
-        problem_statement: Problem description
-        reference_solution: Reference solution code
-        current_code: Current user code
-        
-    Returns:
-        List of generated hints
-    """
-    try:
-        # Initialize LLM with appropriate temperature
-        llm_config = get_llm_config()
-        model = ChatGoogleGenerativeAI(
-            model=llm_config["model"],
-            temperature=0.3
-        )
-        
-        # Create prompt for hint generation
-        prompt = f"""As an interview coach, I need to provide helpful hints for a coding challenge.
-
-PROBLEM:
-{problem_statement}
-
-CANDIDATE'S CURRENT CODE:
-```python
-{current_code}
-```
-
-REFERENCE SOLUTION (Do not reveal this directly):
-```python
-{reference_solution}
-```
-
-Generate 3 progressive hints that guide the candidate toward the solution without giving it away. 
-Start with a conceptual hint, then a more specific hint, and finally a targeted hint that addresses 
-a key part of the algorithm.
-
-Return only the hints, numbered 1-3."""
-        
-        # Generate hints
-        response = model.invoke(prompt)
-        hint_text = response.content
-        
-        # Parse hints
-        hints = []
-        for line in hint_text.strip().split('\n'):
-            line = line.strip()
-            if line and (line.startswith('- ') or line.startswith('* ') or 
-                         line.startswith('1. ') or line.startswith('2. ') or 
-                         line.startswith('3. ') or line.startswith('Hint ') or
-                         line[0].isdigit() and line[1] == '.'):
-                # Remove hint number/prefix
-                hint = re.sub(r'^[*\-\d\.]+\s*|^Hint\s+\d+:\s*', '', line).strip()
-                if hint:
-                    hints.append(hint)
-        
-        # If no structured hints found, just use the whole response
-        if not hints and hint_text.strip():
-            # Split by newline and filter empty lines
-            hints = [line.strip() for line in hint_text.strip().split('\n') if line.strip()]
-            # Take up to 3 hints
-            hints = hints[:3]
-        
-        return hints
-    except Exception as e:
-        logger.error(f"Error generating hints from problem: {e}")
-        return [] 
+    return visible_test_cases 

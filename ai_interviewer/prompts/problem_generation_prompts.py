@@ -42,6 +42,7 @@ Return your response as a valid JSON object with the following structure:
 }}
 
 Ensure all JSON values are properly escaped and the entire response is a valid JSON object.
+Pay special attention to backslashes (\) within strings, such as in Python code for regular expressions or file paths; these MUST be escaped as \\ for the JSON to be valid.
 """
 )
 

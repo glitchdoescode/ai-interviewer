@@ -281,7 +281,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Iteration 6: Automated Problem Generation ("Magic Import")
 *   **Task P2.5.1: Design `ProblemGenerationFromJDTool`**
-    *   `@tool async def generate_coding_challenge_from_jd(job_description: str, skills_required: List[str]) -> Dict:`
+    *  [x] `@tool async def generate_coding_challenge_from_jd(job_description: str, skills_required: List[str], difficulty_level: str = "intermediate") -> Dict:`
     *   Uses an LLM to generate a problem statement, test cases, and reference solution based on input.
 *   **Task P2.5.2: Implement Tool Logic**
     *   [x] Develop robust prompts for the LLM to create relevant and solvable problems.

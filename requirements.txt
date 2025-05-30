@@ -40,6 +40,11 @@ python-dotenv>=1.0.0
 pyyaml>=6.0.1
 tqdm>=4.66.1
 slowapi>=0.1.9
+radon
+pylint
+pyaudio
+
+
 
 # Secure Code Execution
 docker>=7.0.0

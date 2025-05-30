@@ -20,6 +20,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.types import interrupt, Command
 from langchain_core.messages import RemoveMessage
+import json
 
 
 
@@ -140,15 +141,15 @@ HANDLING SPECIAL SITUATIONS:
 ADAPTING TO INTERVIEW STAGES:
 - Introduction: Start by introducing yourself (as {system_name}) and clearly state that you are conducting the interview for the **{job_role}** position at the **{seniority_level}** level. Then, focus on building rapport and understanding the candidate's background. Keep this initial part brief, just 2-3 exchanges before moving to technical questions.
 - Technical Questions: Assess depth of knowledge with progressive difficulty. Ask 3-4 technical questions before moving on. If the candidate explicitly requests to move to the coding challenge, and the role requires coding, you should honor this request even if you haven't asked 3-4 questions yet.
-- Coding Challenge: IMPORTANT - When you reach this stage, you MUST use the generate_coding_challenge_from_jd tool to generate a coding problem based on the candidate's job role and required skills. Do not create your own coding challenge description - use the tool to generate a customized challenge.
+- Coding Challenge: IMPORTANT - When you decide to use the `generate_coding_challenge_from_jd` tool, your response should *only* contain the tool call. This means you must output a valid JSON object that represents the tool call, structured like this: `{{"name": "tool_name", "args": {{"arg1": "value1", ...}}, "id": "unique_tool_call_id"}}`. For the `generate_coding_challenge_from_jd` tool specifically, the JSON would be: `{{"name": "generate_coding_challenge_from_jd", "args": {{"job_description": "<full job description text>", "skills_required": ["Skill1", "Skill2"], "difficulty_level": "<level>"}}, "id": "call_xyz"}}`. Replace `<full job description text>` with the actual job description from your context, `["Skill1", "Skill2"]` with the actual list of skills, `<level>` with the chosen difficulty, and `"call_xyz"` with a unique ID for this specific tool call. Do not wrap this JSON in any other keys like "tool_code". Provide the `job_description` from your context, and ensure `skills_required` is a LIST of strings. `difficulty_level` is optional but can be "beginner", "intermediate", or "advanced".
 - Behavioral Questions: Look for evidence of soft skills and experience. Ask 2-3 behavioral questions.
 - Feedback: Be constructive, balanced, and specific
 - Conclusion: End on a positive note with clear next steps
 
 TOOLS USAGE:
-- generate_coding_challenge_from_jd: ALWAYS use this tool when you reach the coding_challenge stage to generate an appropriate coding challenge based on the job description and required skills.
-- analyze_candidate_response: Use this tool to evaluate technical answers more deeply.
-- generate_interview_question: Use this tool to generate high-quality technical questions based on the required skills.
+- generate_coding_challenge_from_jd: When you reach the `coding_challenge` stage and need to generate a problem, invoke this tool. To do this, your *entire response* should be a single JSON object representing the tool call. The JSON should look like: `{{"name": "generate_coding_challenge_from_jd", "args": {{"job_description": "...full job description...", "skills_required": ["Python", "APIs"], "difficulty_level": "intermediate"}}, "id": "call_123"}}`. Ensure `skills_required` is a JSON list of strings. You MUST include a unique `id` field for each tool call.
+- analyze_candidate_response: To use this tool, your response should be a JSON tool call: `{{"name": "analyze_candidate_response", "args": {{...arguments...}}, "id": "call_456"}}`.
+- generate_interview_question: To use this tool, your response should be a JSON tool call: `{{"name": "generate_interview_question", "args": {{...arguments...}}, "id": "call_789"}}`.
 
 If unsure how to respond to something unusual, stay professional and steer the conversation back to relevant technical topics.
 """
@@ -425,6 +426,10 @@ class AIInterviewer:
             generate_interview_question,
             analyze_candidate_response
         ]
+        for tool_instance in self.tools:
+            logger.info(f"[AIInterviewer._setup_tools] Tool: {tool_instance.name}, Type: {type(tool_instance)}, Is async: {asyncio.iscoroutinefunction(getattr(tool_instance, 'func', tool_instance))}")
+            if hasattr(tool_instance, 'description'):
+                 logger.info(f"[AIInterviewer._setup_tools] Description for {tool_instance.name}: {tool_instance.description}")
     
     def _initialize_workflow(self) -> StateGraph:
         """
@@ -442,7 +447,7 @@ class AIInterviewer:
         self.tool_node = ToolNode(self.tools)
         
         # Define custom wrapper for the tool node to ensure proper state handling
-        def tools_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
+        async def tools_node(state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]: # MODIFIED to async def
             """
             Wrapper for ToolNode that ensures proper state handling.
             
@@ -510,9 +515,17 @@ class AIInterviewer:
                         self._normalize_tool_calls(messages[-1].tool_calls)
                     
                     logger.info(f"[TOOLS_NODE] About to invoke self.tool_node with messages: {messages}") # ADDED LOG
+                    # Log the specific tool calls being processed if they exist
+                    if messages and isinstance(messages[-1], AIMessage) and hasattr(messages[-1], 'tool_calls') and messages[-1].tool_calls:
+                        logger.info(f"[TOOLS_NODE] Last AI message has tool_calls: {messages[-1].tool_calls}")
+                        for tc in messages[-1].tool_calls:
+                            logger.info(f"[TOOLS_NODE] Processing tool_call: Name: {tc.get('name')}, Args: {tc.get('args')}, ID: {tc.get('id')}")
+                    else:
+                        logger.info("[TOOLS_NODE] Last AI message has no tool_calls or tool_calls list is empty.")
+
                     # Execute tools using the ToolNode with messages
-                    tool_result = self.tool_node.invoke({"messages": messages})
-                    logger.info(f"[TOOLS_NODE] self.tool_node.invoke completed. Result: {tool_result}") # ADDED LOG
+                    tool_result = await self.tool_node.ainvoke({"messages": messages}) # MODIFIED to await self.tool_node.ainvoke
+                    logger.info(f"[TOOLS_NODE] self.tool_node.ainvoke completed. Result: {tool_result}") # ADDED LOG
                     
                     # Create a new dictionary with updated values
                     updated_state = dict(state)
@@ -587,9 +600,17 @@ class AIInterviewer:
                         self._normalize_tool_calls(messages[-1].tool_calls)
                     
                     logger.info(f"[TOOLS_NODE] About to invoke self.tool_node with messages (InterviewState path): {state.messages}") # ADDED LOG
+                    # Log the specific tool calls being processed if they exist (InterviewState path)
+                    if state.messages and isinstance(state.messages[-1], AIMessage) and hasattr(state.messages[-1], 'tool_calls') and state.messages[-1].tool_calls:
+                        logger.info(f"[TOOLS_NODE] (InterviewState path) Last AI message has tool_calls: {state.messages[-1].tool_calls}")
+                        for tc in state.messages[-1].tool_calls:
+                            logger.info(f"[TOOLS_NODE] (InterviewState path) Processing tool_call: Name: {tc.get('name')}, Args: {tc.get('args')}, ID: {tc.get('id')}")
+                    else:
+                        logger.info("[TOOLS_NODE] (InterviewState path) Last AI message has no tool_calls or tool_calls list is empty.")
+                        
                     # Execute tools using the ToolNode with messages
-                    tool_result = self.tool_node.invoke({"messages": messages})
-                    logger.info(f"[TOOLS_NODE] self.tool_node.invoke completed (InterviewState path). Result: {tool_result}") # ADDED LOG
+                    tool_result = await self.tool_node.ainvoke({"messages": messages}) # MODIFIED to await self.tool_node.ainvoke
+                    logger.info(f"[TOOLS_NODE] self.tool_node.ainvoke completed (InterviewState path). Result: {tool_result}") # ADDED LOG
                     
                     # Get updated messages
                     updated_messages = state.messages + tool_result.get("messages", [])
@@ -803,14 +824,16 @@ class AIInterviewer:
         workflow.add_edge("tools", "manage_context")
         
         # Add edge from context management to model or end
-        workflow.add_conditional_edges(
-            "manage_context",
-            lambda state: "model" if self.should_continue(state) == "tools" else "end",
-            {
-                "model": "model",
-                "end": END
-            }
-        )
+        # workflow.add_conditional_edges(
+        #     "manage_context",
+        #     lambda state: "model" if self.should_continue(state) == "tools" else "end", # Original problematic line
+        #     {
+        #         "model": "model",
+        #         "end": END
+        #     }
+        # )
+        # Always go from manage_context back to model so the model can process tool outputs or summarize results
+        workflow.add_edge("manage_context", "model")
         
         # Define starting node
         workflow.set_entry_point("model")
@@ -839,8 +862,8 @@ class AIInterviewer:
                 # No messages yet
                 return "end"
             messages = state["messages"]
-            message_count = state.get("message_count", 0)
-            max_messages = state.get("max_messages_before_summary", 20)
+            # message_count = state.get("message_count", 0) # Not used in this function's logic directly
+            # max_messages = state.get("max_messages_before_summary", 20) # Not used
             interview_stage = state.get("interview_stage", "introduction")
         else:
             # Assume it's a MessagesState or InterviewState object
@@ -848,74 +871,41 @@ class AIInterviewer:
                 # No messages yet
                 return "end"
             messages = state.messages
-            message_count = getattr(state, "message_count", 0)
-            max_messages = getattr(state, "max_messages_before_summary", 20)
             interview_stage = getattr(state, "interview_stage", "introduction")
         
-        # Check if we need to manage context due to message length
-        if len(messages) > max_messages:
-            return "manage_context"
+        last_message = messages[-1] if messages else None
+
+        # If the absolute last message is a ToolMessage, a tool just ran. Model needs to process this.
+        if isinstance(last_message, BaseMessage) and last_message.type == "tool": # Langchain ToolMessage type
+            logger.info("[should_continue] Last message is a ToolMessage. Routing to manage_context (then model) to process tool output.")
+            return "manage_context" 
         
         last_ai_message = None
-        last_ai_message_idx = -1
         for i in range(len(messages) -1, -1, -1):
             if isinstance(messages[i], AIMessage):
                 last_ai_message = messages[i]
-                last_ai_message_idx = i
                 break
         
         if not last_ai_message:
-            return "end" # No AI message found
+            logger.info("[should_continue] No AI message found and last message wasn't a ToolMessage. Ending turn.")
+            return "end" 
 
-        # Specific logic for CODING_CHALLENGE stage
-        if interview_stage == InterviewStage.CODING_CHALLENGE.value:
-            # Check if the AI message has the specific tool call for generating a challenge
-            has_generation_tool_call = False
-            if hasattr(last_ai_message, "tool_calls") and last_ai_message.tool_calls:
-                for tc in last_ai_message.tool_calls:
-                    if tc.get("name") == "generate_coding_challenge_from_jd":
-                        has_generation_tool_call = True
-                        break
-            
-            if has_generation_tool_call:
-                logger.info("[should_continue] AI is calling generate_coding_challenge_from_jd. Routing to tools.")
-                return "tools" # AI wants to generate a challenge, let it.
-
-            # If the AI's message does NOT have the generation tool call,
-            # it implies the AI is likely presenting a challenge or responding after a tool run.
-            # In this case, we should end the turn to send the AI's response to the user.
-            # The tools_node also has logic to "force" the tool if it wasn't called when expected (e.g. initial entry to coding stage).
-            # This check here is to prevent a loop if the AI's response (after a successful tool run) is misinterpeted as needing the tool again.
-            
-            # Check if the *previous* message was a ToolMessage from generate_coding_challenge_from_jd
-            if last_ai_message_idx > 0:
-                previous_message = messages[last_ai_message_idx - 1]
-                if isinstance(previous_message, BaseMessage) and previous_message.type == "tool" and getattr(previous_message, 'name', '') == "generate_coding_challenge_from_jd":
-                    logger.info("[should_continue] AI responding after generate_coding_challenge_from_jd tool ran. Ending turn.")
-                    return "end"
-
-            # If AI is not calling the tool, and previous message wasn't the tool result,
-            # this means the AI is just talking. We assume the tools_node will force the tool if needed.
-            # Or, if the AI *did* make a *different* tool call, it will be caught by the generic check below.
-            # So, if no specific generation tool call by AI, and previous wasn't its result, let generic logic handle or end.
-            # This effectively means if the AI is *just talking* in coding_challenge stage without calling the specific tool,
-            # we prefer to end the turn and let the tools_node force it if necessary on the *next* invocation of the graph if the AI failed to call it.
-            # However, to prevent loops, if the AI *just* responded to the tool, we must end.
-            # A more direct check: if the AI is responding (no generation tool call) AND a tool_message for generation is in recent history, end.
-            # The existing logic in tools_node already forces the tool if it's coding_challenge and AI didn't call it.
-            # So, if AI is not calling the tool here, we should generally end, UNLESS it's some other tool call.
-            if not (hasattr(last_ai_message, "tool_calls") and last_ai_message.tool_calls):
-                 logger.info("[should_continue] In coding_challenge, AI message has no tool_calls. Ending turn. Tools_node will force if necessary.")
-                 return "end"
-
-
-        # Generic check for tool calls (applies to all stages, or coding_challenge if AI made a *different* tool call)
+        # If the AI's last message has any tool calls, route to tools.
+        # This takes precedence over stage-specific logic if the AI is actively trying to use a tool.
         if hasattr(last_ai_message, "tool_calls") and last_ai_message.tool_calls:
             logger.info(f"[should_continue] AI message has tool_calls: {last_ai_message.tool_calls}. Routing to tools.")
             return "tools"
+
+        # Specific stage logic if no tool calls are pending from the last AI message
+        if interview_stage == InterviewStage.CODING_CHALLENGE.value:
+            # If in coding challenge stage AND the AI is not trying to call a tool (checked above),
+            # it means the AI is likely presenting the problem or waiting for the user.
+            # End the turn. The tools_node will handle initial forcing if needed.
+            logger.info("[should_continue] In CODING_CHALLENGE stage, AI has no active tool calls in its last message. Ending turn.")
+            return "end"
             
-        # No tool calls in the last AI message for other stages, or AI is just talking in coding_challenge (and wasn't caught by above conditions)
-        logger.info("[should_continue] No tool calls in last AI message. Ending turn.")
+        # Default for other stages if no tool calls from AI: end the turn.
+        logger.info("[should_continue] No tool calls in last AI message (and not in coding challenge stage with pending AI tool_call). Ending turn.")
         return "end"
     
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
@@ -971,7 +961,14 @@ class AIInterviewer:
             
             # Add extra instructions for specific stages
             if interview_stage == InterviewStage.CODING_CHALLENGE.value:
-                system_prompt += "\n\nIMPORTANT: You are now in the CODING_CHALLENGE stage. You MUST use the generate_coding_challenge_from_jd tool to generate a coding challenge for the candidate. DO NOT create your own coding challenge description."
+                # Check if the last message is a ToolMessage (output from generate_coding_challenge_from_jd)
+                last_message_is_tool_output = isinstance(messages[-1], BaseMessage) and messages[-1].type == "tool"
+                
+                if last_message_is_tool_output:
+                    system_prompt += "\n\nIMPORTANT: You are in the CODING_CHALLENGE stage. A coding challenge has just been generated for you (it's in the last ToolMessage in the history). Your task is to present this coding challenge to the candidate. Introduce it clearly, explain what is expected, and provide the problem statement and any other relevant details from the tool's output. Do NOT try to generate another challenge or call the tool again."
+                else:
+                    # This case is when AI is deciding to initiate the challenge
+                    system_prompt += "\n\nIMPORTANT: You are now in the CODING_CHALLENGE stage. You MUST use the generate_coding_challenge_from_jd tool to generate a coding challenge for the candidate. Your *entire response* must be the JSON tool call for `generate_coding_challenge_from_jd`. DO NOT create your own coding challenge description or add any conversational text."
             elif interview_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
                 system_prompt += "\n\nIMPORTANT: You are now in the TECHNICAL_QUESTIONS stage. Ask relevant technical questions based on the required skills and job description. Use the generate_interview_question tool if needed."
             elif interview_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
@@ -1000,7 +997,66 @@ class AIInterviewer:
             
             # Create AIMessage from response
             ai_message = AIMessage(content=response_text)
+
+            # Attempt to parse content as a tool call if it looks like JSON
+            parsed_tool_call_data = None
+            try:
+                # First, try to find and extract content within ```json ... ``` fences
+                json_block_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+                text_to_parse = ""
+
+                if json_block_match:
+                    text_to_parse = json_block_match.group(1).strip()
+                    logger.debug(f"Extracted JSON block from markdown fences: '{text_to_parse[:100]}...'")
+                else:
+                    # If no ```json ... ```, try to see if the entire response is just ``` ... ```
+                    # This is less specific but a fallback.
+                    generic_block_match = re.search(r"```\s*(.*?)\s*```", response_text, re.DOTALL)
+                    if generic_block_match:
+                        text_to_parse = generic_block_match.group(1).strip()
+                        logger.debug(f"Extracted content from generic markdown fences: '{text_to_parse[:100]}...'")
+                    else:
+                        # If no fences found, assume the entire response_text might be raw JSON
+                        text_to_parse = response_text.strip()
+                        logger.debug(f"No markdown fences found, attempting to parse entire response_text: '{text_to_parse[:100]}...'")
+                
+                if text_to_parse: # Proceed only if we have something to parse
+                    parsed_tool_call_data = json.loads(text_to_parse)
+                else:
+                    logger.debug("After attempting to strip fences, no text remains to parse.")
+
+                if parsed_tool_call_data:
+                    if isinstance(parsed_tool_call_data, dict) and \
+                       "name" in parsed_tool_call_data and \
+                       "args" in parsed_tool_call_data and \
+                       "id" in parsed_tool_call_data:
+                        logger.info(f"Detected single tool call JSON: {parsed_tool_call_data.get('name')}")
+                        ai_message.tool_calls = [parsed_tool_call_data]
+                    elif isinstance(parsed_tool_call_data, list):
+                        processed_tool_calls = []
+                        all_are_valid_tool_calls = True
+                        for item in parsed_tool_call_data:
+                            if isinstance(item, dict) and \
+                               "name" in item and \
+                               "args" in item and \
+                               "id" in item:
+                                processed_tool_calls.append(item)
+                            else:
+                                all_are_valid_tool_calls = False
+                                break 
+                        if all_are_valid_tool_calls and processed_tool_calls:
+                            logger.info(f"Detected list of tool call JSONs. Count: {len(processed_tool_calls)}")
+                            ai_message.tool_calls = processed_tool_calls
+                        else:
+                            logger.debug(f"Parsed JSON list did not conform to tool call structure. Data: {parsed_tool_call_data}")
+                    else:
+                        logger.debug(f"Parsed JSON did not conform to expected tool call structure. Data: {parsed_tool_call_data}")
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"AI message content not a direct JSON tool call (or parsing error: {e}). Content: '{response_text[:100]}...'")
+                # ai_message.tool_calls will remain empty or its default value (None or empty list)
             
+            logger.info(f"[call_model] After JSON parsing, ai_message.tool_calls: {ai_message.tool_calls}")
+
             # Generate audio response using Gemini TTS if input was audio
             if audio_data:  # Only generate audio if input was audio
                 try:
@@ -1460,6 +1516,34 @@ class AIInterviewer:
             if final_messages:
                 for msg in reversed(final_messages):
                     if isinstance(msg, AIMessage):
+                        # If this AIMessage is a tool call, skip it, 
+                        # as we want the subsequent AI message that responds to the tool's output.
+                        # We also check if the content itself is JSON, as per the prompt,
+                        # the AI's response *is* the tool call JSON.
+                        is_tool_call_message = False
+                        if getattr(msg, 'tool_calls', None) and msg.tool_calls:
+                            is_tool_call_message = True
+                        else:
+                            # Check if content is JSON (a common way to represent a tool call directly)
+                            try:
+                                if msg.content and isinstance(msg.content, str) and msg.content.strip().startswith('{') and msg.content.strip().endswith('}'):
+                                    json.loads(msg.content) # Try to parse
+                                    # If it parses and has 'name' and 'args', it's likely a tool call
+                                    parsed_content = json.loads(msg.content)
+                                    if isinstance(parsed_content, dict) and 'name' in parsed_content and 'args' in parsed_content:
+                                        # Check if this tool call ID was recently executed if we have tool messages
+                                        # This is a more robust check but harder to do without full history access here
+                                        is_tool_call_message = True 
+                                        logger.debug(f"Identified AIMessage content as a potential tool call JSON: {msg.content[:100]}")
+                            except json.JSONDecodeError:
+                                pass # Not a JSON string
+                            except Exception: # Catch other parsing errors
+                                pass
+
+                        if is_tool_call_message:
+                            logger.debug(f"Skipping AIMessage that appears to be a tool call: ID {msg.id}, Content: {msg.content[:100]}...")
+                            continue
+
                         ai_response_content = safe_extract_content(msg)
                         logger.info(f"AI response generated for session {session_id}: '{ai_response_content}'")
                         
@@ -1537,12 +1621,27 @@ class AIInterviewer:
                         }
         
         logger.warning(f"No AI message found in final graph state for session {session_id}. State: {final_graph_state}")
-        # For error case, also return a structure
-        logger.info(f"[CORE] run_interview ERROR RETURN: session_id='{session_id}', interview_stage='{InterviewStage.INTRODUCTION.value}'") # Added log for error path
+        
+        # Attempt to get the most up-to-date stage from the final_graph_state, even in error cases.
+        # This ensures that if a stage transition happened before the error, we use that.
+        current_stage_at_turn_start = graph_input.get("interview_stage", InterviewStage.INTRODUCTION.value) # Keep this for comparison/logging
+        latest_stage_from_graph = current_stage_at_turn_start # Fallback to stage at turn start
+        if final_graph_state:
+            if isinstance(final_graph_state, dict):
+                # Check if interview_stage is at the top level of the final state
+                if "interview_stage" in final_graph_state:
+                    latest_stage_from_graph = final_graph_state["interview_stage"]
+                # Check if it's nested under a 'model' key (if the graph outputs like that)
+                elif "model" in final_graph_state and isinstance(final_graph_state["model"], dict) and "interview_stage" in final_graph_state["model"]:
+                    latest_stage_from_graph = final_graph_state["model"]["interview_stage"]
+            elif hasattr(final_graph_state, 'interview_stage'): # If it's an InterviewState object
+                latest_stage_from_graph = final_graph_state.interview_stage
+        
+        logger.info(f"[CORE] run_interview ERROR RETURN: session_id='{session_id}', determined_latest_stage='{latest_stage_from_graph}' (was '{current_stage_at_turn_start}' at turn start)")
         return {
             "ai_response": "I'm sorry, I couldn't generate a proper response. Please try again.",
             "session_id": session_id,
-            "interview_stage": InterviewStage.INTRODUCTION.value # Or the last known stage
+            "interview_stage": latest_stage_from_graph # Use the latest stage found
         }
 
     def _get_or_create_session(self, user_id: str, session_id: Optional[str] = None,
@@ -1774,13 +1873,32 @@ class AIInterviewer:
         """
         # Get human messages for better analysis
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        human_message_count = len(human_messages)
+        human_message_count = len(human_messages) # RE-ADD THIS LINE
         
         # Get the latest human message (if any)
         latest_human_message = human_messages[-1].content.lower() if human_messages else ""
         
         # Extract AI message content
         ai_content = ai_message.content.lower() if hasattr(ai_message, 'content') else ""
+
+        # --- START NEW HIGH-PRIORITY CHECK ---
+        # If AI is calling the tool to generate a coding challenge, ensure stage is CODING_CHALLENGE.
+        if getattr(ai_message, 'tool_calls', None):
+            for tool_call in ai_message.tool_calls:
+                if tool_call.get('name') == 'generate_coding_challenge_from_jd':
+                    job_role_requires_coding = self._get_coding_requirement_from_state(messages + [ai_message])
+                    if job_role_requires_coding:
+                        if current_stage != InterviewStage.CODING_CHALLENGE.value:
+                            logger.info(f"AI initiated 'generate_coding_challenge_from_jd'. Transitioning from {current_stage} to {InterviewStage.CODING_CHALLENGE.value} stage.")
+                            return InterviewStage.CODING_CHALLENGE.value
+                        else:
+                            # Already in coding challenge, AI might be retrying or confirming.
+                            return current_stage 
+                    else:
+                        logger.warning(f"AI initiated 'generate_coding_challenge_from_jd' for a role not requiring coding. Current stage: {current_stage}. Stage will not be forced to CODING_CHALLENGE here.")
+                        # Allow subsequent logic to determine the stage; it might go to behavioral, etc.
+                        break # Exit loop, let other logic handle stage if coding not required.
+        # --- END NEW HIGH-PRIORITY CHECK ---
 
         # Define typical stage progression and keywords for user requests
         # This can be expanded based on observed user phrasing
@@ -1789,19 +1907,19 @@ class AIInterviewer:
                 "next_stage": InterviewStage.TECHNICAL_QUESTIONS.value,
                 "keywords": [
                     "move to technical", "start technical questions", "technical round",
-                    "ask me technical questions", "let\'s do technical"
+                    "ask me technical questions", "let's do technical"
                 ]
             },
             InterviewStage.TECHNICAL_QUESTIONS.value: {
                 "next_stage_coding": InterviewStage.CODING_CHALLENGE.value,
                 "keywords_coding": [
                     "move to coding", "start coding challenge", "coding round",
-                    "give me a coding problem", "let\'s do coding"
+                    "give me a coding problem", "let's do coding"
                 ],
                 "next_stage_behavioral": InterviewStage.BEHAVIORAL_QUESTIONS.value,
                 "keywords_behavioral": [
                     "move to behavioral", "start behavioral questions", "behavioral round",
-                    "ask behavioral questions", "let\'s do behavioral"
+                    "ask behavioral questions", "let's do behavioral"
                 ]
             },
             InterviewStage.CODING_CHALLENGE.value: {
@@ -1809,11 +1927,11 @@ class AIInterviewer:
                 "keywords": [
                     "finished coding", "submitted my code", "done with challenge", 
                     "evaluate my solution", "coding done", "completed the challenge"
-                ] # Note: some of these are also in the main logic, this is for explicit user requests
+                ] 
             },
-            InterviewStage.CODING_CHALLENGE_WAITING.value: { # Usually UI driven, but user might ask
+            InterviewStage.CODING_CHALLENGE_WAITING.value: { 
                 "next_stage": InterviewStage.FEEDBACK.value,
-                "keywords": ["what\'s the feedback", "review my code now", "ready for feedback"]
+                "keywords": ["what's the feedback", "review my code now", "ready for feedback"]
             },
             InterviewStage.FEEDBACK.value: {
                 "next_stage": InterviewStage.BEHAVIORAL_QUESTIONS.value,
@@ -1824,7 +1942,7 @@ class AIInterviewer:
             InterviewStage.BEHAVIORAL_QUESTIONS.value: {
                 "next_stage": InterviewStage.CONCLUSION.value,
                 "keywords": [
-                    "wrap up", "conclude interview", "that\'s all for behavioral", 
+                    "wrap up", "conclude interview", "that's all for behavioral", 
                     "any final questions", "end the interview"
                 ]
             }

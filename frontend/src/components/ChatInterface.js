@@ -159,48 +159,6 @@ const ChatInterface = ({ jobRoleData }) => {
     }
   }, [messages]);
 
-  // Monitor interview stage changes and automatically generate coding challenge when needed
-  useEffect(() => {
-    const handleCodingChallengeStage = async () => {
-      // Check if we're in coding challenge stage but don't have a challenge yet
-      if (interviewStage === 'coding_challenge' && !currentCodingChallenge && !isWaitingForCodingChallenge) {
-        try {
-          console.log('Interview stage changed to coding_challenge. Generating coding problem...');
-          setLoading(true);
-          
-          // Generate a coding problem based on the job role
-          const problemResponse = await generateCodingProblem(
-            jobRoleData?.role_name || 'Software Developer',
-            'medium', // Default difficulty
-            jobRoleData?.required_skills || ['programming']
-          );
-          
-          if (problemResponse && problemResponse.challenge) {
-            // Set the current coding challenge
-            setCurrentCodingChallenge(problemResponse.challenge);
-            setIsWaitingForCodingChallenge(true);
-            
-            // Notify the user
-            toast({
-              title: 'Coding Challenge',
-              description: 'A coding challenge has been generated based on your interview progress.',
-              status: 'info',
-              duration: 5000,
-              isClosable: true,
-            });
-          }
-        } catch (err) {
-          console.error('Error generating coding challenge:', err);
-          setError('Failed to generate coding challenge. Please try again.');
-        } finally {
-          setLoading(false);
-        }
-      }
-    };
-    
-    handleCodingChallengeStage();
-  }, [interviewStage, currentCodingChallenge, isWaitingForCodingChallenge, jobRoleData, setLoading, setError, toast]);
-
   // Function to handle sending a new message
   const handleSendMessage = async () => {
     // Don't send empty messages
@@ -249,7 +207,8 @@ const ChatInterface = ({ jobRoleData }) => {
       addMessage({
         role: 'assistant',
         content: response.response,
-        tool_calls: response.tool_calls
+        tool_calls: response.tool_calls,
+        audioUrl: response.audio_response_url
       });
       
       // Update interview stage if provided in the response
@@ -321,7 +280,8 @@ const ChatInterface = ({ jobRoleData }) => {
         addMessage({
           role: 'assistant',
           content: response.response,
-          tool_calls: response.tool_calls
+          tool_calls: response.tool_calls,
+          audioUrl: response.audio_response_url
         });
 
         // Update interview stage if provided in the response

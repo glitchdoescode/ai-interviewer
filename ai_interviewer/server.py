@@ -2295,12 +2295,20 @@ async def generate_coding_problem(request: Request, req_data: ProblemGenerationR
         logger.info(f"Difficulty Level: {req_data.difficulty_level}")
         
         # Call the problem generation tool using the invoke method
-        logger.info("Calling generate_coding_challenge_from_jd tool...")
-        result = generate_coding_challenge_from_jd.invoke({
-            "job_description": req_data.job_description,
-            "skills_required": req_data.skills_required,
-            "difficulty_level": req_data.difficulty_level
-        })
+        logger.info("Calling generate_coding_challenge_from_jd tool asynchronously...")
+        # Ensure the tool is awaited correctly if it's an async function
+        if asyncio.iscoroutinefunction(generate_coding_challenge_from_jd.func):
+            result = await generate_coding_challenge_from_jd.ainvoke({
+                "job_description": req_data.job_description,
+                "skills_required": req_data.skills_required,
+                "difficulty_level": req_data.difficulty_level
+            })
+        else: # Fallback if it's somehow not an async func (shouldn't happen with @tool async def)
+            result = generate_coding_challenge_from_jd.invoke({
+                "job_description": req_data.job_description,
+                "skills_required": req_data.skills_required,
+                "difficulty_level": req_data.difficulty_level
+            })
         
         # Log the successful response
         logger.info("Problem generation successful!")

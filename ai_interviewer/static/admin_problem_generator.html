@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Problem Generator</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        label { display: block; margin-top: 15px; margin-bottom: 5px; font-weight: bold; }
+        textarea, input[type="text"], select {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea { min-height: 100px; }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background-color: #0056b3; }
+        #result { margin-top: 20px; padding: 15px; border: 1px solid #eee; border-radius: 4px; background-color: #e9ecef; }
+        #result h2 { margin-top: 0; }
+        #result pre { white-space: pre-wrap; word-wrap: break-word; background-color: #fff; padding: 10px; border-radius: 4px; }
+        .error { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Generate Coding Challenge</h1>
+        <form id="problemForm">
+            <label for="job_description">Job Description:</label>
+            <textarea id="job_description" name="job_description" required>We are looking for a Senior Python Developer to join our team. The ideal candidate will have extensive experience in building scalable web applications, working with databases, and developing RESTful APIs. Experience with Django or Flask is a plus.</textarea>
+
+            <label for="skills_required">Skills Required (comma-separated):</label>
+            <input type="text" id="skills_required" name="skills_required" value="Python, Algorithms, Data Structures" required>
+
+            <label for="difficulty_level">Difficulty Level:</label>
+            <select id="difficulty_level" name="difficulty_level">
+                <option value="beginner">Beginner</option>
+                <option value="intermediate" selected>Intermediate</option>
+                <option value="advanced">Advanced</option>
+            </select>
+
+            <button type="submit">Generate Challenge</button>
+        </form>
+
+        <div id="result">
+            <h2>Generated Challenge:</h2>
+            <pre id="output">Waiting for input...</pre>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('problemForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const outputDiv = document.getElementById('output');
+            outputDiv.textContent = 'Generating...';
+            outputDiv.classList.remove('error');
+
+            const job_description = document.getElementById('job_description').value;
+            const skills_raw = document.getElementById('skills_required').value;
+            const difficulty_level = document.getElementById('difficulty_level').value;
+
+            // Convert comma-separated skills to an array
+            const skills_required = skills_raw.split(',').map(skill => skill.trim()).filter(skill => skill);
+
+            if (skills_required.length === 0) {
+                outputDiv.textContent = 'Please enter at least one skill.';
+                outputDiv.classList.add('error');
+                return;
+            }
+            
+            const requestData = {
+                job_description,
+                skills_required,
+                difficulty_level
+            };
+
+            try {
+                // Adjust the API endpoint if your prefix is different
+                const response = await fetch('/api/admin/generate-challenge', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    outputDiv.textContent = `Error: ${result.detail || response.statusText}`;
+                    outputDiv.classList.add('error');
+                } else {
+                    outputDiv.textContent = JSON.stringify(result, null, 2);
+                }
+            } catch (error) {
+                console.error("Fetch error:", error);
+                outputDiv.textContent = `Network error or failed to fetch: ${error.message}`;
+                outputDiv.classList.add('error');
+            }
+        });
+    </script>
+</body>
+</html> 
