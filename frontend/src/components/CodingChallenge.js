@@ -22,6 +22,7 @@ import {
   AccordionPanel,
   AccordionIcon,
   Select,
+  Textarea,
 } from '@chakra-ui/react';
 import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
@@ -47,6 +48,12 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
   const [feedback, setFeedback] = useState(null);
   const [isWaitingForUser, setIsWaitingForUser] = useState(true);
   const toast = useToast();
+  
+  // New state for Run Code functionality
+  const [stdin, setStdin] = useState('');
+  const [stdout, setStdout] = useState('');
+  const [stderr, setStderr] = useState('');
+  const [isRunningCode, setIsRunningCode] = useState(false);
   
   const { setInterviewStage, jobDetails } = useInterview();
   
@@ -147,6 +154,99 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
     setInterviewStage('coding_challenge');
   }, [setInterviewStage]);
   
+  const handleRunCode = async () => {
+    if (!code.trim()) {
+      toast({
+        title: 'Empty Code',
+        description: 'Please write some code before running.',
+        status: 'warning',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setIsRunningCode(true);
+    setStdout('');
+    setStderr('');
+    toast({
+      title: 'Running Code...',
+      status: 'info',
+      duration: null,
+      isClosable: false,
+    });
+
+    const authToken = localStorage.getItem('authToken');
+    if (!authToken) {
+      toast.closeAll();
+      toast({
+        title: 'Authentication Error',
+        description: 'Auth token not found. Please log in.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      setIsRunningCode(false);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/coding/run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          language: language,
+          code: code,
+          input_str: stdin,
+          session_id: sessionId, // Optional: for logging or context on backend
+        }),
+      });
+
+      toast.closeAll();
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || `Server error: ${response.status}`);
+      }
+
+      setStdout(result.stdout);
+      setStderr(result.stderr);
+
+      if (result.status === 'success') {
+        toast({
+          title: 'Execution Successful',
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+      } else {
+        toast({
+          title: 'Execution Finished with Errors',
+          description: result.stderr ? 'Check the STDERR output for details.' : 'An unknown error occurred.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      }
+    } catch (error) {
+      toast.closeAll();
+      console.error('Error running code:', error);
+      toast({
+        title: 'Error Running Code',
+        description: error.message || 'Could not connect to the server.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      setStderr(error.message || 'An unexpected error occurred.');
+    } finally {
+      setIsRunningCode(false);
+    }
+  };
+
   // Run test cases locally for immediate feedback
   const runTests = async () => {
     // For now, just inform the user this is a local test
@@ -433,32 +533,68 @@ const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHin
                 onChange={setCode}
               />
               
-              <HStack spacing={4} justify="flex-end">
-                <Button
-                  leftIcon={<FaPlay />}
-                  colorScheme="blue"
-                  variant="outline"
-                  onClick={runTests}
-                >
-                  Run Tests
-                </Button>
-                <Button
-                  leftIcon={<FaCode />}
-                  colorScheme="purple"
-                  variant="outline"
-                  onClick={handleRequestHint}
-                >
-                  Request Hint
-                </Button>
-                <Button
-                  leftIcon={<FaCheck />}
-                  colorScheme="green"
-                  isLoading={isSubmitting}
-                  onClick={handleSubmit}
-                >
-                  Submit Solution
-                </Button>
-              </HStack>
+              {/* Input, Output, and Run Button Area Added/Modified for Sprint 3 */}
+              <VStack spacing={3} align="stretch" mt={4}>
+                <Text fontWeight="bold">Standard Input (stdin):</Text>
+                <Textarea
+                  placeholder="Enter input for your code here (optional)"
+                  value={stdin}
+                  onChange={(e) => setStdin(e.target.value)}
+                  fontFamily="monospace"
+                  bg="white"
+                  isDisabled={isRunningCode || isSubmitting}
+                  rows={3}
+                />
+                <HStack spacing={4} justify="flex-end" width="100%">
+                  <Button
+                    leftIcon={<FaPlay />}
+                    colorScheme="teal"
+                    onClick={handleRunCode}
+                    isLoading={isRunningCode}
+                    loadingText="Running..."
+                    isDisabled={isSubmitting || !code.trim()} // Disable if submitting or code is empty
+                  >
+                    Run Code
+                  </Button>
+                  <Button
+                    leftIcon={<FaPlay />}
+                    colorScheme="blue"
+                    variant="outline"
+                    onClick={runTests} // Existing Run Tests button
+                    isDisabled={isRunningCode || isSubmitting}
+                  >
+                    Run Tests (Local)
+                  </Button>
+                  <Button
+                    leftIcon={<FaCode />}
+                    colorScheme="purple"
+                    variant="outline"
+                    onClick={handleRequestHint}
+                    isDisabled={isRunningCode || isSubmitting}
+                  >
+                    Request Hint
+                  </Button>
+                  <Button
+                    leftIcon={<FaCheck />}
+                    colorScheme="green"
+                    isLoading={isSubmitting}
+                    onClick={handleSubmit}
+                    isDisabled={isRunningCode || !code.trim()} // Disable if running or code is empty
+                  >
+                    Submit Solution
+                  </Button>
+                </HStack>
+                <VStack spacing={2} align="stretch" mt={2}>
+                  <Text fontWeight="bold">Standard Output (stdout):</Text>
+                  <Box as="pre" p={3} bg="gray.100" borderRadius="md" minH="50px" whiteSpace="pre-wrap" fontFamily="monospace" overflowX="auto">
+                    {stdout || (isRunningCode ? 'Executing...' : 'Output will appear here...')}
+                  </Box>
+                  <Text fontWeight="bold">Standard Error (stderr):</Text>
+                  <Box as="pre" p={3} bg={stderr ? "red.50" : "gray.100"} color={stderr ? "red.700" : "inherit"} borderRadius="md" minH="50px" whiteSpace="pre-wrap" fontFamily="monospace" overflowX="auto">
+                    {stderr || (isRunningCode ? 'Executing...' : 'Errors will appear here...')}
+                  </Box>
+                </VStack>
+              </VStack>
             </VStack>
           </TabPanel>
           
