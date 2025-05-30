@@ -53,3 +53,4 @@ pydantic[email]
 passlib
 python-jose
 itsdangerous
+fastapi_oauth2

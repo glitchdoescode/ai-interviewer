@@ -582,13 +582,17 @@ async def start_interview(
         # Use user_id from the authenticated user
         user_id = current_user.id # <--- USE ID FROM TOKEN
         
+        logger.info(f"[SERVER] start_interview called. User ID: {user_id}")
+        logger.info(f"[SERVER] Request data job_role: '{request_data.job_role}', seniority_level: '{request_data.seniority_level}'")
+
         active_interviewer = request.app.state.interviewer # <--- Get from app.state
         if not active_interviewer:
             logger.error("Interviewer not available in app state for start_interview")
             raise HTTPException(status_code=503, detail="Interview service not available.")
 
         # Process the user message with job role parameters
-        ai_response, session_id = await active_interviewer.run_interview(
+        # run_interview now returns a dictionary
+        response_data = await active_interviewer.run_interview(
             user_id, 
             request_data.message,
             job_role=request_data.job_role,
@@ -598,18 +602,19 @@ async def start_interview(
             requires_coding=request_data.requires_coding
         )
         
-        # Get session metadata if available
+        # Get session metadata if available (session_id is in response_data)
         metadata = {}
-        if active_interviewer.session_manager:
-            session = active_interviewer.session_manager.get_session(session_id)
+        if active_interviewer.session_manager and response_data.get("session_id"):
+            session = active_interviewer.session_manager.get_session(response_data["session_id"])
             if session and "metadata" in session:
-                metadata = session["metadata"]
+                metadata = session["metadata"] # This metadata might be slightly stale regarding stage
         
+        logger.info(f"[SERVER] start_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}'") # Added log
         return MessageResponse(
-            response=ai_response,
-            session_id=session_id,
-            interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role"),
+            response=response_data["ai_response"],
+            session_id=response_data["session_id"],
+            interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
+            job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding")
         )
     except Exception as e:
@@ -665,7 +670,8 @@ async def continue_interview(
         # For now, let's pass the token user_id.
         
         # Process the user message with job role parameters (will only apply if session is new)
-        ai_response, new_session_id = await active_interviewer.run_interview(
+        # run_interview now returns a dictionary
+        response_data = await active_interviewer.run_interview(
             user_id_from_token, # <--- USE ID FROM TOKEN
             request_data.message, 
             session_id,
@@ -676,18 +682,19 @@ async def continue_interview(
             requires_coding=request_data.requires_coding
         )
         
-        # Get session metadata if available
+        # Get session metadata if available (session_id is in response_data)
         metadata = {}
-        if active_interviewer.session_manager:
-            session = active_interviewer.session_manager.get_session(new_session_id)
+        if active_interviewer.session_manager and response_data.get("session_id"):
+            session = active_interviewer.session_manager.get_session(response_data["session_id"])
             if session and "metadata" in session:
-                metadata = session["metadata"]
+                metadata = session["metadata"] # This metadata might be slightly stale regarding stage
         
+        logger.info(f"[SERVER] continue_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}'") # Added log
         return MessageResponse(
-            response=ai_response,
-            session_id=new_session_id,
-            interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role"),
+            response=response_data["ai_response"],
+            session_id=response_data["session_id"],
+            interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
+            job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding")
         )
     except ValueError as e:
@@ -850,18 +857,19 @@ async def transcribe_and_respond(
             logger.warning(f"Audio data too small: {len(audio_bytes)} bytes, likely silent or corrupt")
             # Return a default response instead of erroring out, to keep flow smooth
             transcription = "I couldn't hear you clearly. Could you please repeat that?"
-            ai_response = "I'm sorry, I didn't catch that. Could you say it again?"
-            session_id = request_data.session_id or active_interviewer._get_or_create_session(user_id) # <--- Use active_interviewer
+            ai_response_content = "I'm sorry, I didn't catch that. Could you say it again?"
+            # run_interview not called, so create a basic response structure
+            temp_session_id = request_data.session_id or active_interviewer._get_or_create_session(user_id)
             metadata = {}
-            if active_interviewer.session_manager: # <--- Use active_interviewer
-                current_session = active_interviewer.session_manager.get_session(session_id) # <--- Use active_interviewer
+            if active_interviewer.session_manager:
+                current_session = active_interviewer.session_manager.get_session(temp_session_id)
                 if current_session: metadata = current_session.get("metadata", {})
 
             return AudioTranscriptionResponse(
                 transcription=transcription,
-                response=ai_response,
-                session_id=session_id,
-                interview_stage=metadata.get("interview_stage"),
+                response=ai_response_content,
+                session_id=temp_session_id,
+                interview_stage=metadata.get("interview_stage", InterviewStage.INTRODUCTION.value),
                 audio_response_url=None, # No audio to respond with
                 job_role=metadata.get("job_role"),
                 requires_coding=metadata.get("requires_coding")
@@ -886,7 +894,8 @@ async def transcribe_and_respond(
         if not transcription.strip():
             transcription = "I couldn't hear anything clearly."
 
-        ai_response, session_id = await active_interviewer.run_interview(
+        # run_interview now returns a dictionary
+        response_data = await active_interviewer.run_interview(
             user_id, 
             transcription, 
             request_data.session_id,
@@ -897,21 +906,25 @@ async def transcribe_and_respond(
             requires_coding=request_data.requires_coding
         )
         
+        ai_response_content = response_data["ai_response"]
+        current_session_id = response_data["session_id"]
+        current_interview_stage = response_data.get("interview_stage")
+
         metadata = {}
         if active_interviewer.session_manager:
-            session = active_interviewer.session_manager.get_session(session_id)
+            session = active_interviewer.session_manager.get_session(current_session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
         audio_response_url = None
         synthesized_audio_bytes = await voice_handler.speak(
-            text=ai_response,
+            text=ai_response_content,
             voice=speech_config.get("tts_voice", "Aoede"), 
             play_audio=False # Server does not play audio
         )
         
         if synthesized_audio_bytes:
-            audio_filename = f"{session_id}_{int(datetime.now().timestamp())}.wav"
+            audio_filename = f"{current_session_id}_{int(datetime.now().timestamp())}.wav"
             app_dir = os.path.dirname(os.path.abspath(__file__))
             audio_responses_dir = os.path.join(app_dir, "audio_responses")
             os.makedirs(audio_responses_dir, exist_ok=True)
@@ -935,13 +948,14 @@ async def transcribe_and_respond(
         else:
             logger.warning(f"Failed to generate audio response with Gemini TTS.")
         
+        logger.info(f"[SERVER] transcribe_and_respond RETURN: transcription='{transcription[:50]}...', response='{ai_response_content[:50]}...', session_id='{current_session_id}', interview_stage='{current_interview_stage}', audio_url='{audio_response_url}'") # Added log
         return AudioTranscriptionResponse(
             transcription=transcription,
-            response=ai_response,
-            session_id=session_id,
-            interview_stage=metadata.get("interview_stage"),
+            response=ai_response_content,
+            session_id=current_session_id,
+            interview_stage=current_interview_stage, # Use stage from run_interview
             audio_response_url=audio_response_url,
-            job_role=metadata.get("job_role"),
+            job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding")
         )
     except HTTPException:
@@ -979,19 +993,20 @@ async def upload_audio_file(
             logger.warning(f"Uploaded audio file too small: {len(audio_bytes)} bytes.")
             # Provide a default response
             transcription = "The uploaded audio was too short or unclear. Could you please try again?"
-            ai_response = "I'm sorry, I couldn't process the uploaded audio. Please ensure it's clear and try again."
-            # Ensure session_id logic is robust
-            current_session_id = session_id or active_interviewer._get_or_create_session(user_id) # <--- Use active_interviewer
+            ai_response_content = "I'm sorry, I couldn't process the uploaded audio. Please ensure it's clear and try again."
+            # run_interview not called, so create a basic response structure
+            temp_session_id = session_id or active_interviewer._get_or_create_session(user_id)
             metadata = {}
             if active_interviewer.session_manager:
-                current_session = active_interviewer.session_manager.get_session(current_session_id)
+                current_session = active_interviewer.session_manager.get_session(temp_session_id)
                 if current_session: metadata = current_session.get("metadata", {})
             
+            logger.info(f"[SERVER] upload_audio_file RETURN: transcription='{transcription[:50]}...', response='{ai_response_content[:50]}...', session_id='{temp_session_id}', interview_stage='{metadata.get('interview_stage')}', audio_url='{None}'") # Added log
             return AudioTranscriptionResponse(
                 transcription=transcription,
-                response=ai_response,
-                session_id=current_session_id,
-                interview_stage=metadata.get("interview_stage"),
+                response=ai_response_content,
+                session_id=temp_session_id,
+                interview_stage=metadata.get("interview_stage", InterviewStage.INTRODUCTION.value),
                 audio_response_url=None,
                 job_role=metadata.get("job_role"),
                 requires_coding=metadata.get("requires_coding")
@@ -1013,7 +1028,8 @@ async def upload_audio_file(
         if not transcription.strip():
             transcription = "The uploaded audio file seems to be silent or unclear."
             
-        ai_response, new_session_id = await active_interviewer.run_interview(
+        # run_interview now returns a dictionary
+        response_data = await active_interviewer.run_interview(
             user_id, 
             transcription, 
             session_id, # Pass original session_id
@@ -1024,21 +1040,25 @@ async def upload_audio_file(
             requires_coding=requires_coding
         )
         
+        ai_response_content = response_data["ai_response"]
+        current_session_id = response_data["session_id"]
+        current_interview_stage = response_data.get("interview_stage")
+
         metadata = {}
         if active_interviewer.session_manager:
-            session = active_interviewer.session_manager.get_session(new_session_id)
+            session = active_interviewer.session_manager.get_session(current_session_id)
             if session and "metadata" in session:
                 metadata = session["metadata"]
         
         audio_response_url = None
         synthesized_audio_bytes = await voice_handler.speak(
-            text=ai_response,
+            text=ai_response_content,
             voice=speech_config.get("tts_voice", "Aoede"),
             play_audio=False
         )
         
         if synthesized_audio_bytes:
-            audio_filename = f"response_{new_session_id}_{int(datetime.now().timestamp())}.wav"
+            audio_filename = f"response_{current_session_id}_{int(datetime.now().timestamp())}.wav"
             app_dir = os.path.dirname(os.path.abspath(__file__))
             audio_responses_dir = os.path.join(app_dir, "audio_responses")
             os.makedirs(audio_responses_dir, exist_ok=True)
@@ -1061,13 +1081,14 @@ async def upload_audio_file(
         else:
             logger.warning(f"Failed to generate audio response for uploaded file with Gemini TTS.")
             
+        logger.info(f"[SERVER] upload_audio_file RETURN: transcription='{transcription[:50]}...', response='{ai_response_content[:50]}...', session_id='{current_session_id}', interview_stage='{current_interview_stage}', audio_url='{audio_response_url}'") # Added log
         return AudioTranscriptionResponse(
             transcription=transcription,
-            response=ai_response,
-            session_id=new_session_id,
-            interview_stage=metadata.get("interview_stage"),
+            response=ai_response_content,
+            session_id=current_session_id,
+            interview_stage=current_interview_stage, # Use stage from run_interview
             audio_response_url=audio_response_url,
-            job_role=metadata.get("job_role"),
+            job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding")
         )
     except HTTPException:
@@ -1119,7 +1140,7 @@ async def get_audio_response(filename: str):
         500: {"description": "Service is unhealthy", "model": ErrorResponse}
     }
 )
-async def health_check():
+async def health_check(request: Request): # Add request: Request
     """
     Health check endpoint.
     
@@ -1130,8 +1151,13 @@ async def health_check():
         Status of the service and its components
     """
     try:
+        # Access interviewer from app.state
+        active_interviewer = request.app.state.interviewer
+        if not active_interviewer:
+            raise ValueError("AIInterviewer instance not found in application state.")
+
         # Check AI Interviewer is working
-        session_count = len(interviewer.active_sessions) # <--- CHANGE THIS LINE
+        session_count = len(active_interviewer.active_sessions)
         
         # Check voice handler if enabled
         voice_status = "available" if voice_enabled and voice_handler else "unavailable"
@@ -1463,10 +1489,11 @@ async def continue_after_challenge(
         #     raise HTTPException(status_code=400, detail="User ID is required")
         
         # Get the session
-        if not interviewer.session_manager:
+        active_interviewer = request.app.state.interviewer
+        if not active_interviewer or not active_interviewer.session_manager:
             raise HTTPException(status_code=500, detail="Session manager not available")
             
-        session = interviewer.session_manager.get_session(session_id)
+        session = active_interviewer.session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
             
@@ -1485,7 +1512,7 @@ async def continue_after_challenge(
             logger.info(f"Stored coding evaluation in session metadata: {request_data.evaluation_summary}")
         
         session["metadata"] = metadata
-        interviewer.session_manager.update_session(session_id, session)
+        active_interviewer.session_manager.update_session(session_id, session)
         
         # Prepare a more detailed message if evaluation summary is provided
         message = request_data.message
@@ -1505,25 +1532,29 @@ async def continue_after_challenge(
                 message += f" Feedback: {feedback}"
         
         # Continue the interview with enhanced context
-        ai_response, new_session_id = await interviewer.run_interview(
+        # run_interview now returns a dictionary
+        response_data = await active_interviewer.run_interview(
             user_id_from_token, # Use ID from token
             message,
             session_id
         )
         
-        # Get updated session metadata
-        metadata = {}
-        if interviewer.session_manager:
-            session = interviewer.session_manager.get_session(new_session_id)
-            if session and "metadata" in session:
-                metadata = session["metadata"]
+        # Get updated session metadata (session_id is in response_data)
+        current_session_id = response_data["session_id"]
+        current_interview_stage = response_data.get("interview_stage")
+        updated_metadata = {}
+        if active_interviewer.session_manager:
+            session_after_run = active_interviewer.session_manager.get_session(current_session_id)
+            if session_after_run and "metadata" in session_after_run:
+                updated_metadata = session_after_run["metadata"]
         
+        logger.info(f"[SERVER] continue_after_challenge RETURN: response='{response_data['ai_response'][:50]}...', session_id='{current_session_id}', interview_stage='{current_interview_stage}', job_role='{updated_metadata.get('job_role')}'") # Added log
         return MessageResponse(
-            response=ai_response,
-            session_id=new_session_id,
-            interview_stage=metadata.get("interview_stage"),
-            job_role=metadata.get("job_role"),
-            requires_coding=metadata.get("requires_coding")
+            response=response_data["ai_response"],
+            session_id=current_session_id,
+            interview_stage=current_interview_stage, # Use stage from run_interview
+            job_role=updated_metadata.get("job_role"), # Keep these from potentially updated session metadata
+            requires_coding=updated_metadata.get("requires_coding")
         )
     except ValueError as e:
         if "session" in str(e).lower():

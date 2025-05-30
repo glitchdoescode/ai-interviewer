@@ -25,8 +25,8 @@ const Home = () => {
   const { userId, setUserId } = useInterview();
   const navigate = useNavigate();
   const bgGradient = useColorModeValue(
-    'linear(to-b, white, gray.50)',
-    'linear(to-b, gray.900, gray.800)'
+    'linear(to-b, brand.50, brand.100)',
+    'linear(to-b, brand.900, brand.800)'
   );
 
   // Generate a user ID if not already set
@@ -52,20 +52,21 @@ const Home = () => {
           align="center"
           justify="space-between"
           mb={16}
+          py={10}
         >
           <Box maxW={{ base: 'full', md: '50%' }} mb={{ base: 8, md: 0 }}>
-            <Heading as="h1" size="2xl" fontWeight="bold" mb={4} color="brand.700">
+            <Heading as="h1" size="2xl" fontWeight="bold" mb={4} color="primary.500">
               Practice Technical Interviews with AI
             </Heading>
             
-            <Text fontSize="xl" mb={6} color="gray.600">
+            <Text fontSize="xl" mb={6} color="brand.700">
               Prepare for your next software engineering interview with our AI-powered
               interview platform. Get real-time feedback and improve your skills.
             </Text>
             
             <Button
               size="lg"
-              colorScheme="brand"
+              colorScheme="primary"
               rightIcon={<FaMicrophone />}
               onClick={handleStartInterview}
             >
@@ -85,11 +86,11 @@ const Home = () => {
         
         {/* Features Section */}
         <Box mb={16}>
-          <Heading as="h2" size="xl" textAlign="center" mb={10} color="brand.600">
+          <Heading as="h2" size="xl" textAlign="center" mb={10} color="primary.500">
             Features
           </Heading>
           
-          <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} spacing={8}>
+          <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} spacing={10}>
             <FeatureCard
               icon={FaMicrophone}
               title="Voice Interface"
@@ -117,18 +118,18 @@ const Home = () => {
         </Box>
         
         {/* Call to Action */}
-        <Box textAlign="center" bg="brand.50" p={10} borderRadius="lg">
-          <Heading as="h3" size="lg" mb={4} color="brand.700">
+        <Box textAlign="center" bg="primary.100" p={10} borderRadius="lg" shadow="md">
+          <Heading as="h3" size="lg" mb={4} color="primary.700">
             Ready to ace your next interview?
           </Heading>
           
-          <Text fontSize="lg" mb={6} color="gray.600">
+          <Text fontSize="lg" mb={6} color="brand.800">
             Start practicing now and build confidence for your technical interviews.
           </Text>
           
           <Button
             size="lg"
-            colorScheme="brand"
+            colorScheme="secondary"
             onClick={handleStartInterview}
           >
             Start Practicing
@@ -145,32 +146,33 @@ const Home = () => {
 const FeatureCard = ({ icon, title, description }) => {
   return (
     <VStack
-      p={5}
-      bg="white"
+      p={6}
+      bg={useColorModeValue('white', 'brand.700')}
       borderRadius="lg"
-      boxShadow="md"
+      boxShadow="lg"
       align="start"
       spacing={4}
-      transition="all 0.3s"
-      _hover={{ transform: 'translateY(-5px)', boxShadow: 'lg' }}
+      transition="all 0.3s ease-in-out"
+      _hover={{ transform: 'translateY(-5px)', boxShadow: 'xl' }}
     >
       <Flex
-        w={12}
-        h={12}
-        bg="brand.500"
+        w={16}
+        h={16}
+        bg="secondary.500"
         borderRadius="full"
         align="center"
         justify="center"
         color="white"
+        mb={2}
       >
-        <Icon as={icon} boxSize={6} />
+        <Icon as={icon} boxSize={8} />
       </Flex>
       
-      <Heading as="h3" size="md" color="gray.800">
+      <Heading as="h3" size="md" color={useColorModeValue('primary.600', 'primary.200')}>
         {title}
       </Heading>
       
-      <Text color="gray.600">
+      <Text color={useColorModeValue('brand.700', 'brand.200')}>
         {description}
       </Text>
     </VStack>

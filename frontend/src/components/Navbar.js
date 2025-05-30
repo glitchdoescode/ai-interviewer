@@ -27,10 +27,26 @@ import { useAuth } from '../context/AuthContext';
 const Navbar = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const bg = useColorModeValue('white', 'gray.800');
-  const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const bg = useColorModeValue('brand.50', 'brand.900');
+  const borderColor = useColorModeValue('brand.200', 'brand.700');
   const { colorMode, toggleColorMode } = useColorMode();
   const { user, token, logout, isLoading } = useAuth();
+
+  // Define color mode dependent values at the top level
+  const logoIconColor = useColorModeValue('secondary.500', 'secondary.300');
+  const logoTextColor = useColorModeValue('primary.500', 'primary.300');
+  
+  const activeLinkColor = useColorModeValue('primary.500', 'primary.300');
+  const inactiveLinkColor = useColorModeValue('brand.700', 'brand.300');
+  const linkHoverColor = useColorModeValue('primary.600', 'primary.400');
+
+  const userIconColor = useColorModeValue('brand.700', 'brand.300');
+  const userTextColor = useColorModeValue('brand.800', 'brand.200');
+  const menuBgColor = useColorModeValue('white', 'brand.800');
+  const menuBorderColor = useColorModeValue('brand.200', 'brand.600');
+  const menuItemHoverBgColor = useColorModeValue('brand.100', 'brand.700');
+
+  const toggleIconColor = useColorModeValue('brand.600', 'brand.200');
 
   const handleLogout = () => {
     logout();
@@ -59,8 +75,8 @@ const Navbar = () => {
         {/* Logo/Brand */}
         <Link as={RouterLink} to="/" _hover={{ textDecoration: 'none' }}>
           <HStack spacing={2}>
-            <FaMicrophone size={24} color="#00BCD4" />
-            <Text fontWeight="bold" fontSize="xl" color="brand.700">
+            <FaMicrophone size={24} color={logoIconColor} />
+            <Text fontWeight="bold" fontSize="xl" color={logoTextColor}>
               AI Interviewer
             </Text>
           </HStack>
@@ -73,8 +89,8 @@ const Navbar = () => {
               as={RouterLink}
               to="/"
               fontWeight={location.pathname === '/' ? 'bold' : 'normal'}
-              color={location.pathname === '/' ? 'brand.600' : 'gray.500'}
-              _hover={{ color: 'brand.500' }}
+              color={location.pathname === '/' ? activeLinkColor : inactiveLinkColor}
+              _hover={{ color: linkHoverColor }}
             >
               Home
             </Link>
@@ -82,8 +98,8 @@ const Navbar = () => {
               as={RouterLink}
               to="/interview"
               fontWeight={location.pathname.includes('/interview') ? 'bold' : 'normal'}
-              color={location.pathname.includes('/interview') ? 'brand.600' : 'gray.500'}
-              _hover={{ color: 'brand.500' }}
+              color={location.pathname.includes('/interview') ? activeLinkColor : inactiveLinkColor}
+              _hover={{ color: linkHoverColor }}
             >
               Interview
             </Link>
@@ -91,19 +107,19 @@ const Navbar = () => {
               as={RouterLink}
               to="/history"
               fontWeight={location.pathname === '/history' ? 'bold' : 'normal'}
-              color={location.pathname === '/history' ? 'brand.600' : 'gray.500'}
-              _hover={{ color: 'brand.500' }}
+              color={location.pathname === '/history' ? activeLinkColor : inactiveLinkColor}
+              _hover={{ color: linkHoverColor }}
             >
               History
             </Link>
           </HStack>
 
           {/* Action Buttons / User Menu */}
-          <HStack spacing={2}>
+          <HStack spacing={3}>
             <Button
               as={RouterLink}
               to="/interview"
-              colorScheme="brand"
+              colorScheme="secondary"
               leftIcon={<FaMicrophone />}
               size="sm"
             >
@@ -123,19 +139,19 @@ const Navbar = () => {
                   size="sm"
                 >
                   <HStack>
-                    <FaUserCircle size="20px" />
-                    <Text display={{ base: 'none', md: 'inline-flex' }}>{user.username}</Text>
+                    <FaUserCircle size="20px" color={userIconColor} />
+                    <Text display={{ base: 'none', md: 'inline-flex' }} color={userTextColor}>{user.username}</Text>
                   </HStack>
                 </MenuButton>
-                <MenuList>
-                  <MenuItem as={RouterLink} to="/profile">
+                <MenuList bg={menuBgColor} borderColor={menuBorderColor}>
+                  <MenuItem _hover={{ bg: menuItemHoverBgColor }} as={RouterLink} to="/profile">
                     Profile
                   </MenuItem>
-                  <MenuItem as={RouterLink} to="/settings">
+                  <MenuItem _hover={{ bg: menuItemHoverBgColor }} as={RouterLink} to="/settings">
                     Settings
                   </MenuItem>
-                  <MenuDivider />
-                  <MenuItem onClick={handleLogout}>Log Out</MenuItem>
+                  <MenuDivider borderColor={menuBorderColor} />
+                  <MenuItem _hover={{ bg: menuItemHoverBgColor }} onClick={handleLogout}>Log Out</MenuItem>
                 </MenuList>
               </Menu>
             ) : (
@@ -144,7 +160,7 @@ const Navbar = () => {
                   as={RouterLink}
                   to="/login"
                   variant="outline"
-                  colorScheme="brand"
+                  colorScheme="primary"
                   size="sm"
                 >
                   Log In
@@ -153,7 +169,7 @@ const Navbar = () => {
                   as={RouterLink}
                   to="/signup"
                   variant="ghost"
-                  colorScheme="brand"
+                  colorScheme="primary"
                   size="sm"
                 >
                   Sign Up
@@ -169,6 +185,8 @@ const Navbar = () => {
           icon={colorMode === 'light' ? <FaMoon /> : <FaSun />}
           aria-label="Toggle color mode"
           onClick={toggleColorMode}
+          variant="ghost"
+          color={toggleIconColor}
         />
       </Flex>
     </Box>

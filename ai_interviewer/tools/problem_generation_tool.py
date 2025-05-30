@@ -62,10 +62,10 @@ def generate_coding_challenge_from_jd(
         Dictionary containing the generated coding challenge with problem statement,
         test cases, and reference solution.
     """
-    logger.info(f"Generating coding challenge for skills: {skills_required}")
-    logger.info(f"Difficulty level: {difficulty_level}")
-    
     try:
+        logger.info(f"Generating coding challenge for skills: {skills_required}")
+        logger.info(f"Difficulty level: {difficulty_level}")
+        
         # Initialize LLM with appropriate temperature for consistent problem generation
         llm_config = get_llm_config()
         model = ChatGoogleGenerativeAI(
@@ -143,10 +143,10 @@ def generate_coding_challenge_from_jd(
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing LLM response as JSON: {e}")
             logger.error(f"Raw response: {response_content}")
-            return generate_fallback_challenge(skills_required, difficulty_level)
+            raise
             
     except Exception as e:
-        logger.error(f"Error generating coding challenge: {e}")
+        logger.error(f"Outer error generating coding challenge: {e}", exc_info=True)
         return generate_fallback_challenge(skills_required, difficulty_level)
 
 @tool
