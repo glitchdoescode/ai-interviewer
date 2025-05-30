@@ -14,6 +14,7 @@ const initialState = {
   voiceMode: false,
   interviewStage: 'introduction',
   jobRoleData: null,
+  currentCodingChallenge: null,
 };
 
 // Define reducer actions
@@ -27,6 +28,7 @@ const ACTIONS = {
   SET_VOICE_MODE: 'set_voice_mode',
   SET_INTERVIEW_STAGE: 'set_interview_stage',
   SET_JOB_ROLE_DATA: 'set_job_role_data',
+  SET_CURRENT_CODING_CHALLENGE: 'set_current_coding_challenge',
   RESET: 'reset',
 };
 
@@ -51,11 +53,14 @@ const reducer = (state, action) => {
       return { ...state, interviewStage: action.payload };
     case ACTIONS.SET_JOB_ROLE_DATA:
       return { ...state, jobRoleData: action.payload };
+    case ACTIONS.SET_CURRENT_CODING_CHALLENGE:
+      return { ...state, currentCodingChallenge: action.payload };
     case ACTIONS.RESET:
       return {
         ...initialState,
         userId: `user-${uuidv4()}`, // Generate fresh user ID
         messages: [], // Reset messages
+        currentCodingChallenge: null, // Reset coding challenge on full reset
       };
     default:
       return state;
@@ -107,6 +112,10 @@ export const InterviewProvider = ({ children }) => {
     dispatch({ type: ACTIONS.SET_JOB_ROLE_DATA, payload: jobRoleData });
   }, []);
   
+  const setCurrentCodingChallenge = useCallback((challengeData) => {
+    dispatch({ type: ACTIONS.SET_CURRENT_CODING_CHALLENGE, payload: challengeData });
+  }, []);
+  
   const resetInterview = useCallback(() => {
     dispatch({ type: ACTIONS.RESET });
   }, []);
@@ -123,6 +132,7 @@ export const InterviewProvider = ({ children }) => {
     setVoiceMode,
     setInterviewStage,
     setJobRoleData,
+    setCurrentCodingChallenge,
     resetInterview,
   };
   

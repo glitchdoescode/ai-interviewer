@@ -44,20 +44,23 @@ const Interview = () => {
     messages,
     loading,
     error,
-    setSessionId,
-    resetInterview,
     interviewStage,
+    selectedJobRole,
+    currentCodingChallenge,
+    addMessage,
+    setSessionId,
+    setLoading,
+    setError,
+    setInterviewStage,
+    resetInterview,
     setVoiceMode,
     voiceMode,
-    setError,
     setJobRoleData,
   } = useInterview();
 
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
-  const [showJobSelector, setShowJobSelector] = useState(!urlSessionId);
-  const [selectedJobRole, setSelectedJobRole] = useState(null);
-  const [currentProblemTitle, setCurrentProblemTitle] = useState('');
-  const [currentProblemDescription, setCurrentProblemDescription] = useState('');
+  const [showJobSelector, setShowJobSelector] = useState(true);
+  const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
 
   // Check if the requested session ID should be loaded
   useEffect(() => {
@@ -105,12 +108,7 @@ const Interview = () => {
 
   // Handle job role selection
   const handleRoleSelect = (roleData) => {
-    setSelectedJobRole(roleData);
-    
-    // Also store in context for use in other components
-    if (roleData) {
-      setJobRoleData(roleData);
-    }
+    setJobRoleData(roleData);
   };
   
   // Handle starting interview with selected role
@@ -161,43 +159,6 @@ const Interview = () => {
         return 'gray';
     }
   };
-
-  // Effect to extract problem details when stage changes to coding_challenge
-  useEffect(() => {
-    if (interviewStage === 'coding_challenge' && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content) {
-        const aiMessageContent = lastMessage.content;
-        let title = "Coding Challenge";
-        let starterCode = '' // Placeholder for starter code
-        let language = 'python' // Default language
-        let difficulty = 'medium' // Default difficulty
-
-        // Basic extraction - adapt as needed based on AI's actual message format
-        // Example: Looking for "Problem: Two Sum", "Language: Python", "Starter Code: def twoSum..."
-        const titleMatch = aiMessageContent.match(/Problem: ([^\n.:]+)/i) || aiMessageContent.match(/challenge: ([^\n.:]+)/i);
-        if (titleMatch && titleMatch[1]) {
-            title = titleMatch[1].trim();
-        }
-        // Add more sophisticated parsing here if AI provides structured data or specific keywords
-        // For example, if AI message is JSON or has specific markers for starter code, language.
-
-        // For now, we pass the full AI message as description and use defaults for others.
-        setCurrentProblemTitle(title); // This state is used for the challenge object
-        setCurrentProblemDescription(aiMessageContent); // This state is used for the challenge object
-        
-        // Log what will be passed to CodingChallenge
-        console.log("Preparing challenge data for CodingChallenge component:", {
-          title: title,
-          description: aiMessageContent.substring(0,100) + "...",
-          starter_code: starterCode, // Will be empty for now
-          language: language,      // Default for now
-          difficulty: difficulty,  // Default for now 
-          // visible_test_cases: [] // Placeholder
-        });
-      }
-    }
-  }, [interviewStage, messages]);
 
   return (
     <Box minH="100vh" bg="gray.50">
@@ -335,22 +296,16 @@ const Interview = () => {
                     isLoading={loading}
                   />
                 ) : (
-                  interviewStage === 'coding_challenge' || interviewStage === 'coding_challenge_waiting' ? (
+                  (interviewStage === 'coding_challenge' || interviewStage === 'coding_challenge_waiting') && currentCodingChallenge ? (
                     <CodingChallenge 
-                      challenge={{
-                        title: currentProblemTitle,
-                        description: currentProblemDescription,
-                        starter_code: '\n# Write your code here\n',
-                        language: 'python', 
-                        difficulty: 'medium', 
-                        time_limit_mins: 30, 
-                        visible_test_cases: [], // Ensure this is always an array
-                        evaluation_criteria: {}, // Ensure this is always an object
-                        challenge_id: currentProblemTitle || "default_challenge_id", 
-                      }}
+                      challenge={currentCodingChallenge}
                       sessionId={sessionId}
                       userId={userId}
                     />
+                  ) : (interviewStage === 'coding_challenge' || interviewStage === 'coding_challenge_waiting') && !currentCodingChallenge ? (
+                    <Box p={5} textAlign="center">
+                      <Text fontSize="xl">Loading coding challenge details...</Text>
+                    </Box>
                   ) : (
                     <ChatInterface jobRoleData={selectedJobRole} />
                   )

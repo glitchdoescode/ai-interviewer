@@ -51,16 +51,18 @@ const ChatInterface = ({ jobRoleData }) => {
     error,
     voiceMode,
     interviewStage,
-    setSessionId,
+    jobRoleData: contextJobRoleData,
+    currentCodingChallenge,
     addMessage,
+    setSessionId,
     setLoading,
     setError,
-    setVoiceMode,
     setInterviewStage,
+    setCurrentCodingChallenge,
+    setVoiceMode
   } = useInterview();
 
   const [messageInput, setMessageInput] = useState('');
-  const [currentCodingChallenge, setCurrentCodingChallenge] = useState(null);
   const [isWaitingForCodingChallenge, setIsWaitingForCodingChallenge] = useState(false);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const messagesEndRef = useRef(null);
@@ -106,6 +108,20 @@ const ChatInterface = ({ jobRoleData }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Update local isWaitingForCodingChallenge based on context
+  useEffect(() => {
+    if (interviewStage === 'coding_challenge' && currentCodingChallenge) {
+      setIsWaitingForCodingChallenge(true);
+    } else if (interviewStage !== 'coding_challenge') {
+      setIsWaitingForCodingChallenge(false);
+      // If currentCodingChallenge from context is cleared by another component (e.g. Interview.js after navigation),
+      // this component's local waiting state should also be reset.
+      if (!currentCodingChallenge) {
+        setIsWaitingForCodingChallenge(false);
+      }
+    }
+  }, [interviewStage, currentCodingChallenge]);
+
   // Show toast for audio errors
   useEffect(() => {
     if (audioError) {
@@ -125,39 +141,6 @@ const ChatInterface = ({ jobRoleData }) => {
       });
     }
   }, [audioError, toast]);
-
-  // Check for coding challenge instructions in AI messages
-  useEffect(() => {
-    // Look for coding challenge data in the latest message
-    if (messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === 'assistant') {
-        // Check if the message contains coding challenge data
-        // This could be embedded in a tool_call from the LLM
-        if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
-          // Look for either the old or new coding challenge tool
-          const codingChallengeTool = lastMessage.tool_calls.find(
-            tool => tool.name === 'start_coding_challenge' || tool.name === 'generate_coding_challenge_from_jd'
-          );
-          
-          if (codingChallengeTool && codingChallengeTool.result) {
-            try {
-              const challengeData = typeof codingChallengeTool.result === 'string' 
-                ? JSON.parse(codingChallengeTool.result) 
-                : codingChallengeTool.result;
-                
-              if (challengeData.status === 'success') {
-                setCurrentCodingChallenge(challengeData);
-                setIsWaitingForCodingChallenge(true);
-              }
-            } catch (err) {
-              console.error('Error parsing coding challenge data:', err);
-            }
-          }
-        }
-      }
-    }
-  }, [messages]);
 
   // Function to handle sending a new message
   const handleSendMessage = async () => {
@@ -194,10 +177,10 @@ const ChatInterface = ({ jobRoleData }) => {
           setCurrentCodingChallenge(null);
           setIsWaitingForCodingChallenge(false);
         } else {
-          response = await continueInterview(messageInput, sessionId, userId, jobRoleData);
+          response = await continueInterview(messageInput, sessionId, userId, contextJobRoleData);
         }
       } else {
-        response = await startInterview(messageInput, userId, jobRoleData);
+        response = await startInterview(messageInput, userId, contextJobRoleData);
         
         // Set the session ID from the response
         setSessionId(response.session_id);
@@ -215,6 +198,20 @@ const ChatInterface = ({ jobRoleData }) => {
       if (response.interview_stage) {
         console.log('Updating interview stage to:', response.interview_stage);
         setInterviewStage(response.interview_stage);
+        
+        // Check for coding challenge data if stage is coding_challenge
+        if (response.interview_stage === 'coding_challenge' && response.coding_challenge_data) {
+          console.log("Received structured coding challenge data:", response.coding_challenge_data);
+          setCurrentCodingChallenge(response.coding_challenge_data);
+        } else if (response.interview_stage !== 'coding_challenge') {
+          // If not in coding challenge stage, ensure any previous challenge is cleared
+          // This handles cases where the interview might move away from a challenge
+          // without an explicit submission from the user via UI (e.g. AI moves on)
+          if (currentCodingChallenge) {
+            console.log("Interview stage is not coding_challenge, clearing any active challenge.");
+            setCurrentCodingChallenge(null);
+          }
+        }
       }
       
       // Clear any errors
@@ -256,7 +253,7 @@ const ChatInterface = ({ jobRoleData }) => {
         });
         
         // Send audio for transcription and get response
-        const response = await transcribeAndRespond(audioBase64, userId, sessionId, jobRoleData);
+        const response = await transcribeAndRespond(audioBase64, userId, sessionId, contextJobRoleData);
         
         // Update the user message with the transcribed text
         // Find the last user message and update it
@@ -286,8 +283,19 @@ const ChatInterface = ({ jobRoleData }) => {
 
         // Update interview stage if provided in the response
         if (response.interview_stage) {
-          console.log('Updating interview stage to:', response.interview_stage);
+          console.log('Updating interview stage (voice) to:', response.interview_stage);
           setInterviewStage(response.interview_stage);
+
+          // Check for coding challenge data if stage is coding_challenge
+          if (response.interview_stage === 'coding_challenge' && response.coding_challenge_data) {
+            console.log("Received structured coding challenge data (voice):", response.coding_challenge_data);
+            setCurrentCodingChallenge(response.coding_challenge_data);
+          } else if (response.interview_stage !== 'coding_challenge') {
+             if (currentCodingChallenge) {
+                console.log("Interview stage is not coding_challenge (voice), clearing any active challenge.");
+                setCurrentCodingChallenge(null);
+            }
+          }
         }
         
         // Clear any errors
@@ -408,84 +416,38 @@ const ChatInterface = ({ jobRoleData }) => {
     <Flex direction="column" h="100vh" overflow="hidden">
       <Box flex="1" overflow="auto" p={4}>
         <VStack spacing={4} align="stretch">
-          {messages.map((message, index) => {
-            // Check if this is a coding challenge message from the AI
-            if (
-              message.role === 'assistant' && 
-              message.tool_calls && 
-              message.tool_calls.some(call => call.name === 'start_coding_challenge' || call.name === 'generate_coding_challenge_from_jd')
-            ) {
-              // Extract the coding challenge data
-              const codingChallenge = message.tool_calls.find(
-                call => call.name === 'start_coding_challenge' || call.name === 'generate_coding_challenge_from_jd'
-              ).result;
-              
-              // Store the coding challenge for later use
-              if (!currentCodingChallenge) {
-                setCurrentCodingChallenge(codingChallenge);
-                setIsWaitingForCodingChallenge(true);
-              }
-              
-              // Render both the message and the coding challenge
-              return (
-                <React.Fragment key={index}>
-                  <ChatMessage message={message} />
-                   <CodingChallenge 
-                     challenge={codingChallenge}
-                     onSubmit={(code, isCompleted) => {
-                       // Submit the code and continue the interview
-                       try {
-                         setLoading(true);
-                         continueAfterCodingChallenge(
-                           code, 
-                           sessionId, 
-                           userId, 
-                           isCompleted
-                         ).then(response => {
-                           // Add AI response to chat
-                           addMessage({
-                             role: 'assistant',
-                             content: response.response,
-                             tool_calls: response.tool_calls
-                           });
-                           
-                           // Reset coding challenge state
-                           setIsWaitingForCodingChallenge(false);
-                           setCurrentCodingChallenge(null);
-                           setLoading(false);
-                         }).catch(err => {
-                           console.error('Error submitting code:', err);
-                           setError('Failed to submit code solution. Please try again.');
-                           setLoading(false);
-                         });
-                       } catch (err) {
-                         console.error('Error preparing code submission:', err);
-                         setError('Failed to submit code. Please try again.');
-                         setLoading(false);
-                       }
-                     }}
-                     onRequestHint={(code) => handleRequestHint(code)}
-                     isWaiting={isWaitingForCodingChallenge}
-                   />
-                </React.Fragment>
-              );
-            }
-            
-            // Regular message
-            console.log('Rendering ChatMessage with:', { 
-              content: message.content, 
-              audioUrl: message.audioUrl,
-              fullMessage: message 
-            });
-            return <ChatMessage 
+          {messages.map((message, index) => (
+            <ChatMessage 
               key={index} 
               message={message.content || message.message || ''} 
               sender={message.role || message.sender || 'assistant'} 
               audioUrl={message.audioUrl || ''} 
               isHint={message.isHint || false} 
               isLoading={message.loading || false} 
-            />;
-          })}
+            />
+          ))}
+          
+          {/* Conditionally render CodingChallenge based on stage and data */}
+          {interviewStage === 'coding_challenge' && currentCodingChallenge && (
+            <Box mt={4} mb={4} p={4} bg="gray.50" borderRadius="md">
+              <CodingChallenge 
+                challenge={currentCodingChallenge} // Use the state variable
+                sessionId={sessionId}
+                userId={userId}
+                onComplete={(code, evaluationResults) => {
+                  console.log('Challenge completed/submitted in ChatInterface', code, evaluationResults);
+                  // This is where you might send the code to the backend via continueAfterCodingChallenge
+                  // For now, let's assume CodingChallenge handles its own submission via its handleSubmit
+                  // and this onComplete is more for signaling ChatInterface if needed.
+                  // We might remove/refactor this specific onComplete if CodingChallenge.handleSubmit is sufficient.
+                  setIsWaitingForCodingChallenge(false); // User is no longer just waiting, challenge UI might change
+                  // Potentially, the AI will respond after submission, handled by normal message flow
+                }}
+                onRequestHint={(code) => handleRequestHint(code)}
+                // isWaiting prop might not be needed directly on CodingChallenge if its internal state manages UI
+              />
+            </Box>
+          )}
           
           {/* Loading indicator */}
           {loading && (

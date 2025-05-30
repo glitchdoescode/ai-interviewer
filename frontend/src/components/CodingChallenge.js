@@ -23,7 +23,7 @@ import {
   AccordionIcon,
   Select,
 } from '@chakra-ui/react';
-import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode } from 'react-icons/fa';
+import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
 // import { submitChallengeCode } from '../api/interviewService'; // Comment out for Sprint 1
@@ -38,17 +38,110 @@ import { useInterview } from '../context/InterviewContext';
  * @param {string} props.sessionId Session ID
  * @param {string} props.userId User ID
  */
-const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, userId }) => {
-  const [code, setCode] = useState(challenge?.starter_code || '');
-  const [language, setLanguage] = useState(challenge?.language || 'python');
+const CodingChallenge = ({ challenge: initialChallenge, onComplete, onRequestHint, sessionId, userId }) => {
+  const [challenge, setChallenge] = useState(initialChallenge);
+  const [code, setCode] = useState(initialChallenge?.starter_code || '');
+  const [language, setLanguage] = useState(initialChallenge?.language || 'python');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testResults, setTestResults] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const [isWaitingForUser, setIsWaitingForUser] = useState(true);
   const toast = useToast();
   
-  const { setInterviewStage } = useInterview();
+  const { setInterviewStage, jobDetails } = useInterview();
   
+  // Function to fetch a new coding challenge
+  const fetchNewChallenge = async () => {
+    toast({
+      title: 'Fetching New Challenge...',
+      status: 'info',
+      duration: null, // Keep open until closed manually or by success/error
+      isClosable: true,
+    });
+    try {
+      const authToken = localStorage.getItem('authToken');
+      if (!authToken) {
+        toast({
+          title: 'Authentication Error',
+          description: 'Auth token not found. Please log in.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+        return;
+      }
+
+      // TODO: Get these from a more robust source, e.g., job context or props
+      const body = {
+        job_description: jobDetails?.job_description || "A general software engineering role.",
+        skills_required: jobDetails?.required_skills || ["Python", "problem-solving"],
+        difficulty_level: jobDetails?.difficulty || "intermediate", // Or derive from seniority
+        session_id: sessionId, // Pass session ID for context
+      };
+      
+      // NOTE: The backend currently expects the AI to call generate_coding_challenge_from_jd.
+      // This frontend-initiated call is a temporary measure for Sprint 2 testing.
+      // We might need a dedicated endpoint or adjust the AI's flow.
+      // For now, let's assume an endpoint /api/interview/generate-challenge exists or will be created.
+      const response = await fetch('/api/interview/generate-challenge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = await response.json();
+      toast.closeAll(); // Close the "Fetching..." toast
+
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to fetch challenge');
+      }
+
+      // The backend's generate_coding_challenge_from_jd tool returns:
+      // problem_statement, starter_code, language, title
+      setChallenge({
+        title: data.title,
+        description: data.problem_statement, // Ensure your component uses 'description' for problem_statement
+        difficulty: data.difficulty_level || body.difficulty_level, // Or from response if provided
+        language: data.language,
+        time_limit_mins: 30, // Placeholder
+        starter_code: data.starter_code,
+        // challenge_id: data.challenge_id // if your backend provides one
+      });
+      setCode(data.starter_code || '');
+      setLanguage(data.language || 'python');
+      setTestResults(null);
+      setFeedback(null);
+      toast({
+        title: 'New Challenge Loaded',
+        description: data.title,
+        status: 'success',
+        duration: 5000,
+        isClosable: true,
+      });
+    } catch (error) {
+      toast.closeAll(); // Close the "Fetching..." toast
+      console.error('Error fetching new challenge:', error);
+      toast({
+        title: 'Error Fetching Challenge',
+        description: error.message || 'Could not connect to the server.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+
+  // Fetch challenge when component mounts if no initial challenge is provided
+  useEffect(() => {
+    if (!initialChallenge) {
+      fetchNewChallenge();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialChallenge]); // Only re-run if initialChallenge changes
+
   // Set the interview stage to coding challenge
   useEffect(() => {
     setInterviewStage('coding_challenge');
@@ -178,14 +271,19 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, user
     });
   };
   
-  // If no challenge is provided, show a placeholder
+  // If no challenge is provided, show a placeholder and a button to fetch one
   if (!challenge) {
     return (
       <Box p={4} borderRadius="md" borderWidth="1px">
-        <Alert status="warning">
-          <AlertIcon />
-          No coding challenge data available.
-        </Alert>
+        <VStack spacing={4}>
+          <Alert status="warning">
+            <AlertIcon />
+            No coding challenge data available.
+          </Alert>
+          <Button onClick={fetchNewChallenge} colorScheme="blue" leftIcon={<FaRedo />}>
+            Load New Coding Challenge
+          </Button>
+        </VStack>
       </Box>
     );
   }
@@ -203,11 +301,14 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, user
         <HStack justifyContent="space-between" mb={2}>
           <Heading size="md">{challenge.title}</Heading>
           <HStack>
-            <Badge colorScheme={challenge.difficulty === 'easy' ? 'green' : challenge.difficulty === 'medium' ? 'orange' : 'red'}>
-              {challenge.difficulty.toUpperCase()}
+            <Button size="sm" onClick={fetchNewChallenge} leftIcon={<FaRedo />} colorScheme="gray" variant="outline" mr={2}>
+              New Challenge
+            </Button>
+            <Badge colorScheme={challenge.difficulty_level === 'easy' ? 'green' : challenge.difficulty_level === 'medium' ? 'orange' : 'red'}>
+              {challenge.difficulty_level?.toUpperCase() || challenge.difficulty?.toUpperCase() || 'N/A'}
             </Badge>
-            <Badge colorScheme="blue">{challenge.language}</Badge>
-            <Badge colorScheme="purple">{challenge.time_limit_mins} min</Badge>
+            <Badge colorScheme="blue">{challenge.language?.toUpperCase() || 'N/A'}</Badge>
+            <Badge colorScheme="purple">{challenge.time_limit_mins || 'N/A'} min</Badge>
           </HStack>
         </HStack>
         
@@ -246,7 +347,7 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, user
             <VStack align="stretch" spacing={4}>
               <Box>
                 <Heading size="sm" mb={2}>Problem Description</Heading>
-                <Text whiteSpace="pre-wrap">{challenge.description}</Text>
+                <Text whiteSpace="pre-wrap">{challenge.problem_statement || challenge.description}</Text>
               </Box>
               
               <Divider />
@@ -255,8 +356,8 @@ const CodingChallenge = ({ challenge, onComplete, onRequestHint, sessionId, user
               <Box>
                 <Heading size="sm" mb={2}>Example Test Cases</Heading>
                 <Accordion allowMultiple>
-                  {challenge.visible_test_cases && challenge.visible_test_cases.length > 0 ? (
-                    challenge.visible_test_cases.map((testCase, index) => (
+                  {challenge.test_cases && challenge.test_cases.length > 0 ? (
+                    challenge.test_cases.map((testCase, index) => (
                       <AccordionItem key={index}>
                         <h2>
                           <AccordionButton>
