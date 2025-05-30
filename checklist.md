@@ -284,9 +284,9 @@ This document outlines the tasks to build the AI Interviewer Platform, following
     *   `@tool async def generate_coding_challenge_from_jd(job_description: str, skills_required: List[str]) -> Dict:`
     *   Uses an LLM to generate a problem statement, test cases, and reference solution based on input.
 *   **Task P2.5.2: Implement Tool Logic**
-    *   [ ] Develop robust prompts for the LLM to create relevant and solvable problems.
+    *   [x] Develop robust prompts for the LLM to create relevant and solvable problems.
 *   **Task P2.5.3: Testing Interface for Problem Generation**
-    *   [ ] Create a simple script or admin interface to test this tool.
+    *   [x] Create a simple script or admin interface to test this tool.
 
 ### Iteration 6: Rubric-Based Scoring & Detailed Reporting
 *   **Task P2.6.1: Detailed Rubric Implementation**
@@ -382,7 +382,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 
 ### Iteration 1: Authentication & User Management
 *   **Task P3.1.1: Implement User Auth**
-    *   [ ] Basic email/password registration and login
+    *   [x] Basic email/password registration and login
     *   [ ] OAuth integration (Google, GitHub, etc.)
     *   [ ] Password reset and account management
 *   **Task P3.1.2: Role-Based Access Control**
