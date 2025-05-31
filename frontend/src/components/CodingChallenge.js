@@ -314,10 +314,12 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
           'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify({
+          challenge_id: currentChallengeDetails?.challenge_id || currentChallengeDetails?.id, // Ensure we get the ID
           language: language,
           code: code,
-          challenge_data: currentChallengeDetails, // Send the full challenge details
-          // session_id: sessionId, // Optional: if your backend /api/coding/submit needs it directly
+          user_id: userId, // ADDED
+          session_id: sessionId, // ADDED
+          // challenge_data: currentChallengeDetails, // REMOVED - backend expects challenge_id
         }),
       });
 
@@ -362,7 +364,7 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
         status: 'error',
         error_message: error.message || 'Submission failed.',
         overall_summary: { pass_count: 0, fail_count: 0, total_tests: 0, all_tests_passed: false },
-        test_case_results: [],
+        execution_results: { detailed_results: { test_results: [] } },
       });
     } finally {
       setIsEvaluating(false);
@@ -465,266 +467,265 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
           <TabPanel>
             <VStack align="stretch" spacing={4}>
               <Box>
-                <Heading size="sm" mb={2}>Problem Description</Heading>
-                <Text whiteSpace="pre-wrap">{currentChallengeDetails.problem_statement || currentChallengeDetails.description}</Text>
+                <Heading size="sm" mb={2}>Problem Statement</Heading>
+                {/* Using Text component with whiteSpace to preserve formatting like newlines */}
+                <Text whiteSpace="pre-wrap">{currentChallengeDetails.description || currentChallengeDetails.problem_statement}</Text>
               </Box>
-              
-              {/* Display Visible Test Cases - Added for Sprint 4 */}
-              {currentChallengeDetails && currentChallengeDetails.visible_test_cases && currentChallengeDetails.visible_test_cases.length > 0 && (
-                <Box mt={4}>
-                  <Heading size="sm" mb={2}>Visible Test Cases</Heading>
-                  <Accordion allowMultiple defaultIndex={[0]}> {/* Open first by default */}
-                    {currentChallengeDetails.visible_test_cases.map((tc, index) => (
-                      <AccordionItem key={index}>
-                        <h2>
-                          <AccordionButton>
-                            <Box flex="1" textAlign="left">
-                              Test Case {index + 1}
-                              {tc.explanation && <Text fontSize="sm" color="gray.500"> ({tc.explanation})</Text>}
-                            </Box>
-                            <AccordionIcon />
-                          </AccordionButton>
-                        </h2>
-                        <AccordionPanel pb={4}>
-                          <VStack align="stretch" spacing={2}>
-                            <Box>
-                              <Text fontWeight="bold">Input:</Text>
-                              <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc.input === 'object' ? JSON.stringify(tc.input, null, 2) : String(tc.input)}</Text>
-                            </Box>
-                            <Box>
-                              <Text fontWeight="bold">Expected Output:</Text>
-                              <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc.expected_output === 'object' ? JSON.stringify(tc.expected_output, null, 2) : String(tc.expected_output)}</Text>
-                            </Box>
-                          </VStack>
-                        </AccordionPanel>
-                      </AccordionItem>
-                    ))}
-                  </Accordion>
+              <Divider />
+              {currentChallengeDetails.input_format && (
+                <Box>
+                  <Heading size="xs" mb={1}>Input Format</Heading>
+                  <Text whiteSpace="pre-wrap">{currentChallengeDetails.input_format}</Text>
                 </Box>
               )}
-              
+              {currentChallengeDetails.output_format && (
+                <Box>
+                  <Heading size="xs" mb={1}>Output Format</Heading>
+                  <Text whiteSpace="pre-wrap">{currentChallengeDetails.output_format}</Text>
+                </Box>
+              )}
+              {currentChallengeDetails.constraints && (
+                <Box>
+                  <Heading size="xs" mb={1}>Constraints</Heading>
+                  <Text whiteSpace="pre-wrap">{currentChallengeDetails.constraints}</Text>
+                </Box>
+              )}
+              {/* Display evaluation criteria if available from the new structure */}
+              {currentChallengeDetails.evaluation_criteria && (
+                <Box>
+                  <Heading size="xs" mb={1}>Evaluation Criteria</Heading>
+                  <VStack align="start">
+                    {Object.entries(currentChallengeDetails.evaluation_criteria).map(([key, value]) => (
+                      <Text key={key}><strong>{key.charAt(0).toUpperCase() + key.slice(1)}:</strong> {value}</Text>
+                    ))}
+                  </VStack>
+                </Box>
+              )}
               <Divider />
-              
-              {/* Example Test Cases */}
-              <Box>
-                <Heading size="sm" mb={2}>Example Test Cases</Heading>
-                <Accordion allowMultiple>
-                  {currentChallengeDetails.test_cases && currentChallengeDetails.test_cases.length > 0 ? (
-                    currentChallengeDetails.test_cases.map((testCase, index) => (
-                      <AccordionItem key={index}>
-                        <h2>
-                          <AccordionButton>
-                            <Box flex="1" textAlign="left">
-                              Test Case {index + 1}
-                            </Box>
-                            <AccordionIcon />
-                          </AccordionButton>
-                        </h2>
-                        <AccordionPanel pb={4}>
-                          <VStack align="stretch" spacing={2}>
-                            <Box>
-                              <Text fontWeight="bold">Input:</Text>
-                              <Box bg="gray.100" p={2} borderRadius="md">
-                                <Text fontFamily="monospace">{JSON.stringify(testCase.input)}</Text>
-                              </Box>
-                            </Box>
-                            <Box>
-                              <Text fontWeight="bold">Expected Output:</Text>
-                              <Box bg="gray.100" p={2} borderRadius="md">
-                                <Text fontFamily="monospace">{JSON.stringify(testCase.expected_output)}</Text>
-                              </Box>
-                            </Box>
-                            {testCase.explanation && (
-                              <Box>
-                                <Text fontWeight="bold">Explanation:</Text>
-                                <Text>{testCase.explanation}</Text>
-                              </Box>
-                            )}
-                          </VStack>
-                        </AccordionPanel>
-                      </AccordionItem>
-                    ))
-                  ) : (
-                    <Text>No visible test cases provided.</Text>
-                  )}
-                </Accordion>
-              </Box>
-              
-              <Divider />
-              
-              {/* Evaluation Criteria */}
-              <Box>
-                <Heading size="sm" mb={2}>Evaluation Criteria</Heading>
-                <VStack align="stretch">
-                  {currentChallengeDetails.evaluation_criteria && Object.keys(currentChallengeDetails.evaluation_criteria).length > 0 ? (
-                    Object.entries(currentChallengeDetails.evaluation_criteria).map(([key, value]) => (
-                      <HStack key={key}>
-                        <Badge colorScheme="blue">{key}</Badge>
-                        <Text>{value}</Text>
-                      </HStack>
-                    ))
-                  ) : (
-                    <Text>No evaluation criteria provided.</Text>
-                  )}
-                </VStack>
-              </Box>
+              <Heading size="sm" mb={2}>Visible Test Cases</Heading>
+              <Accordion allowMultiple defaultIndex={[0]}>
+                {(currentChallengeDetails.visible_test_cases || currentChallengeDetails.test_cases || []).map((tc, index) => (
+                  <AccordionItem key={index}>
+                    <h2>
+                      <AccordionButton>
+                        <Box flex="1" textAlign="left">
+                          Test Case {index + 1} {tc.is_hidden ? "(Hidden)" : ""}
+                        </Box>
+                        <AccordionIcon />
+                      </AccordionButton>
+                    </h2>
+                    <AccordionPanel pb={4}>
+                      <VStack align="stretch" spacing={2}>
+                        <Box>
+                          <Text fontWeight="bold">Input:</Text>
+                          <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
+                            {typeof tc.input === 'object' ? JSON.stringify(tc.input, null, 2) : String(tc.input)}
+                          </Text>
+                        </Box>
+                        <Box>
+                          <Text fontWeight="bold">Expected Output:</Text>
+                          <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
+                            {typeof tc.expected_output === 'object' ? JSON.stringify(tc.expected_output, null, 2) : String(tc.expected_output)}
+                          </Text>
+                        </Box>
+                        {tc.explanation && (
+                           <Box>
+                             <Text fontWeight="bold">Explanation:</Text>
+                             <Text whiteSpace="pre-wrap">{tc.explanation}</Text>
+                           </Box>
+                        )}
+                      </VStack>
+                    </AccordionPanel>
+                  </AccordionItem>
+                ))}
+              </Accordion>
             </VStack>
           </TabPanel>
-          
+
           {/* Code Editor Tab */}
           <TabPanel>
-            <VStack align="stretch" spacing={4}>
-              <Select value={language} onChange={(e) => setLanguage(e.target.value)} mb={2} focusBorderColor="primary.500">
-                <option value="python">Python</option>
-                <option value="javascript">JavaScript</option>
-                <option value="java">Java</option>
-                {/* Add more languages as needed */}
-              </Select>
+            <VStack spacing={4} align="stretch">
+              <HStack>
+                <Text>Language:</Text>
+                <Select 
+                  value={language} 
+                  onChange={(e) => setLanguage(e.target.value)}
+                  size="sm"
+                  maxW="150px"
+                >
+                  <option value="python">Python</option>
+                  <option value="javascript">JavaScript</option>
+                  {/* Add more languages as supported */}
+                </Select>
+              </HStack>
               <CodeEditor
-                code={code}
-                language={language.toLowerCase()}
-                onChange={setCode}
+                language={language}
+                value={code}
+                onChange={(newCode) => setCode(newCode)}
+                height="400px" // Adjust as needed
               />
+              <HStack justifyContent="flex-end" spacing={4}>
+                {/* <Button 
+                  colorScheme="teal" 
+                  variant="outline"
+                  onClick={handleRequestHint}
+                  isLoading={isSubmitting} // Consider a separate loading state for hints
+                  leftIcon={<FaQuestionCircle />}
+                >
+                  Request Hint
+                </Button> */}
+                <Button 
+                  colorScheme="blue" 
+                  onClick={handleRunCode}
+                  isLoading={isRunningCode}
+                  leftIcon={<FaPlay />}
+                >
+                  Run Code
+                </Button>
+                <Button 
+                  colorScheme="green" 
+                  onClick={handleSubmit}
+                  isLoading={isEvaluating} // Use isEvaluating for submission button
+                  leftIcon={<FaCheck />}
+                >
+                  Submit Solution
+                </Button>
+              </HStack>
               
-              {/* Input, Output, and Run Button Area Added/Modified for Sprint 3 */}
-              <VStack spacing={3} align="stretch" mt={4}>
-                <Text fontWeight="bold">Standard Input (stdin):</Text>
-                <Textarea
-                  placeholder="Enter input for your code here (optional)"
-                  value={stdin}
-                  onChange={(e) => setStdin(e.target.value)}
-                  fontFamily="monospace"
-                  bg="white"
-                  isDisabled={isRunningCode || isSubmitting}
-                  rows={3}
-                />
-                <HStack spacing={4} justify="flex-end" width="100%">
-                  <Button
-                    leftIcon={<FaPlay />}
-                    colorScheme="teal"
-                    onClick={handleRunCode}
-                    isLoading={isRunningCode}
-                    loadingText="Running..."
-                    isDisabled={isSubmitting || !code.trim()} // Disable if submitting or code is empty
-                  >
-                    Run Code
-                  </Button>
-                  <Button
-                    leftIcon={<FaPlay />}
-                    colorScheme="blue"
-                    variant="outline"
-                    onClick={runTests} // Existing Run Tests button
-                    isDisabled={isRunningCode || isSubmitting}
-                  >
-                    Run Tests (Local)
-                  </Button>
-                  <Button
-                    leftIcon={<FaCode />}
-                    colorScheme="purple"
-                    variant="outline"
-                    onClick={handleRequestHint}
-                    isDisabled={isRunningCode || isSubmitting}
-                  >
-                    Request Hint
-                  </Button>
-                  <Button
-                    leftIcon={<FaCheck />}
-                    colorScheme="green"
-                    isLoading={isSubmitting}
-                    onClick={handleSubmit}
-                    isDisabled={isRunningCode || !code.trim()} // Disable if running or code is empty
-                  >
-                    Submit Solution
-                  </Button>
-                </HStack>
-                <VStack spacing={2} align="stretch" mt={2}>
-                  <Text fontWeight="bold">Standard Output (stdout):</Text>
-                  <Box as="pre" p={3} bg="gray.100" borderRadius="md" minH="50px" whiteSpace="pre-wrap" fontFamily="monospace" overflowX="auto">
-                    {stdout || (isRunningCode ? 'Executing...' : 'Output will appear here...')}
-                  </Box>
-                  <Text fontWeight="bold">Standard Error (stderr):</Text>
-                  <Box as="pre" p={3} bg={stderr ? "red.50" : "gray.100"} color={stderr ? "red.700" : "inherit"} borderRadius="md" minH="50px" whiteSpace="pre-wrap" fontFamily="monospace" overflowX="auto">
-                    {stderr || (isRunningCode ? 'Executing...' : 'Errors will appear here...')}
-                  </Box>
-                </VStack>
-              </VStack>
+              {/* Input/Output for Run Code (Sprint 3) */}
+              <Heading size="sm" mt={4}>Custom Input (for Run Code)</Heading>
+              <Textarea 
+                placeholder="Enter standard input for your code when using 'Run Code'"
+                value={stdin}
+                onChange={(e) => setStdin(e.target.value)}
+                fontFamily="monospace"
+                rows={3}
+              />
+              <HStack spacing={4} align="stretch">
+                <Box flex={1}>
+                  <Heading size="sm">STDOUT</Heading>
+                  <Textarea 
+                    value={stdout} 
+                    isReadOnly 
+                    placeholder="Standard output will appear here..." 
+                    bg="gray.50"
+                    fontFamily="monospace"
+                    rows={5}
+                  />
+                </Box>
+                <Box flex={1}>
+                  <Heading size="sm">STDERR</Heading>
+                  <Textarea 
+                    value={stderr} 
+                    isReadOnly 
+                    placeholder="Standard error will appear here..." 
+                    bg="gray.50"
+                    color="red.500"
+                    fontFamily="monospace"
+                    rows={5}
+                  />
+                </Box>
+              </HStack>
             </VStack>
           </TabPanel>
           
-          {/* Results Tab */}
+          {/* Results Tab (Sprint 4) */}
           {evaluationResult && (
             <TabPanel>
-              <VStack align="stretch" spacing={4}>
-                {/* Overall Summary */}
+              <VStack spacing={4} align="stretch">
+                {/* MODIFICATION START: Display submission error prominently if it exists */}
+                {evaluationResult.status === 'error' && evaluationResult.error_message && (
+                  <Alert status="error" borderRadius="md">
+                    <AlertIcon />
+                    <VStack align="start" spacing={0}>
+                      <Text fontWeight="bold">Submission Error:</Text>
+                      <Text whiteSpace="pre-wrap">{evaluationResult.error_message}</Text>
+                    </VStack>
+                  </Alert>
+                )}
+                {/* MODIFICATION END */}
+
+                <Heading size="md">Evaluation Results</Heading>
+                
+                {/* Overall Summary - using overall_summary from the API response */}
                 {evaluationResult.overall_summary && (
-                  <Box>
-                    <Heading size="sm" mb={2}>Overall Results</Heading>
-                    <Alert
-                      status={evaluationResult.overall_summary.all_tests_passed ? 'success' : (evaluationResult.overall_summary.pass_count > 0 ? 'warning' : 'error')}
-                      borderRadius="md"
-                    >
-                      <AlertIcon />
-                      {evaluationResult.overall_summary.all_tests_passed
-                        ? 'All test cases passed!'
-                        : `${evaluationResult.overall_summary.pass_count} out of ${evaluationResult.overall_summary.total_tests} test cases passed.`}
-                    </Alert>
+                   <Box p={4} borderWidth="1px" borderRadius="md" bg={evaluationResult.overall_summary.all_tests_passed ? "green.50" : "red.50"}>
+                    <Heading size="sm" mb={2}>Overall Summary</Heading>
+                    <HStack justifyContent="space-around">
+                      <Text>Status: <Badge colorScheme={evaluationResult.overall_summary.all_tests_passed ? "green" : "red"}>
+                        {evaluationResult.overall_summary.all_tests_passed ? "All Tests Passed" : "Some Tests Failed"}
+                      </Badge></Text>
+                      <Text>Passed: {evaluationResult.overall_summary.pass_count || 0}</Text>
+                      <Text>Failed: {evaluationResult.overall_summary.fail_count || ((evaluationResult.overall_summary.total_tests || 0) - (evaluationResult.overall_summary.pass_count || 0))}</Text>
+                      <Text>Total: {evaluationResult.overall_summary.total_tests || 0}</Text>
+                    </HStack>
                   </Box>
                 )}
-                
-                {/* Individual Test Case Results */}
-                {evaluationResult.test_case_results && evaluationResult.test_case_results.length > 0 && (
-                  <Box>
-                    <Heading size="sm" mb={2}>Detailed Test Case Results</Heading>
-                    <Accordion allowMultiple defaultIndex={evaluationResult.test_case_results.map((_, i) => i)}>
-                      {evaluationResult.test_case_results.map((tc_result, index) => (
-                        <AccordionItem key={index} isDisabled={tc_result.is_hidden && !tc_result.passed}> {/* Keep hidden failed tests closed */}
+
+                {/* Detailed Test Case Results */}
+                {/* Check if test_case_results exists and is an array */}
+                {evaluationResult.execution_results && evaluationResult.execution_results.detailed_results && Array.isArray(evaluationResult.execution_results.detailed_results.test_results) && evaluationResult.execution_results.detailed_results.test_results.length > 0 && (
+                  <>
+                    <Heading size="sm" mt={4}>Detailed Test Cases</Heading>
+                    {/* Open failing tests by default */}
+                    <Accordion allowMultiple defaultIndex={evaluationResult.execution_results.detailed_results.test_results.reduce((acc, tc, index) => tc.passed === false ? [...acc, index] : acc, [])}>
+                      {evaluationResult.execution_results.detailed_results.test_results.map((tc_result, index) => (
+                        <AccordionItem key={index}>
                           <h2>
                             <AccordionButton>
-                              <HStack flex="1" textAlign="left">
-                                <Badge colorScheme={tc_result.passed ? 'green' : 'red'}>
-                                  {tc_result.passed ? 'PASS' : 'FAIL'}
+                              <HStack flex="1" justifyContent="space-between">
+                                <Text>Test Case {tc_result.test_case_id || index + 1}</Text>
+                                <Badge colorScheme={tc_result.passed ? "green" : "red"}>
+                                  {tc_result.passed ? "Passed" : "Failed"}
                                 </Badge>
-                                <Text>Test Case {tc_result.test_case_id !== undefined ? tc_result.test_case_id : index + 1}</Text>
-                                {tc_result.name && <Text fontSize="sm" color="gray.500">({tc_result.name})</Text>}
-                                {tc_result.is_hidden && <Badge colorScheme="purple" ml={2}>Hidden</Badge>}
                               </HStack>
                               <AccordionIcon />
                             </AccordionButton>
                           </h2>
                           <AccordionPanel pb={4}>
-                            <VStack align="stretch" spacing={3}>
-                              {(!tc_result.is_hidden || tc_result.error) && (
-                                <>
-                                  <Box>
-                                    <Text fontWeight="bold">Input:</Text>
-                                    <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.input === 'object' ? JSON.stringify(tc_result.input, null, 2) : String(tc_result.input)}</Text>
-                                  </Box>
-                                  <Box>
-                                    <Text fontWeight="bold">Expected Output:</Text>
-                                    <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.expected_output === 'object' ? JSON.stringify(tc_result.expected_output, null, 2) : String(tc_result.expected_output)}</Text>
-                                  </Box>
-                                </>
-                              )}
+                            <VStack align="stretch" spacing={2}>
+                              <Box>
+                                <Text fontWeight="bold">Input:</Text>
+                                <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
+                                  {typeof tc_result.input === 'object' ? JSON.stringify(tc_result.input, null, 2) : String(tc_result.input)}
+                                </Text>
+                              </Box>
+                              <Box>
+                                <Text fontWeight="bold">Expected Output:</Text>
+                                <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
+                                  {typeof tc_result.expected_output === 'object' ? JSON.stringify(tc_result.expected_output, null, 2) : String(tc_result.expected_output)}
+                                </Text>
+                              </Box>
                               <Box>
                                 <Text fontWeight="bold">Actual Output:</Text>
-                                <Text as="pre" p={2} bg={tc_result.passed ? "green.50" : "red.50"} borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{typeof tc_result.actual_output === 'object' ? JSON.stringify(tc_result.actual_output, null, 2) : String(tc_result.actual_output)}</Text>
+                                <Text as="pre" p={2} bg={tc_result.passed ? "green.50" : "red.50"} borderRadius="md" whiteSpace="pre-wrap">
+                                  {typeof tc_result.output === 'object' ? JSON.stringify(tc_result.output, null, 2) : String(tc_result.output)}
+                                </Text>
                               </Box>
+                              {tc_result.error && (
+                                <Alert status="error" mt={2}>
+                                  <AlertIcon />
+                                  <VStack align="start" spacing={0}>
+                                    <Text fontWeight="bold">Error:</Text>
+                                    <Text whiteSpace="pre-wrap">{tc_result.error}</Text>
+                                  </VStack>
+                                </Alert>
+                              )}
+                              {/* Display stdout/stderr from test case if present */}
                               {tc_result.stdout && (
                                 <Box>
-                                  <Text fontWeight="bold">Stdout:</Text>
-                                  <Text as="pre" p={2} bg="gray.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.stdout}</Text>
+                                  <Text fontWeight="bold">STDOUT:</Text>
+                                  <Text as="pre" p={2} bg="gray.100" borderRadius="md" whiteSpace="pre-wrap" maxHeight="100px" overflowY="auto">
+                                    {tc_result.stdout}
+                                  </Text>
                                 </Box>
                               )}
                               {tc_result.stderr && (
                                 <Box>
-                                  <Text fontWeight="bold">Stderr:</Text>
-                                  <Text as="pre" p={2} bg="red.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.stderr}</Text>
-                                </Box>
-                              )}
-                              {tc_result.error && (
-                                <Box>
-                                  <Text fontWeight="bold">Error Message:</Text>
-                                  <Text as="pre" p={2} bg="red.100" borderRadius="md" whiteSpace="pre-wrap" fontFamily="monospace">{tc_result.error}</Text>
+                                  <Text fontWeight="bold">STDERR:</Text>
+                                  <Text as="pre" p={2} bg="red.50" color="red.700" borderRadius="md" whiteSpace="pre-wrap" maxHeight="100px" overflowY="auto">
+                                    {tc_result.stderr}
+                                  </Text>
                                 </Box>
                               )}
                             </VStack>
@@ -732,54 +733,22 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                         </AccordionItem>
                       ))}
                     </Accordion>
-                  </Box>
+                  </>
                 )}
-               
-                {/* Qualitative Feedback from AI */}
-                {evaluationResult.feedback_summary && (
-                   <Box>
-                     <Heading size="sm" mb={2}>Feedback Summary</Heading>
-                     <Text whiteSpace="pre-wrap">{evaluationResult.feedback_summary}</Text>
-                   </Box>
-                )}
-                {evaluationResult.qualitative_feedback && (
-                  <Box>
-                    <Heading size="sm" mb={2}>Detailed Feedback</Heading>
-                    {evaluationResult.qualitative_feedback.strengths && evaluationResult.qualitative_feedback.strengths.length > 0 && (
-                      <Box mb={2}>
-                        <Text fontWeight="bold">Strengths:</Text>
-                        <VStack align="stretch" spacing={1} pl={4}>
-                          {evaluationResult.qualitative_feedback.strengths.map((item, i) => (<Text key={i}>• {item}</Text>))}
-                        </VStack>
-                      </Box>
+                
+                {/* Feedback Section */}
+                {evaluationResult.feedback && Object.keys(evaluationResult.feedback).length > 0 && (
+                  <Box mt={4} p={4} borderWidth="1px" borderRadius="md" bg="blue.50">
+                    <Heading size="sm" mb={2}>Feedback</Heading>
+                    {typeof evaluationResult.feedback === 'string' ? (
+                      <Text whiteSpace="pre-wrap">{evaluationResult.feedback}</Text>
+                    ) : (
+                      <VStack align="start">
+                        {Object.entries(evaluationResult.feedback).map(([key, value]) => (
+                          <Text key={key}><strong>{key.charAt(0).toUpperCase() + key.slice(1)}:</strong> {String(value)}</Text>
+                        ))}
+                      </VStack>
                     )}
-                    {evaluationResult.qualitative_feedback.areas_for_improvement && evaluationResult.qualitative_feedback.areas_for_improvement.length > 0 && (
-                      <Box mb={2}>
-                        <Text fontWeight="bold">Areas for Improvement:</Text>
-                        <VStack align="stretch" spacing={1} pl={4}>
-                          {evaluationResult.qualitative_feedback.areas_for_improvement.map((item, i) => (<Text key={i}>• {item}</Text>))}
-                        </VStack>
-                      </Box>
-                    )}
-                    {evaluationResult.qualitative_feedback.suggestions && evaluationResult.qualitative_feedback.suggestions.length > 0 && (
-                      <Box>
-                        <Text fontWeight="bold">Suggestions:</Text>
-                        <VStack align="stretch" spacing={1} pl={4}>
-                          {evaluationResult.qualitative_feedback.suggestions.map((item, i) => (<Text key={i}>• {item}</Text>))}
-                        </VStack>
-                      </Box>
-                    )}
-                  </Box>
-                )}
-
-                {/* Raw Error Message if submission process itself failed */}
-                {evaluationResult.status === 'error' && evaluationResult.error_message && !evaluationResult.test_case_results?.length && (
-                  <Box>
-                      <Heading size="sm" mb={2}>Submission Error</Heading>
-                      <Alert status="error" borderRadius="md">
-                          <AlertIcon />
-                          {evaluationResult.error_message}
-                      </Alert>
                   </Box>
                 )}
               </VStack>

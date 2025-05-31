@@ -128,9 +128,11 @@ async def generate_coding_challenge_from_jd(
             result["challenge_id"] = challenge_id
             result["id"] = challenge_id  # For compatibility
             
-            # Create suitable starter code from the reference solution
-            if "starter_code" not in result:
-                result["starter_code"] = _generate_starter_code(result["reference_solution"])
+            # Generate starter code from the reference solution
+            if challenge.reference_solution:
+                challenge.starter_code = _generate_starter_code(challenge.reference_solution).strip()
+            else:
+                challenge.starter_code = "# TODO: Write your Python solution here\n".strip()
             
             # Add language, defaults to Python
             if "language" not in result:
@@ -168,7 +170,7 @@ async def generate_coding_challenge_from_jd(
         return generate_fallback_challenge(skills_required, difficulty_level, f"Outer error: {e}")
 
 @tool
-def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidate_code: str, skill_level: str = "intermediate") -> Dict:
+async def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidate_code: str, skill_level: str = "intermediate") -> Dict:
     """
     Submit a candidate's code solution for a generated coding challenge.
     
@@ -225,13 +227,24 @@ def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidat
         # Execute the code using our secure executor
         language = challenge_data.get("language", "python").lower()
         logger.info(f"Executing candidate code in language: {language}")
-        execution_results = execute_candidate_code(
-            language=language,
-            code=candidate_code,
-            test_cases=test_cases
-        )
         
-        logger.info(f"Execution results: {execution_results.get('status')}, passed {execution_results.get('pass_count', 0)}/{execution_results.get('total_tests', 0)} tests")
+        # Prepare arguments for the tool
+        tool_input_args = {
+            "language": language,
+            "code": candidate_code,
+            "test_cases": test_cases
+        }
+        # Call the tool with a single dictionary argument
+        execution_results = await execute_candidate_code.ainvoke(tool_input_args)
+        
+        # MODIFIED: Log full execution_results if status is error
+        if execution_results.get('status') == 'error':
+            logger.error(f"Full execution_results on error: {execution_results}")
+        else:
+            logger.info(f"Execution results: {execution_results.get('status')}, passed {execution_results.get('pass_count', 0)}/{execution_results.get('total_tests', 0)} tests")
+        
+        # MODIFIED: Log candidate_code before feedback generation
+        logger.info(f"Candidate code before feedback generation:\n{candidate_code}")
         
         # Generate detailed feedback
         feedback = CodeFeedbackGenerator.generate_feedback(

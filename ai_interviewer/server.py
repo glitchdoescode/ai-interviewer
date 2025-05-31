@@ -10,6 +10,7 @@ import logging
 import base64
 import re
 import wave # Add this import
+import json # Add this import
 from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
 import inspect # <--- Import inspect
@@ -38,7 +39,8 @@ from langgraph.types import interrupt, Command
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
-from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd
+from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd, submit_code_for_generated_challenge # MODIFIED
+from ai_interviewer.tools.docker_sandbox import DockerSandbox # ADDED
 
 # Auth imports
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -87,6 +89,15 @@ async def lifespan(app_instance: FastAPI): # app_instance is the conventional na
         local_interviewer = await setup_ai_interviewer_async(app_instance.state.memory_manager) # Pass memory_manager if needed
         app_instance.state.interviewer = local_interviewer # Store in app state
         logger.info(f"Lifespan: interviewer initialized and stored in app.state: {app_instance.state.interviewer}")
+
+        # Initialize DockerSandbox
+        logger.info("Lifespan: Attempting to setup DockerSandbox...")
+        try:
+            app_instance.state.docker_sandbox = DockerSandbox()
+            logger.info(f"Lifespan: DockerSandbox initialized and stored in app.state: {app_instance.state.docker_sandbox}")
+        except RuntimeError as e:
+            logger.error(f"Lifespan: Failed to initialize DockerSandbox: {e}. Code execution will not work.")
+            app_instance.state.docker_sandbox = None
 
         logger.info("Lifespan: Startup phase completed successfully.")
         yield
@@ -338,6 +349,7 @@ class MessageResponse(BaseModel):
     interview_stage: Optional[str] = Field(None, description="Current stage of the interview")
     job_role: Optional[str] = Field(None, description="Job role for the interview")
     requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
+    coding_challenge_detail: Optional[Dict[str, Any]] = Field(None, description="Structured details of the coding challenge, if applicable") # ADDED
     
     class Config:
         schema_extra = {
@@ -346,7 +358,15 @@ class MessageResponse(BaseModel):
                 "session_id": "sess-abc123",
                 "interview_stage": "introduction",
                 "job_role": "Frontend Developer",
-                "requires_coding": True
+                "requires_coding": True,
+                "coding_challenge_detail": {
+                    "challenge_id": "coding-challenge-123",
+                    "language": "JavaScript",
+                    "code": "function findMostFrequent(lst) { return max(set(lst), key=lst.count); }",
+                    "user_id": "user-123",
+                    "session_id": "sess-abc123",
+                    "timestamp": "2023-07-15T14:30:00.000Z"
+                }
             }
         }
 
@@ -609,13 +629,14 @@ async def start_interview(
             if session and "metadata" in session:
                 metadata = session["metadata"] # This metadata might be slightly stale regarding stage
         
-        logger.info(f"[SERVER] start_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}'") # Added log
+        logger.info(f"[SERVER] start_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}', coding_challenge_detail_present={response_data.get('coding_challenge_detail') is not None}") # Added log
         return MessageResponse(
             response=response_data["ai_response"],
             session_id=response_data["session_id"],
             interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
             job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
-            requires_coding=metadata.get("requires_coding")
+            requires_coding=metadata.get("requires_coding"),
+            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
         )
     except Exception as e:
         logger.error(f"Error starting interview: {e}")
@@ -689,13 +710,14 @@ async def continue_interview(
             if session and "metadata" in session:
                 metadata = session["metadata"] # This metadata might be slightly stale regarding stage
         
-        logger.info(f"[SERVER] continue_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}'") # Added log
+        logger.info(f"[SERVER] continue_interview RETURN: response='{response_data['ai_response'][:50]}...', session_id='{response_data['session_id']}', interview_stage='{response_data.get('interview_stage')}', job_role='{metadata.get('job_role')}', requires_coding='{metadata.get('requires_coding')}', coding_challenge_detail_present={response_data.get('coding_challenge_detail') is not None}") # Added log
         return MessageResponse(
             response=response_data["ai_response"],
             session_id=response_data["session_id"],
             interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
             job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
-            requires_coding=metadata.get("requires_coding")
+            requires_coding=metadata.get("requires_coding"),
+            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -1226,6 +1248,23 @@ class CodingSubmissionResponse(BaseModel):
     execution_results: dict
     feedback: dict
     evaluation: dict
+    overall_summary: Optional[Dict[str, Any]] = Field(None, description="Overall summary of test case results") # ADDED
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "status": "success",
+                "challenge_id": "coding-challenge-123",
+                "execution_results": {"test_results": {"passed": 5, "failed": 1, "total": 6}},
+                "feedback": {"message": "Good solution that handles most cases correctly."},
+                "evaluation": {"message": "Evaluation passed."},
+                "overall_summary": {
+                    "passed": True,
+                    "test_results": {"passed": 5, "failed": 1, "total": 6},
+                    "feedback": "Good solution that handles most cases correctly."
+                }
+            }
+        }
 
 class CodingHintResponse(BaseModel):
     status: str
@@ -1273,27 +1312,159 @@ async def submit_code_solution(
     submission: CodingSubmissionRequest,
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Submit a code solution for a coding challenge.
-    For Sprint 1, this will only log the submission.
-    """
     logger.info(
-        f"SPRINT 1: Received code submission: "
-        f"Challenge ID: {submission.challenge_id}, "
-        f"Language: {submission.language}, "
-        f"User ID: {submission.user_id}, "
-        f"Session ID: {submission.session_id}, "
-        f"Code: {submission.code[:100]}..." # Log first 100 chars of code
+        f"Received code submission: Challenge ID: {submission.challenge_id}, "
+        f"Language: {submission.language}, User ID: {submission.user_id or current_user.id}, "
+        f"Session ID: {submission.session_id}, Code: {submission.code[:100]}..."
     )
 
-    # For Sprint 1, return a dummy response
-    return CodingSubmissionResponse(
-        status="SPRINT_1_LOGGED",
-        challenge_id=submission.challenge_id,
-        execution_results={"message": "Submission logged for Sprint 1. No execution."},
-        feedback={"message": "No feedback in Sprint 1."},
-        evaluation={"message": "No evaluation in Sprint 1."}
-    )
+    # Get the AIInterviewer instance from app state
+    interviewer_instance = getattr(request.app.state, 'interviewer', None)
+
+    if not interviewer_instance or not interviewer_instance.session_manager: # MODIFIED
+        raise HTTPException(status_code=503, detail="Session management or interviewer not available")
+
+    # Retrieve session metadata
+    session_data = interviewer_instance.session_manager.get_session(submission.session_id) # MODIFIED
+    if not session_data or "metadata" not in session_data:
+        logger.error(f"Session {submission.session_id} not found or has no metadata.")
+        raise HTTPException(status_code=404, detail="Session not found or invalid.")
+    
+    session_metadata = session_data["metadata"]
+    
+    # --- ADDED LOGS FOR FULL METADATA INSPECTION ---
+    logger.info(f"[SUBMIT_CODE] Full session_metadata for session {submission.session_id}: {session_metadata}")
+    # --- END ADDED LOGS ---
+    
+    # --- ADDED LOG ---
+    raw_challenge_details_from_session = session_metadata.get("current_coding_challenge_details_for_submission")
+    logger.info(f"[SUBMIT_CODE] Raw 'current_coding_challenge_details_for_submission' from session {submission.session_id}: {raw_challenge_details_from_session}")
+    # --- END ADDED LOG ---
+
+    # ADDED: Strip the submitted code
+    candidate_submitted_code = submission.code.strip()
+    logger.info(f"[SUBMIT_CODE] Original submitted code length: {len(submission.code)}, Stripped code length: {len(candidate_submitted_code)}")
+    if len(submission.code) != len(candidate_submitted_code):
+        logger.info(f"[SUBMIT_CODE] Whitespace was stripped. First 50 chars of stripped code: {candidate_submitted_code[:50]}")
+
+    challenge_data = None # Initialize challenge_data
+
+    # Validate and retrieve challenge_data from session_metadata
+    # challenge_data_from_session = session_metadata.get("current_coding_challenge_details_for_submission") # Original line
+    challenge_data_from_session = raw_challenge_details_from_session # Use the already fetched value
+
+    if not isinstance(challenge_data_from_session, (dict, list)): # Check if it's a dict or list
+        logger.warning(f"'current_coding_challenge_details_for_submission' in session {submission.session_id} is not a dict or list. Type: {type(challenge_data_from_session)}")
+        raise HTTPException(status_code=400, detail="Invalid format for 'current_coding_challenge_details_for_submission' in session metadata")
+
+    try:
+        # Assume skill_level might be part of session or a default
+        # For now, using a default. This should ideally come from user context or session.
+        skill_level = "intermediate" 
+        if submission.session_id and interviewer_instance and interviewer_instance.session_manager:
+            session_data = interviewer_instance.session_manager.get_session(submission.session_id)
+            if session_data and session_data.get("metadata"):
+                skill_level = session_data["metadata"].get("seniority_level", "intermediate") # Use seniority as proxy
+                skill_level = skill_level.lower() if skill_level else "intermediate"
+                if skill_level not in ["beginner", "intermediate", "advanced"]:
+                    skill_level = "intermediate" # Default if not one of the expected
+
+        tool_input_args = {
+            "challenge_data": challenge_data_from_session,
+            "candidate_code": candidate_submitted_code, # MODIFIED to use stripped code
+            "skill_level": skill_level
+        }
+        evaluation_results_dict = await submit_code_for_generated_challenge.ainvoke(tool_input_args) # MODIFIED to use .ainvoke()
+
+        # Ensure the response matches the CodingSubmissionResponse model
+        # The tool's output structure is already very close.
+        # CodingSubmissionResponse: status, challenge_id, execution_results, feedback, evaluation
+        # Tool output: status, challenge_id, execution_results, feedback, evaluation
+
+        if evaluation_results_dict.get("status") == "error":
+             # If the tool itself returned an error (e.g. processing issue)
+            logger.error(f"Tool 'submit_code_for_generated_challenge' returned an error: {evaluation_results_dict.get('message')}")
+            # Return a 500 or a more specific error based on tool output
+            return CodingSubmissionResponse(
+                status="ERROR_TOOL_FAILURE",
+                challenge_id=submission.challenge_id,
+                execution_results={"message": evaluation_results_dict.get('message', "Tool execution failed")},
+                feedback={"message": "Feedback generation failed due to tool error."},
+                evaluation={"message": "Evaluation failed due to tool error."}
+            )
+
+        # Store code snapshot for submission event
+        if submission.session_id and interviewer_instance and interviewer_instance.session_manager:
+            session_data = interviewer_instance.session_manager.get_session(submission.session_id)
+            if session_data:
+                # Verify user ownership
+                if session_data.get("user_id") != (submission.user_id or current_user.id):
+                    logger.warning(f"User ID mismatch for session {submission.session_id}. Submission user: {submission.user_id or current_user.id}, Session owner: {session_data.get('user_id')}")
+                    # Decide if this should be an error or just a warning
+                
+                metadata = session_data.get("metadata", {})
+                code_snapshots = metadata.get("code_snapshots", [])
+                
+                snapshot = {
+                    "challenge_id": submission.challenge_id,
+                    "code": candidate_submitted_code, # MODIFIED to store stripped code
+                    "timestamp": submission.timestamp or datetime.now().isoformat(),
+                    "event_type": "submission",
+                    "execution_results": evaluation_results_dict.get("execution_results"),
+                    # "error_message": None, # No direct error message here, it's in execution_results
+                    # "hints_provided": None 
+                }
+                code_snapshots.append(snapshot)
+                metadata["code_snapshots"] = code_snapshots
+                interviewer_instance.session_manager.update_session_metadata(submission.session_id, metadata)
+                logger.info(f"Stored submission snapshot for session {submission.session_id}, challenge {submission.challenge_id}")
+
+        # Construct overall_summary for the frontend
+        overall_summary_data = None
+        if "execution_results" in evaluation_results_dict and isinstance(evaluation_results_dict["execution_results"], dict):
+            exec_res = evaluation_results_dict["execution_results"]
+            overall_summary_data = {
+                "pass_count": exec_res.get("pass_count", 0),
+                "fail_count": exec_res.get("fail_count", (exec_res.get("total_tests", 0) - exec_res.get("pass_count", 0))),
+                "total_tests": exec_res.get("total_tests", 0),
+                "status_text": exec_res.get("status", "unknown").upper(), # Initialize status_text here
+                "error_message": None,
+                "all_tests_passed": False # Initialize all_tests_passed
+            }
+            
+            # If the primary status is 'error', capture the error message
+            if overall_summary_data["status_text"] == "ERROR":
+                overall_summary_data["error_message"] = evaluation_results_dict["execution_results"].get("errors", "Unknown execution error")
+            
+            # Refine status_text based on counts if specific status isn't "ERROR"
+            if overall_summary_data["status_text"] != "ERROR":
+                if overall_summary_data["pass_count"] == overall_summary_data["total_tests"] and overall_summary_data["total_tests"] > 0:
+                    overall_summary_data["status_text"] = "ALL TESTS PASSED"
+                    overall_summary_data["all_tests_passed"] = True # Set all_tests_passed to True
+                elif overall_summary_data["pass_count"] > 0 and overall_summary_data["pass_count"] < overall_summary_data["total_tests"]:
+                    overall_summary_data["status_text"] = "SOME TESTS FAILED"
+                elif overall_summary_data["total_tests"] > 0 and overall_summary_data["pass_count"] == 0:
+                    overall_summary_data["status_text"] = "ALL TESTS FAILED"
+                elif overall_summary_data["total_tests"] == 0:
+                     overall_summary_data["status_text"] = "NO TESTS EXECUTED"
+
+        # --- ADDED DETAILED LOGGING ---
+        logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] evaluation_results_dict: {json.dumps(evaluation_results_dict, indent=2)}")
+        logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] Constructed overall_summary_data: {json.dumps(overall_summary_data, indent=2)}")
+        # --- END ADDED DETAILED LOGGING ---
+
+        return CodingSubmissionResponse(
+            status=evaluation_results_dict.get("status", "unknown"),
+            challenge_id=evaluation_results_dict.get("challenge_id", submission.challenge_id),
+            execution_results=evaluation_results_dict.get("execution_results", {}),
+            feedback=evaluation_results_dict.get("feedback", {}),
+            evaluation=evaluation_results_dict.get("evaluation", {}),
+            overall_summary=overall_summary_data
+        )
+
+    except Exception as e:
+        logger.error(f"Error in submit_code_solution endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing submission: {str(e)}")
 
 @app.post(
     "/api/coding/hint",
@@ -1342,8 +1513,8 @@ async def get_coding_hint(
         )
         
         # If session ID is provided, store code snapshot for tracking hint requests
-        if hint_request.session_id and interviewer.session_manager: # user_id_from_token is now used
-            session = interviewer.session_manager.get_session(hint_request.session_id)
+        if hint_request.session_id and interviewer_instance and interviewer_instance.session_manager: # user_id_from_token is now used
+            session = interviewer_instance.session_manager.get_session(hint_request.session_id)
             if session:
                 # Verify session ownership
                 if session.get("user_id") != user_id_from_token:
@@ -1364,7 +1535,7 @@ async def get_coding_hint(
                 
                 # Update session
                 session["metadata"] = metadata
-                interviewer.session_manager.update_session(hint_request.session_id, session)
+                interviewer_instance.session_manager.update_session(hint_request.session_id, session)
                 
                 # Log the hint request event
                 logger.info(f"Stored hint request snapshot for session {hint_request.session_id}, challenge {hint_request.challenge_id}")
@@ -1489,7 +1660,8 @@ async def continue_after_challenge(
             session_id=current_session_id,
             interview_stage=current_interview_stage, # Use stage from run_interview
             job_role=updated_metadata.get("job_role"), # Keep these from potentially updated session metadata
-            requires_coding=updated_metadata.get("requires_coding")
+            requires_coding=updated_metadata.get("requires_coding"),
+            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -1661,47 +1833,141 @@ async def get_code_snapshots(
     challenge_id: Optional[str] = None,
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Get code evolution snapshots for a session.
+    if not interviewer_instance or not interviewer_instance.session_manager:
+        raise HTTPException(status_code=503, detail="Session management not available")
     
-    This endpoint retrieves the history of code submissions and hint requests
-    for a session, showing how the candidate's code evolved over time.
-    The authenticated user's ID will be verified against the session.
+    # Verify user owns the session or is admin
+    session_data = interviewer_instance.session_manager.get_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    Args:
-        session_id: Session ID to get snapshots for
-        challenge_id: Optional challenge ID to filter by
-        current_user: The authenticated user.
-        
-    Returns:
-        List of code snapshots with metadata, sorted by timestamp
-    """
-    try:
-        # Verify session exists
-        if not interviewer.session_manager:
-            raise HTTPException(status_code=500, detail="Session manager not available")
-            
-        session = interviewer.session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-            
-        # Verify it matches the session's user_id
-        if session.get("user_id") != current_user.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner or user lacks permission.")
-            
-        # Get code snapshots from AIInterviewer
-        snapshots = interviewer.get_code_snapshots(session_id, challenge_id)
-        
-        # Return snapshots
-        return snapshots
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving code snapshots: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Ensure that current_user.id matches session_data.get('user_id') or current_user.role is admin
+    # This check depends on how user_id is stored in session_data and User model structure
+    # Assuming session_data['user_id'] and current_user.id are comparable
+    if not (str(session_data.get('user_id')) == str(current_user.id) or current_user.role == UserRole.ADMIN):
+        logger.warning(f"Unauthorized attempt to access snapshots for session {session_id} by user {current_user.id}")
+        raise HTTPException(status_code=403, detail="Not authorized to access these snapshots")
 
-# Context management related models
+    try:
+        snapshots = interviewer_instance.session_manager.get_code_snapshots(session_id, challenge_id)
+        return snapshots
+    except Exception as e:
+        logger.error(f"Error retrieving snapshots for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve snapshots: {str(e)}")
+
+# New Models for Run Code functionality
+class CodeRunRequest(BaseModel):
+    language: str = Field(..., description="Programming language (e.g., 'python', 'javascript')")
+    code: str = Field(..., description="Source code to execute")
+    input_str: Optional[str] = Field("", description="String to pass as standard input to the code")
+    user_id: Optional[str] = Field(None, description="User ID for logging or context")
+    session_id: Optional[str] = Field(None, description="Session ID for logging or context")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "language": "python",
+                "code": "print(input())",
+                "input_str": "Hello, Sandbox!",
+                "user_id": "user-123",
+                "session_id": "session-abc"
+            }
+        }
+
+class CodeRunResponse(BaseModel):
+    status: str = Field(..., description="Execution status (e.g., 'success', 'error')")
+    stdout: str = Field(..., description="Standard output from the code execution")
+    stderr: str = Field(..., description="Standard error from the code execution")
+    error_message: Optional[str] = Field(None, description="Specific error message if execution failed")
+    execution_time: Optional[float] = Field(None, description="Execution time in seconds, if available")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "status": "success",
+                "stdout": "Hello, Sandbox!",
+                "stderr": "",
+                "error_message": None,
+                "execution_time": 0.123
+            }
+        }
+# End of New Models for Run Code functionality
+
+@app.post(
+    "/api/coding/run",
+    response_model=CodeRunResponse,
+    responses={
+        200: {"description": "Successfully executed code"},
+        400: {"description": "Bad request - missing required fields or unsupported language", "model": ErrorResponse},
+        422: {"description": "Validation Error", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error or execution failed", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("20/minute")
+async def run_code_in_sandbox(
+    request: Request,
+    run_request: CodeRunRequest,
+    current_user: User = Depends(get_current_active_user)
+):
+    logger.info(f"Received request to run code in sandbox for language: {run_request.language}, user: {run_request.user_id or current_user.id}")
+    
+    # Get DockerSandbox instance from app state
+    sandbox = getattr(request.app.state, 'docker_sandbox', None)
+    if not sandbox:
+        logger.error("DockerSandbox not available in app state. Cannot execute code.")
+        raise HTTPException(status_code=500, detail="Code execution sandbox is not configured or unavailable.")
+
+    try:
+        # Ensure that language is supported by the sandbox
+        supported_languages = ["python", "javascript", "js"] # Can be expanded
+        if run_request.language.lower() not in supported_languages:
+            raise HTTPException(status_code=400, detail=f"Unsupported language: {run_request.language}. Supported: {', '.join(supported_languages)}")
+
+        # Execute code using the sandbox
+        execution_result = await sandbox.execute_code_with_stdin(
+            language=run_request.language,
+            code=run_request.code,
+            input_str=run_request.input_str or "" # Ensure input_str is not None
+        )
+        
+        logger.info(f"Code execution result: {execution_result.get('status')}, stdout: {execution_result.get('stdout', '')[:100]}..., stderr: {execution_result.get('stderr', '')[:100]}...")
+
+        # Determine status code based on execution result
+        if execution_result.get("status") == "success":
+            return CodeRunResponse(
+                status="success",
+                stdout=execution_result.get("stdout", ""),
+                stderr=execution_result.get("stderr", ""),
+                error_message=None, # No error message for success
+                execution_time=execution_result.get("execution_time") 
+            )
+        else: # Covers "error" or any other non-success status
+            # For errors, FastAPI will return 500 if not caught by specific HTTPException
+            # We can customize the response more if needed
+            error_message = execution_result.get("error_message", "Unknown execution error")
+            
+            # If it's a timeout, return 408 (Request Timeout) or a custom error
+            if "timed out" in error_message.lower():
+                 raise HTTPException(status_code=408, detail=f"Execution timed out. {error_message}")
+
+            # For other errors, a 500 might be appropriate, or a 400 if it's due to bad code.
+            # Let's use 400 if there's stderr, implying a code issue, else 500.
+            status_code = 400 if execution_result.get("stderr") else 500
+            
+            # Raise HTTPException to ensure proper error propagation and logging by FastAPI
+            raise HTTPException(
+                status_code=status_code, 
+                detail=f"Code execution failed: {error_message}. STDOUT: {execution_result.get('stdout', '')[:200]} STDERR: {execution_result.get('stderr', '')[:200]}"
+            )
+
+    except HTTPException as http_exc: # Re-raise HTTPExceptions to let FastAPI handle them
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Unexpected error during code execution: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during code execution: {str(e)}")
+
 class ContextSettingsRequest(BaseModel):
     session_id: str = Field(..., description="Session ID to update settings for")
     max_messages: int = Field(20, description="Maximum number of messages to keep before summarization",
@@ -1771,7 +2037,7 @@ async def update_context_settings(
     """
     try:
         # Verify the session exists
-        session = interviewer.session_manager.get_session(settings.session_id)
+        session = interviewer_instance.session_manager.get_session(settings.session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {settings.session_id} not found")
         
@@ -1780,7 +2046,7 @@ async def update_context_settings(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
 
         # Configure context management settings
-        success = interviewer.session_manager.configure_context_management(
+        success = interviewer_instance.session_manager.configure_context_management(
             settings.session_id, 
             max_messages=settings.max_messages
         )
@@ -1827,7 +2093,7 @@ async def get_conversation_summary(
     """
     try:
         # Verify the session exists
-        session = interviewer.session_manager.get_session(session_id)
+        session = interviewer_instance.session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
         
@@ -1836,7 +2102,7 @@ async def get_conversation_summary(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not own this session.")
 
         # Get the current summary
-        summary = interviewer.session_manager.get_conversation_summary(session_id)
+        summary = interviewer_instance.session_manager.get_conversation_summary(session_id)
         
         return {
             "session_id": session_id,
@@ -1905,7 +2171,7 @@ async def force_summarize_conversation(
     """
     try:
         # Verify the session exists and belongs to the user
-        session = interviewer.session_manager.get_session(req_data.session_id)
+        session = interviewer_instance.session_manager.get_session(req_data.session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
         
@@ -1930,7 +2196,7 @@ async def force_summarize_conversation(
         messages_to_summarize = message_objects[:-messages_to_keep] if len(message_objects) > messages_to_keep else message_objects
         
         # Create the prompt
-        current_summary = interviewer.session_manager.get_conversation_summary(req_data.session_id) or ""
+        current_summary = interviewer_instance.session_manager.get_conversation_summary(req_data.session_id) or ""
         
         if current_summary:
             summary_prompt = [
@@ -1944,20 +2210,20 @@ async def force_summarize_conversation(
             ]
         
         # Generate summary
-        summary_response = interviewer.summarization_model.invoke(summary_prompt)
+        summary_response = interviewer_instance.summarization_model.invoke(summary_prompt)
         new_summary = summary_response.content if hasattr(summary_response, 'content') else ""
         
         # Update the session with the new summary and reduced message list
-        interviewer.session_manager.update_conversation_summary(req_data.session_id, new_summary)
+        interviewer_instance.session_manager.update_conversation_summary(req_data.session_id, new_summary)
         
         # Create a list of messages to keep - the most recent ones
         kept_messages = message_objects[-messages_to_keep:] if len(message_objects) > messages_to_keep else []
-        interviewer.session_manager.reduce_message_history(req_data.session_id, kept_messages)
+        interviewer_instance.session_manager.reduce_message_history(req_data.session_id, kept_messages)
         
         # Update message count in metadata
         metadata = session.get("metadata", {})
         metadata["message_count"] = len(kept_messages)
-        interviewer.session_manager.update_session_metadata(req_data.session_id, metadata)
+        interviewer_instance.session_manager.update_session_metadata(req_data.session_id, metadata)
         
         return {
             "success": True,
@@ -2037,10 +2303,10 @@ async def get_interview_insights(
     """
     try:
         # Verify session exists
-        if not interviewer.session_manager:
+        if not interviewer_instance or not interviewer_instance.session_manager:
             raise HTTPException(status_code=500, detail="Session manager not available")
             
-        session = interviewer.session_manager.get_session(session_id)
+        session = interviewer_instance.session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
             
@@ -2134,7 +2400,7 @@ async def extract_interview_insights(
     """
     try:
         # Verify the session exists and belongs to the user
-        session = interviewer.session_manager.get_session(req_data.session_id)
+        session = interviewer_instance.session_manager.get_session(req_data.session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {req_data.session_id} not found")
         
@@ -2145,7 +2411,7 @@ async def extract_interview_insights(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User ID does not match session owner")
         
         # Trigger insights extraction
-        insights = await interviewer.extract_and_update_insights(req_data.session_id)
+        insights = await interviewer_instance.extract_and_update_insights(req_data.session_id)
         
         if not insights:
             raise HTTPException(status_code=500, detail="Failed to extract insights")
@@ -2363,13 +2629,13 @@ async def search_memories(
                 detail="You can only search your own memories."
             )
 
-        if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
+        if not hasattr(interviewer_instance, 'memory_manager') or not interviewer_instance.memory_manager:
             raise HTTPException(
                 status_code=500,
                 detail="Memory management is not available on this server instance"
             )
         
-        memories = interviewer.memory_manager.search_memories(
+        memories = interviewer_instance.memory_manager.search_memories(
             query=query_data.query,
             user_id=query_data.user_id,
             max_results=query_data.max_results
@@ -2437,13 +2703,13 @@ async def get_candidate_profile(
                 detail="You can only access your own profile."
             )
 
-        if not hasattr(interviewer, 'memory_manager') or not interviewer.memory_manager:
+        if not hasattr(interviewer_instance, 'memory_manager') or not interviewer_instance.memory_manager:
             raise HTTPException(
                 status_code=500,
                 detail="Memory management is not available on this server instance"
             )
         
-        profile = interviewer.memory_manager.get_candidate_profile(user_id)
+        profile = interviewer_instance.memory_manager.get_candidate_profile(user_id)
         
         return {
             "user_id": user_id,

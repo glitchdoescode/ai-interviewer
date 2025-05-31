@@ -145,7 +145,6 @@ class DockerSandbox:
                     "name": container_name,
                     "detach": True,
                     "read_only": True,
-                    "auto_remove": True,
                 }
                 
                 # Run the container
@@ -235,7 +234,9 @@ class DockerSandbox:
             finally:
                 if container:
                     try:
-                        pass
+                        # Explicitly remove the container now that we are done with it.
+                        await asyncio.to_thread(container.remove, force=True)
+                        logger.debug(f"Successfully removed container {container_name}")
                     except DockerException as e:
                         logger.warning(f"Error during explicit container cleanup for {container_name}: {e}")
                         
@@ -303,7 +304,6 @@ class DockerSandbox:
                     "name": container_name,
                     "detach": True,
                     "read_only": True,
-                    "auto_remove": True,
                 }
 
                 # Run the container
@@ -388,7 +388,9 @@ class DockerSandbox:
             finally:
                 if container:
                     try:
-                        pass
+                        # Explicitly remove the container
+                        await asyncio.to_thread(container.remove, force=True)
+                        logger.debug(f"Successfully removed JS container {container_name}")
                     except DockerException as e:
                         logger.warning(f"Error during explicit container cleanup for {container_name}: {e}")
 
@@ -815,4 +817,324 @@ console.log("__RESULTS_JSON_END__");
                 "status": "error",
                 "docker_available": False,
                 "message": str(e)
-            } 
+            }
+
+    async def execute_code_with_stdin(
+        self,
+        language: str,
+        code: str,
+        input_str: str = "",
+        memory_limit: str = DEFAULT_MEMORY_LIMIT,
+        cpu_limit: float = DEFAULT_CPU_LIMIT,
+        timeout: int = DEFAULT_TIMEOUT,
+        network_disabled: bool = DEFAULT_NETWORK_DISABLED
+    ) -> Dict[str, Any]:
+        """
+        Execute code with provided standard input in a Docker container.
+
+        Args:
+            language: Programming language (python, javascript, etc.)
+            code: Source code to execute
+            input_str: String to pass as standard input to the code
+            memory_limit: Container memory limit
+            cpu_limit: Container CPU limit
+            timeout: Execution timeout in seconds
+            network_disabled: Whether to disable network access
+
+        Returns:
+            Dictionary with execution results (stdout, stderr, status, error_message)
+        """
+        language = language.lower()
+        if language == "python":
+            return await self._execute_python_with_stdin(code, input_str, memory_limit, cpu_limit, timeout, network_disabled)
+        elif language in ["javascript", "js"]:
+            return await self._execute_javascript_with_stdin(code, input_str, memory_limit, cpu_limit, timeout, network_disabled)
+        else:
+            return {
+                "status": "error",
+                "error_message": f"Unsupported language for stdin execution: {language}",
+                "stdout": "",
+                "stderr": f"Unsupported language: {language}"
+            }
+
+    async def _execute_python_with_stdin(
+        self,
+        code: str,
+        input_str: str,
+        memory_limit: str,
+        cpu_limit: float,
+        timeout: int,
+        network_disabled: bool
+    ) -> Dict[str, Any]:
+        temp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="ai_interviewer_py_stdin_")
+        container = None
+        try:
+            code_py_path = os.path.join(temp_dir, "code.py")
+            await asyncio.to_thread(self._write_file, code_py_path, code)
+
+            input_txt_path = os.path.join(temp_dir, "input.txt")
+            await asyncio.to_thread(self._write_file, input_txt_path, input_str)
+
+            runner_code = self._generate_python_stdin_runner()
+            runner_py_path = os.path.join(temp_dir, "runner.py")
+            await asyncio.to_thread(self._write_file, runner_py_path, runner_code)
+
+            container_name = f"ai-interviewer-py-stdin-{uuid.uuid4().hex[:8]}"
+            container_settings = {
+                "image": "python:3.10-slim",
+                "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                "working_dir": "/app",
+                "command": ["python", "runner.py"],
+                "mem_limit": memory_limit,
+                "cpu_quota": int(cpu_limit * 100000),
+                "network_disabled": network_disabled,
+                "name": container_name,
+                "detach": True,
+                "read_only": True, # Keep rootfs read-only
+            }
+            container = await asyncio.to_thread(self.client.containers.run, **container_settings)
+            
+            try:
+                await asyncio.to_thread(container.wait, timeout=timeout)
+            except Exception as e: # Covers timeout from container.wait
+                if container:
+                    try: await asyncio.to_thread(container.stop, timeout=1)
+                    except Exception as stop_exc: logger.warning(f"Failed to stop container {container_name} during timeout: {stop_exc}")
+                return {
+                    "status": "error", 
+                    "error_message": "Execution timed out", 
+                    "stdout": "", 
+                    "stderr": f"Execution timed out after {timeout} seconds.",
+                    "execution_time": timeout
+                }
+
+            logs_bytes = await asyncio.to_thread(container.logs, stdout=True, stderr=True)
+            logs_str = logs_bytes.decode("utf-8", errors="replace")
+            
+            # Split logs into stdout and potential stderr if runner script uses markers
+            # For stdin runner, output is simpler: stdout then RESULTS_SEPARATOR then stderr
+            parts = logs_str.split("__STDERR_RESULTS_SEPARATOR__", 1)
+            stdout_content = parts[0]
+            stderr_content = parts[1] if len(parts) > 1 else ""
+
+            if stderr_content.strip(): # If there's anything in stderr, consider it an execution error
+                 return {"status": "error", "error_message": "Runtime error", "stdout": stdout_content.strip(), "stderr": stderr_content.strip()}
+            
+            return {"status": "success", "stdout": stdout_content.strip(), "stderr": stderr_content.strip()}
+
+        except ImageNotFound:
+            return {"status": "error", "error_message": "Python Docker image not found", "stdout": "", "stderr": "Python Docker image not found"}
+        except ContainerError as e:
+            return {"status": "error", "error_message": "Container execution failed", "stdout": "", "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") and e.stderr else str(e)}
+        except Exception as e:
+            logger.error(f"Python stdin execution error: {str(e)}", exc_info=True)
+            return {"status": "error", "error_message": f"Execution error: {str(e)}", "stdout": "", "stderr": str(e)}
+        finally:
+            if container:
+                try:
+                    await asyncio.to_thread(container.remove, force=True)
+                    logger.debug(f"Successfully removed Python STDIN container {container_name}")
+                except DockerException as e: logger.warning(f"Error cleaning up container {container_name}: {e}")
+            if os.path.exists(temp_dir):
+                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+    async def _execute_javascript_with_stdin(
+        self,
+        code: str,
+        input_str: str,
+        memory_limit: str,
+        cpu_limit: float,
+        timeout: int,
+        network_disabled: bool
+    ) -> Dict[str, Any]:
+        temp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="ai_interviewer_js_stdin_")
+        container = None
+        try:
+            code_js_path = os.path.join(temp_dir, "code.js")
+            await asyncio.to_thread(self._write_file, code_js_path, code)
+
+            input_txt_path = os.path.join(temp_dir, "input.txt") # For JS runner to read
+            await asyncio.to_thread(self._write_file, input_txt_path, input_str)
+
+            runner_code = self._generate_javascript_stdin_runner()
+            runner_js_path = os.path.join(temp_dir, "runner.js")
+            await asyncio.to_thread(self._write_file, runner_js_path, runner_code)
+
+            container_name = f"ai-interviewer-js-stdin-{uuid.uuid4().hex[:8]}"
+            container_settings = {
+                "image": "node:18-slim",
+                "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                "working_dir": "/app",
+                "command": ["node", "runner.js"],
+                "mem_limit": memory_limit,
+                "cpu_quota": int(cpu_limit * 100000),
+                "network_disabled": network_disabled,
+                "name": container_name,
+                "detach": True,
+                "read_only": True,
+            }
+            container = await asyncio.to_thread(self.client.containers.run, **container_settings)
+
+            try:
+                await asyncio.to_thread(container.wait, timeout=timeout)
+            except Exception as e: # Covers timeout
+                if container:
+                    try: await asyncio.to_thread(container.stop, timeout=1)
+                    except Exception as stop_exc: logger.warning(f"Failed to stop JS container {container_name} during timeout: {stop_exc}")
+                return {
+                    "status": "error", 
+                    "error_message": "Execution timed out", 
+                    "stdout": "", 
+                    "stderr": f"Execution timed out after {timeout} seconds.",
+                    "execution_time": timeout
+                }
+
+            logs_bytes = await asyncio.to_thread(container.logs, stdout=True, stderr=True)
+            logs_str = logs_bytes.decode("utf-8", errors="replace")
+
+            parts = logs_str.split("__STDERR_RESULTS_SEPARATOR__", 1)
+            stdout_content = parts[0]
+            stderr_content = parts[1] if len(parts) > 1 else ""
+
+            if stderr_content.strip():
+                 return {"status": "error", "error_message": "Runtime error", "stdout": stdout_content.strip(), "stderr": stderr_content.strip()}
+
+            return {"status": "success", "stdout": stdout_content.strip(), "stderr": stderr_content.strip()}
+
+        except ImageNotFound:
+            return {"status": "error", "error_message": "Node.js Docker image not found", "stdout": "", "stderr": "Node.js Docker image not found"}
+        except ContainerError as e:
+            return {"status": "error", "error_message": "Container execution failed", "stdout": "", "stderr": e.stderr.decode("utf-8") if hasattr(e, "stderr") and e.stderr else str(e)}
+        except Exception as e:
+            logger.error(f"JavaScript stdin execution error: {str(e)}", exc_info=True)
+            return {"status": "error", "error_message": f"Execution error: {str(e)}", "stdout": "", "stderr": str(e)}
+        finally:
+            if container:
+                try:
+                    await asyncio.to_thread(container.remove, force=True)
+                    logger.debug(f"Successfully removed JS STDIN container {container_name}")
+                except DockerException as e: logger.warning(f"Error cleaning up JS container {container_name}: {e}")
+            if os.path.exists(temp_dir):
+                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _generate_python_stdin_runner() -> str:
+        """Generate a Python runner script for stdin execution."""
+        return '''
+import sys
+import os
+
+try:
+    # Read user's code
+    with open("code.py", "r", encoding="utf-8") as f:
+        user_code = f.read()
+
+    # Read input string
+    input_str = ""
+    if os.path.exists("input.txt"):
+        with open("input.txt", "r", encoding="utf-8") as f:
+            input_str = f.read()
+
+    # Prepare to capture stdout and stderr
+    from io import StringIO
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    redirected_stdout = StringIO()
+    redirected_stderr = StringIO()
+
+    sys.stdout = redirected_stdout
+    sys.stderr = redirected_stderr
+
+    # Provide input_str to stdin
+    old_stdin = sys.stdin
+    sys.stdin = StringIO(input_str)
+
+    # Execute the user's code
+    exec(user_code, {}) # Execute in a new, empty global scope
+
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+    sys.stdin = old_stdin
+
+    stdout_val = redirected_stdout.getvalue()
+    stderr_val = redirected_stderr.getvalue()
+
+    # Print stdout, then separator, then stderr
+    print(stdout_val, end="")
+    print("__STDERR_RESULTS_SEPARATOR__", end="")
+    print(stderr_val, end="")
+
+except Exception as e:
+    sys.stdout = old_stdout # Ensure original stdout is restored
+    sys.stderr = old_stderr # Ensure original stderr is restored
+    sys.stdin = old_stdin
+    # Print nothing to stdout, separator, then error to stderr
+    print("__STDERR_RESULTS_SEPARATOR__", end="")
+    import traceback
+    print("Runner script error:", str(e), file=sys.__stderr__)
+    print(traceback.format_exc(), file=sys.__stderr__)
+'''
+
+    @staticmethod
+    def _generate_javascript_stdin_runner() -> str:
+        """Generate a JavaScript runner script for stdin execution."""
+        return '''
+const fs = require('fs');
+
+async function main() {
+    try {
+        const userCode = fs.readFileSync('code.js', 'utf8');
+        let inputStr = '';
+        if (fs.existsSync('input.txt')) {
+            inputStr = fs.readFileSync('input.txt', 'utf8');
+        }
+
+        // Temporarily override console.log and console.error
+        let capturedStdout = '';
+        let capturedStderr = '';
+        const origConsoleLog = console.log;
+        const origConsoleError = console.error;
+
+        console.log = (...args) => {
+            capturedStdout += args.map(arg => String(arg)).join(' ') + '\n';
+        };
+        console.error = (...args) => {
+            capturedStderr += args.map(arg => String(arg)).join(' ') + '\n';
+        };
+
+        // Mock process.stdin
+        const Readable = require('stream').Readable;
+        const mockStdin = new Readable();
+        mockStdin.push(inputStr);
+        mockStdin.push(null); // Signifies EOF
+        const origProcessStdin = process.stdin;
+        process.stdin = mockStdin;
+
+        // Evaluate the user's code
+        // Using a new Function to scope the code and allow async execution if user code is async
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const userFunction = new AsyncFunction(userCode);
+        await userFunction();
+
+        // Restore original console and stdin
+        console.log = origConsoleLog;
+        console.error = origConsoleError;
+        process.stdin = origProcessStdin;
+
+        // Output captured stdout, separator, then captured stderr
+        origConsoleLog(capturedStdout + "__STDERR_RESULTS_SEPARATOR__" + capturedStderr);
+
+    } catch (e) {
+        // Restore original console and stdin on error
+        if (typeof origConsoleLog !== 'undefined') console.log = origConsoleLog;
+        if (typeof origConsoleError !== 'undefined') console.error = origConsoleError;
+        if (typeof origProcessStdin !== 'undefined') process.stdin = origProcessStdin;
+        
+        // Output separator and error to actual stderr
+        // (console.error was restored, so this goes to actual stderr)
+        console.error("__STDERR_RESULTS_SEPARATOR__" + `Runner script error: ${e.stack || e}`);
+    }
+}
+
+main();
+''' 

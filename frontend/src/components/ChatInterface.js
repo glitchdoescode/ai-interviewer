@@ -200,9 +200,9 @@ const ChatInterface = ({ jobRoleData }) => {
         setInterviewStage(response.interview_stage);
         
         // Check for coding challenge data if stage is coding_challenge
-        if (response.interview_stage === 'coding_challenge' && response.coding_challenge_data) {
-          console.log("Received structured coding challenge data:", response.coding_challenge_data);
-          setCurrentCodingChallenge(response.coding_challenge_data);
+        if (response.interview_stage === 'coding_challenge' && response.coding_challenge_detail) {
+          console.log("Received structured coding challenge data:", response.coding_challenge_detail);
+          setCurrentCodingChallenge(response.coding_challenge_detail);
         } else if (response.interview_stage !== 'coding_challenge') {
           // If not in coding challenge stage, ensure any previous challenge is cleared
           // This handles cases where the interview might move away from a challenge
@@ -287,9 +287,9 @@ const ChatInterface = ({ jobRoleData }) => {
           setInterviewStage(response.interview_stage);
 
           // Check for coding challenge data if stage is coding_challenge
-          if (response.interview_stage === 'coding_challenge' && response.coding_challenge_data) {
-            console.log("Received structured coding challenge data (voice):", response.coding_challenge_data);
-            setCurrentCodingChallenge(response.coding_challenge_data);
+          if (response.interview_stage === 'coding_challenge' && response.coding_challenge_detail) {
+            console.log("Received structured coding challenge data (voice):", response.coding_challenge_detail);
+            setCurrentCodingChallenge(response.coding_challenge_detail);
           } else if (response.interview_stage !== 'coding_challenge') {
              if (currentCodingChallenge) {
                 console.log("Interview stage is not coding_challenge (voice), clearing any active challenge.");

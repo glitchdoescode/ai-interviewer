@@ -900,12 +900,17 @@ class AIInterviewer:
         if interview_stage == InterviewStage.CODING_CHALLENGE.value:
             # If in coding challenge stage AND the AI is not trying to call a tool (checked above),
             # it means the AI is likely presenting the problem or waiting for the user.
-            # End the turn. The tools_node will handle initial forcing if needed.
-            logger.info("[should_continue] In CODING_CHALLENGE stage, AI has no active tool calls in its last message. Ending turn.")
+            # The AI's turn should end here. The frontend will then show the coding panel.
+            # The stage should transition to CODING_CHALLENGE_WAITING after the AI presents the problem.
+            logger.info("[should_continue] In CODING_CHALLENGE stage, AI has no active tool calls. Ending AI turn to present problem.")
+            return "end"
+        elif interview_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
+            # If the AI is waiting for the user to submit code, its turn should always end.
+            logger.info("[should_continue] In CODING_CHALLENGE_WAITING stage. Ending AI turn, awaiting user code submission.")
             return "end"
             
         # Default for other stages if no tool calls from AI: end the turn.
-        logger.info("[should_continue] No tool calls in last AI message (and not in coding challenge stage with pending AI tool_call). Ending turn.")
+        logger.info(f"[should_continue] No tool calls in last AI message and not in a special waiting stage (current_stage: {interview_stage}). Ending turn.")
         return "end"
     
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
@@ -1498,23 +1503,160 @@ class AIInterviewer:
             logger.error(f"Traceback: {error_tb}")
             return f"I apologize, but there was an error processing your request. Please try again. Error: {str(e)}", session_id
         
-        # Extract the AI response from the final graph state
+        extracted_challenge_details = None # Initialize here
+
         if final_graph_state:
-            # The structure of final_graph_state depends on your graph's output and stream_mode
-            # If it's the full state (e.g. InterviewState or dict representation):
-            final_messages = []
+            logger.info(f"[CORE run_interview] Processing final_graph_state. Type: {type(final_graph_state)}")
             if isinstance(final_graph_state, dict):
-                # Access messages nested under the 'model' key, if present
+                logger.info(f"[CORE run_interview] final_graph_state top-level keys: {list(final_graph_state.keys())}")
+            
+            all_messages_from_state = []
+            latest_stage_from_graph = graph_input.get("interview_stage", InterviewStage.INTRODUCTION.value) # Default to input stage
+
+            if isinstance(final_graph_state, dict):
                 model_output = final_graph_state.get("model")
                 if isinstance(model_output, dict):
-                    final_messages = model_output.get("messages", [])
-                else: # try to get messages directly if model key is not present or not a dict
-                    final_messages = final_graph_state.get("messages", [])
-            elif hasattr(final_graph_state, 'messages'): # If graph returns an InterviewState like object
-                final_messages = final_graph_state.messages
+                    all_messages_from_state = model_output.get("messages", [])
+                    if "interview_stage" in model_output: # Check if stage is in model output
+                        latest_stage_from_graph = model_output["interview_stage"]
+                elif "messages" in final_graph_state:
+                    all_messages_from_state = final_graph_state.get("messages", [])
+                
+                # Check top-level for stage if not in model output
+                if "interview_stage" in final_graph_state and latest_stage_from_graph == graph_input.get("interview_stage"):
+                    latest_stage_from_graph = final_graph_state["interview_stage"]
+            elif hasattr(final_graph_state, 'messages'):
+                all_messages_from_state = final_graph_state.messages
+                if hasattr(final_graph_state, 'interview_stage'):
+                    latest_stage_from_graph = final_graph_state.interview_stage
             
-            if final_messages:
-                for msg in reversed(final_messages):
+            logger.info(f"[CORE run_interview] Determined latest_stage_from_graph: {latest_stage_from_graph}")
+
+            # --- Start: Synthetic Challenge Generation Logic ---
+            if latest_stage_from_graph == InterviewStage.CODING_CHALLENGE.value:
+                challenge_already_generated_by_graph = False
+                if all_messages_from_state:
+                    for msg_content_item_check in all_messages_from_state:
+                        if hasattr(msg_content_item_check, 'type') and msg_content_item_check.type == "tool" and \
+                           hasattr(msg_content_item_check, 'name') and msg_content_item_check.name == "generate_coding_challenge_from_jd":
+                            parsed_content_check = None
+                            if hasattr(msg_content_item_check, 'content'):
+                                if isinstance(msg_content_item_check.content, dict):
+                                    parsed_content_check = msg_content_item_check.content
+                                elif isinstance(msg_content_item_check.content, str):
+                                    try:
+                                        parsed_content_check = json.loads(msg_content_item_check.content)
+                                    except json.JSONDecodeError:
+                                        logger.warning(f"Synthetic check: JSONDecodeError for tool message content: {msg_content_item_check.content[:100]}")
+                                    except Exception as e_json:
+                                        logger.error(f"Synthetic check: Unexpected JSON error {e_json} for: {msg_content_item_check.content[:100]}")
+
+
+                            if parsed_content_check and isinstance(parsed_content_check, dict) and "problem_statement" in parsed_content_check:
+                                challenge_already_generated_by_graph = True
+                                logger.info(f"Synthetic check: Challenge details found in graph output for session {session_id}.")
+                                break
+                
+                if not challenge_already_generated_by_graph:
+                    logger.warning(f"Graph did not produce 'generate_coding_challenge_from_jd' output in CODING_CHALLENGE stage for session {session_id}. Attempting synthetic generation.")
+                    jd = graph_input.get("job_description", self.job_description)
+                    skills = graph_input.get("required_skills", self.required_skills)
+                    difficulty = "intermediate" # Default
+                    seniority = graph_input.get("seniority_level", self.seniority_level)
+                    if seniority.lower() == "junior": difficulty = "beginner"
+                    elif seniority.lower() in ["senior", "lead", "principal"]: difficulty = "advanced"
+
+                    try:
+                        # generate_coding_challenge_from_jd is already imported at class level
+                        tool_input_args_synth = {
+                            "job_description": jd, "skills_required": skills, "difficulty_level": difficulty
+                        }
+                        synthetic_details = await generate_coding_challenge_from_jd.ainvoke(tool_input_args_synth)
+                        
+                        if synthetic_details and isinstance(synthetic_details, dict) and synthetic_details.get("status") == "success":
+                            extracted_challenge_details = synthetic_details
+                            logger.info(f"Successfully generated coding challenge synthetically for session {session_id}.")
+                        else:
+                            logger.error(f"Synthetic generation of coding challenge failed or returned non-success. Details: {synthetic_details}")
+                    except Exception as e_synth:
+                        logger.error(f"Exception during synthetic 'generate_coding_challenge_from_jd': {e_synth}", exc_info=True)
+            # --- End: Synthetic Challenge Generation Logic ---
+
+            # Extract coding challenge details from ToolMessage (if not synthetically generated)
+            if not extracted_challenge_details and all_messages_from_state:
+                logger.info(f"[run_interview] Iterating {len(all_messages_from_state)} messages to find coding challenge (post-synthetic check)...")
+                for idx, msg_content_item in enumerate(all_messages_from_state):
+                    if not hasattr(msg_content_item, 'type'):
+                        logger.debug(f"[run_interview] Msg {idx} has no 'type' attribute, skipping.")
+                        continue
+
+                    is_tool = msg_content_item.type == "tool"
+                    name_is_correct = hasattr(msg_content_item, 'name') and msg_content_item.name == "generate_coding_challenge_from_jd"
+                    content_is_dict = hasattr(msg_content_item, 'content') and isinstance(msg_content_item.content, dict)
+                    content_is_str = hasattr(msg_content_item, 'content') and isinstance(msg_content_item.content, str)
+                    
+                    if is_tool:
+                        logger.info(f"[run_interview] Encountered ToolMessage: Name='{getattr(msg_content_item, 'name', 'N/A')}', Content Type='{type(getattr(msg_content_item, 'content', None))}', Is Dict='{content_is_dict}', Is Str='{content_is_str}', Content Preview='{str(getattr(msg_content_item, 'content', 'N/A'))[:100]}...'")
+
+                    if is_tool and name_is_correct:
+                        parsed_content = None
+                        if content_is_dict:
+                            logger.info(f"[run_interview] ToolMessage content is already a dict for challenge extraction at index {idx}: Name='{msg_content_item.name}'")
+                            parsed_content = msg_content_item.content
+                        elif content_is_str:
+                            logger.info(f"[run_interview] ToolMessage content is a string, attempting JSON parse for challenge extraction at index {idx}: Name='{msg_content_item.name}'")
+                            try:
+                                parsed_content = json.loads(msg_content_item.content)
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse ToolMessage string content for generate_coding_challenge_from_jd: {e}. Content: {msg_content_item.content[:200]}")
+                            except Exception as e_json_inner: # Catch other parsing errors
+                                logger.error(f"Unexpected error parsing ToolMessage string content: {e_json_inner}", exc_info=True)
+                        
+                        if parsed_content and isinstance(parsed_content, dict) and \
+                           "problem_statement" in parsed_content and \
+                           "test_cases" in parsed_content and \
+                           "reference_solution" in parsed_content:
+                           extracted_challenge_details = parsed_content
+                           logger.info(f"Extracted coding challenge details from ToolMessage ID {getattr(msg_content_item, 'id', 'N/A')} named '{msg_content_item.name}'")
+                           break 
+                        elif parsed_content: 
+                            logger.warning(f"ToolMessage for '{msg_content_item.name}' parsed, but did not contain expected challenge keys. Parsed content: {str(parsed_content)[:200]}...")
+            
+            if extracted_challenge_details:
+                logger.info(f"[CORE run_interview] Successfully extracted coding_challenge_detail for session {session_id}")
+                # Store it in session metadata for the /submit endpoint
+                if self.session_manager:
+                    session_data_for_saving_challenge = self.session_manager.get_session(session_id)
+                    if session_data_for_saving_challenge:
+                        metadata_to_save = session_data_for_saving_challenge.get("metadata", {})
+                        logger.info(f"[CORE run_interview] BEFORE saving to session metadata: existing metadata keys for {session_id}: {list(metadata_to_save.keys())}") # ADDED LOG
+                        logger.info(f"[CORE run_interview] Attempting to save the following extracted_challenge_details: {json.dumps(extracted_challenge_details, indent=2)[:500]}...") # ADDED LOG
+                        
+                        metadata_to_save["current_coding_challenge_details_for_submission"] = extracted_challenge_details # Store the whole dict
+                        self.session_manager.update_session_metadata(session_id, metadata_to_save)
+                        logger.info(f"[CORE run_interview] Stored full challenge details in session metadata for {session_id} under 'current_coding_challenge_details_for_submission'")
+                        
+                        # VERIFY what was saved by re-fetching (for debugging)
+                        updated_session_data_after_save = self.session_manager.get_session(session_id)
+                        if updated_session_data_after_save and updated_session_data_after_save.get("metadata"):
+                            retrieved_challenge_for_verification = updated_session_data_after_save["metadata"].get("current_coding_challenge_details_for_submission")
+                            logger.info(f"[CORE run_interview] AFTER saving, VERIFIED 'current_coding_challenge_details_for_submission' in session {session_id} (first 100 chars): {str(retrieved_challenge_for_verification)[:100]}...") # ADDED LOG
+                        else:
+                            logger.warning(f"[CORE run_interview] AFTER saving, failed to re-fetch session metadata for verification for {session_id}.")
+                    else:
+                        logger.warning(f"[CORE run_interview] Could not retrieve session {session_id} to store full challenge details in metadata.")
+                elif session_id in self.active_sessions: # For in-memory
+                    if "metadata" not in self.active_sessions[session_id]: # Ensure metadata dict exists for in-memory
+                        self.active_sessions[session_id]["metadata"] = {}
+                    self.active_sessions[session_id]["metadata"]["current_coding_challenge_details_for_submission"] = extracted_challenge_details
+                    logger.info(f"[CORE run_interview] Stored full challenge details in IN-MEMORY session for {session_id} under 'current_coding_challenge_details_for_submission'")
+            else:
+                logger.info(f"[CORE run_interview] No coding_challenge_detail extracted from ToolMessages for session {session_id} in final graph state.")
+
+            # Now, find the AI response (AIMessage)
+            # final_messages_for_ai_response = all_messages_from_state # Use the same list
+            if all_messages_from_state: # Renamed for clarity from final_messages_for_ai_response
+                for msg in reversed(all_messages_from_state): # Iterate to find the last AIMessage that is not a tool call itself
                     if isinstance(msg, AIMessage):
                         # If this AIMessage is a tool call, skip it, 
                         # as we want the subsequent AI message that responds to the tool's output.
@@ -1550,7 +1692,7 @@ class AIInterviewer:
                         # Update cross-thread memory if needed
                         if self.memory_manager:
                             try:
-                                insights = self._extract_interview_insights(final_messages)
+                                insights = self._extract_interview_insights(all_messages_from_state)
                                 if insights and "candidate_details" in insights:
                                     self.memory_manager.save_candidate_profile(user_id, insights)
                                 self.memory_manager.save_interview_memory(
@@ -1594,36 +1736,110 @@ class AIInterviewer:
                             logger.warning("final_graph_state was None in run_interview when trying to determine stage.")
                         
                         # Update session metadata with the final, correct stage for the next turn
+                        # Also, if challenge details were extracted, save them now.
+                        # CRITICAL: Fetch the LATEST metadata from SessionManager before updating
+                        # to avoid working with a stale metadata object.
+                        
+                        current_stage_after_turn = InterviewStage.INTRODUCTION.value # Default
+                        if final_graph_state: # Ensure it's not None
+                            if isinstance(final_graph_state, dict):
+                                # Check 'model' key or top level of final_graph_state
+                                model_output_for_stage = final_graph_state.get("model", final_graph_state) 
+                                if isinstance(model_output_for_stage, dict) and "interview_stage" in model_output_for_stage:
+                                    current_stage_after_turn = model_output_for_stage["interview_stage"]
+                                    logger.info(f"Extracted stage '{current_stage_after_turn}' from final_graph_state for metadata update")
+                                # else: current_stage_after_turn remains default or from existing metadata
+                            elif hasattr(final_graph_state, 'interview_stage'): # If final_graph_state is an InterviewState object
+                                current_stage_after_turn = final_graph_state.interview_stage
+                                logger.info(f"Extracted stage '{current_stage_after_turn}' from final_graph_state object attribute for metadata update")
+                            # If stage couldn't be determined, it remains default, or could be loaded from existing metadata below.
+                        
                         if self.session_manager:
-                            # Fetch the latest metadata first, then update the stage key
-                            # This helps preserve other metadata fields that might have been updated elsewhere
-                            # (though less likely for a single active session component like stage)
-                            session_data = self.session_manager.get_session(session_id)
-                            if session_data:
-                                metadata_to_save = session_data.get("metadata", {})
-                                metadata_to_save[STAGE_KEY] = current_stage_after_turn
-                                self.session_manager.update_session_metadata(session_id, metadata_to_save)
-                                logger.info(f"Updated session metadata for {session_id} with final stage: {current_stage_after_turn}")
+                            # CRITICAL: Fetch the LATEST metadata from SessionManager before updating
+                            fresh_session_data = self.session_manager.get_session(session_id)
+                            
+                            metadata_to_save = {} # Initialize as an empty dict
+                            if fresh_session_data and "metadata" in fresh_session_data:
+                                metadata_to_save = fresh_session_data["metadata"] # Work with the latest
+                                logger.info(f"[CORE run_interview] Fetched fresh metadata for session {session_id} before final update. Existing keys: {list(metadata_to_save.keys())}")
                             else:
-                                logger.warning(f"Could not retrieve session {session_id} to update final stage in metadata.")
-                        elif session_id in self.active_sessions: # For in-memory
-                            if STAGE_KEY in self.active_sessions[session_id]:
-                                self.active_sessions[session_id][STAGE_KEY] = current_stage_after_turn
-                            else: # If session metadata is the dict itself for in-memory
-                                 self.active_sessions[session_id].update({STAGE_KEY: current_stage_after_turn})
-                            logger.info(f"Updated in-memory session {session_id} with final stage: {current_stage_after_turn}")
+                                logger.warning(f"[CORE run_interview] Could not re-fetch session {session_id} or it had no metadata. Starting with fresh metadata for save.")
+                                # Populate essential knowns if creating metadata from scratch (should be rare if session exists)
+                                metadata_to_save["job_role"] = job_role_value # from earlier in run_interview
+                                metadata_to_save["seniority_level"] = seniority_level_value # from earlier
+                                metadata_to_save["required_skills"] = required_skills_value # from earlier
+                                metadata_to_save["job_description"] = job_description_value # from earlier
+                                metadata_to_save["requires_coding"] = requires_coding_value # from earlier
+                                if candidate_name: # from earlier in run_interview
+                                    metadata_to_save[CANDIDATE_NAME_KEY] = candidate_name
 
-                        logger.info(f"[CORE] run_interview RETURN: ai_response='{ai_response_content[:50]}...', session_id='{session_id}', interview_stage='{current_stage_after_turn}'") # Added log
+                            # Update with the latest stage determined from the graph
+                            metadata_to_save[STAGE_KEY] = current_stage_after_turn
+                            
+                            # If coding challenge details were extracted, add/update them
+                            if extracted_challenge_details:
+                                metadata_to_save["current_coding_challenge_details_for_submission"] = extracted_challenge_details
+                                logger.info(f"[CORE run_interview] Adding/updating 'current_coding_challenge_details_for_submission' in metadata for session {session_id}")
+                            
+                            # Update message_count from the graph's final state if available
+                            if hasattr(final_graph_state, 'message_count'):
+                                 metadata_to_save["message_count"] = final_graph_state.message_count
+                            elif isinstance(final_graph_state, dict):
+                                 graph_model_state = final_graph_state.get("model", final_graph_state)
+                                 if isinstance(graph_model_state, dict) and graph_model_state.get("message_count") is not None:
+                                    metadata_to_save["message_count"] = graph_model_state["message_count"]
+                            # If not found in graph state, it keeps what was in fresh_session_data or remains unset if metadata was new
+
+                            self.session_manager.update_session_metadata(session_id, metadata_to_save)
+                            logger.info(f"Final metadata update for session {session_id} with stage: {current_stage_after_turn}, details_present: {extracted_challenge_details is not None}, message_count: {metadata_to_save.get('message_count', 'N/A')}")
+                            
+                            # Optional: Verification re-read (as was in logs)
+                            verified_data = self.session_manager.get_session(session_id)
+                            if verified_data and "metadata" in verified_data:
+                                verified_metadata = verified_data["metadata"]
+                                logger.info(f"[CORE run_interview] Verification read after final save: challenge_details_present={verified_metadata.get('current_coding_challenge_details_for_submission') is not None}, stage='{verified_metadata.get(STAGE_KEY)}', message_count='{verified_metadata.get('message_count')}'")
+                            else:
+                                logger.warning(f"[CORE run_interview] Verification read failed or no metadata after final save for session {session_id}")
+
+
+                        elif session_id in self.active_sessions: # In-memory handling
+                            # Ensure metadata sub-dictionary exists if that's the structure for in-memory
+                            if "metadata" not in self.active_sessions[session_id] or not isinstance(self.active_sessions[session_id].get("metadata"), dict):
+                                # If top-level keys are directly on active_sessions[session_id]
+                                if STAGE_KEY not in self.active_sessions[session_id]: # or other check
+                                     # This indicates active_sessions[session_id] itself is the metadata dict
+                                     target_metadata_dict = self.active_sessions[session_id]
+                                else: # Assume it should have a metadata sub-dict
+                                    self.active_sessions[session_id]["metadata"] = {}
+                                    target_metadata_dict = self.active_sessions[session_id]["metadata"]
+                            else:
+                                target_metadata_dict = self.active_sessions[session_id]["metadata"]
+
+                            target_metadata_dict[STAGE_KEY] = current_stage_after_turn
+                            if extracted_challenge_details:
+                                target_metadata_dict["current_coding_challenge_details_for_submission"] = extracted_challenge_details
+                            
+                            # Update message_count for in-memory as well
+                            if hasattr(final_graph_state, 'message_count'):
+                                 target_metadata_dict["message_count"] = final_graph_state.message_count
+                            elif isinstance(final_graph_state, dict):
+                                 graph_model_state = final_graph_state.get("model", final_graph_state)
+                                 if isinstance(graph_model_state, dict) and graph_model_state.get("message_count") is not None:
+                                    target_metadata_dict["message_count"] = graph_model_state["message_count"]
+
+                            logger.info(f"Final in-memory metadata update for session {session_id} with stage: {current_stage_after_turn}, details_present: {extracted_challenge_details is not None}, message_count: {target_metadata_dict.get('message_count')}")
+
+                        logger.info(f"[CORE] run_interview RETURN: ai_response='{ai_response_content[:50]}...', session_id='{session_id}', interview_stage='{current_stage_after_turn}', challenge_detail_present={extracted_challenge_details is not None}") # MODIFIED LOG
                         return {
                             "ai_response": ai_response_content,
                             "session_id": session_id,
-                            "interview_stage": current_stage_after_turn # Return the determined stage
+                            "interview_stage": current_stage_after_turn, # Return the determined stage
+                            "coding_challenge_detail": extracted_challenge_details # ADDED
                         }
         
         logger.warning(f"No AI message found in final graph state for session {session_id}. State: {final_graph_state}")
         
         # Attempt to get the most up-to-date stage from the final_graph_state, even in error cases.
-        # This ensures that if a stage transition happened before the error, we use that.
         current_stage_at_turn_start = graph_input.get("interview_stage", InterviewStage.INTRODUCTION.value) # Keep this for comparison/logging
         latest_stage_from_graph = current_stage_at_turn_start # Fallback to stage at turn start
         if final_graph_state:
@@ -1637,11 +1853,12 @@ class AIInterviewer:
             elif hasattr(final_graph_state, 'interview_stage'): # If it's an InterviewState object
                 latest_stage_from_graph = final_graph_state.interview_stage
         
-        logger.info(f"[CORE] run_interview ERROR RETURN: session_id='{session_id}', determined_latest_stage='{latest_stage_from_graph}' (was '{current_stage_at_turn_start}' at turn start)")
+        logger.info(f"[CORE] run_interview ERROR RETURN: session_id='{session_id}', determined_latest_stage='{latest_stage_from_graph}' (was '{current_stage_at_turn_start}' at turn start), challenge_detail_present={extracted_challenge_details is not None}") # MODIFIED LOG
         return {
             "ai_response": "I'm sorry, I couldn't generate a proper response. Please try again.",
             "session_id": session_id,
-            "interview_stage": latest_stage_from_graph # Use the latest stage found
+            "interview_stage": latest_stage_from_graph, 
+            "coding_challenge_detail": extracted_challenge_details 
         }
 
     def _get_or_create_session(self, user_id: str, session_id: Optional[str] = None,
