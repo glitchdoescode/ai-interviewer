@@ -141,6 +141,7 @@ def submit_code_for_challenge(challenge_id: str, candidate_code: str, skill_leve
         return {
             "status": "submitted",
             "challenge_id": challenge_id,
+            "candidate_code": candidate_code,
             "execution_results": execution_results,
             "feedback": feedback,
             "evaluation": {

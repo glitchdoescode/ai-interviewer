@@ -82,6 +82,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Explicitly import ToolMessage here for safety, though it should be covered by top-level imports
+from langchain_core.messages import ToolMessage
+import json # Ensure json is available where it's used for parsing tool message content
+
 # Interview stage tracking
 class InterviewStage(Enum):
     """Enum for tracking the current stage of the interview."""
@@ -543,6 +547,32 @@ class AIInterviewer:
                     # Update message count for context management
                     updated_state["message_count"] = state.get("message_count", 0) + len(tool_result.get("messages", []))
                     
+                    # --- MODIFICATION START: Store generated coding challenge details in session metadata ---
+                    if "messages" in tool_result and self.session_manager:
+                        for msg in tool_result["messages"]:
+                            if isinstance(msg, ToolMessage) and msg.name == "generate_coding_challenge_from_jd":
+                                try:
+                                    challenge_details = json.loads(msg.content)
+                                    session_id_from_state = updated_state.get("session_id")
+                                    if session_id_from_state:
+                                        current_session_data = self.session_manager.get_session(session_id_from_state)
+                                        if current_session_data:
+                                            if "metadata" not in current_session_data:
+                                                current_session_data["metadata"] = {}
+                                            current_session_data["metadata"]["current_coding_challenge_details_for_submission"] = challenge_details
+                                            self.session_manager.update_session_metadata(session_id_from_state, current_session_data["metadata"])
+                                            logger.info(f"[TOOLS_NODE] Stored details for challenge '{challenge_details.get('challenge_id')}' in session {session_id_from_state} metadata.")
+                                        else:
+                                            logger.warning(f"[TOOLS_NODE] Could not retrieve session data for {session_id_from_state} to store challenge details.")
+                                    else:
+                                        logger.warning("[TOOLS_NODE] No session_id in state, cannot store challenge details in session metadata.")
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"[TOOLS_NODE] Failed to parse challenge details from ToolMessage content: {e}. Content: {msg.content}")
+                                except Exception as e_session:
+                                    logger.error(f"[TOOLS_NODE] Error accessing or updating session to store challenge details: {e_session}")
+                                break # Assuming only one such tool message per invocation for this purpose
+                    # --- MODIFICATION END ---
+                    
                     return updated_state
                 else:
                     # Extract messages from InterviewState
@@ -625,6 +655,32 @@ class AIInterviewer:
                     # Update message count
                     new_message_count = state.message_count + len(tool_result.get("messages", []))
                     
+                    # --- MODIFICATION START: Store generated coding challenge details in session metadata (InterviewState path) ---
+                    if "messages" in tool_result and self.session_manager:
+                        for msg in tool_result["messages"]:
+                            if isinstance(msg, ToolMessage) and msg.name == "generate_coding_challenge_from_jd":
+                                try:
+                                    challenge_details = json.loads(msg.content)
+                                    # session_id is already available in state (InterviewState object)
+                                    if state.session_id:
+                                        current_session_data = self.session_manager.get_session(state.session_id)
+                                        if current_session_data:
+                                            if "metadata" not in current_session_data:
+                                                current_session_data["metadata"] = {}
+                                            current_session_data["metadata"]["current_coding_challenge_details_for_submission"] = challenge_details
+                                            self.session_manager.update_session_metadata(state.session_id, current_session_data["metadata"])
+                                            logger.info(f"[TOOLS_NODE] (InterviewState path) Stored details for challenge '{challenge_details.get('challenge_id')}' in session {state.session_id} metadata.")
+                                        else:
+                                            logger.warning(f"[TOOLS_NODE] (InterviewState path) Could not retrieve session data for {state.session_id} to store challenge details.")
+                                    else:
+                                        logger.warning("[TOOLS_NODE] (InterviewState path) No session_id in state, cannot store challenge details.")
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"[TOOLS_NODE] (InterviewState path) Failed to parse challenge details from ToolMessage content: {e}. Content: {msg.content}")
+                                except Exception as e_session:
+                                    logger.error(f"[TOOLS_NODE] (InterviewState path) Error accessing or updating session to store challenge details: {e_session}")
+                                break # Assuming only one such tool message per invocation
+                    # --- MODIFICATION END ---
+
                     # Create a new InterviewState with updated values
                     return InterviewState(
                         messages=updated_messages,
@@ -978,6 +1034,37 @@ class AIInterviewer:
                 system_prompt += "\n\nIMPORTANT: You are now in the TECHNICAL_QUESTIONS stage. Ask relevant technical questions based on the required skills and job description. Use the generate_interview_question tool if needed."
             elif interview_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
                 system_prompt += "\n\nIMPORTANT: You are now in the BEHAVIORAL_QUESTIONS stage. Ask behavioral questions to assess soft skills and past experiences relevant to the role."
+            elif interview_stage == InterviewStage.FEEDBACK.value:
+                # Check if the last message implies coding feedback is due
+                last_human_or_system_message_content = ""
+                if messages:
+                    # Look at the content of the very last message if it's Human or System
+                    # This is often the system message injected by /api/coding/submit
+                    # or the user's message after clicking "Return to Interviewer for Feedback"
+                    last_msg_for_feedback_check = messages[-1]
+                    if isinstance(last_msg_for_feedback_check, (HumanMessage, SystemMessage)) and hasattr(last_msg_for_feedback_check, 'content'):
+                        last_human_or_system_message_content = str(last_msg_for_feedback_check.content).lower()
+                
+                # Keywords indicating coding feedback is expected
+                feedback_keywords = [
+                    "candidate has submitted their solution", 
+                    "evaluation summary:", 
+                    "execution results:",
+                    "provide feedback to the candidate on their solution",
+                    "return to interviewer for feedback" # Added from frontend button
+                ]
+                is_coding_feedback_context = any(kw in last_human_or_system_message_content for kw in feedback_keywords)
+
+                if is_coding_feedback_context:
+                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. The candidate has just submitted a coding challenge solution, or has explicitly requested feedback on it. "
+                                      "The details of their submission (including `candidate_code`, `execution_results`, and `feedback` from the evaluation tool) are in the last ToolMessage in the conversation history. "
+                                      "Your primary task is to review all these details thoroughly. "
+                                      "Provide comprehensive, constructive feedback on their approach, the `candidate_code` (correctness, clarity, style, efficiency), and the `execution_results`. "
+                                      "Discuss any errors, strengths, and specific areas for improvement based on the `feedback` object provided by the tool. "
+                                      "After providing detailed feedback on the coding challenge, you can transition to behavioral questions or conclude if appropriate.")
+                else:
+                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. Provide general feedback on the candidate's performance so far, "
+                                      "or if a specific topic was just discussed, provide feedback on that.")
             
             # Build the full prompt with system message and conversation history
             prompt_parts = [f"System: {system_prompt}"]
@@ -1519,72 +1606,24 @@ class AIInterviewer:
                     all_messages_from_state = model_output.get("messages", [])
                     if "interview_stage" in model_output: # Check if stage is in model output
                         latest_stage_from_graph = model_output["interview_stage"]
-                elif "messages" in final_graph_state:
+                elif "messages" in final_graph_state: # Check if messages are at the top level of final_graph_state
                     all_messages_from_state = final_graph_state.get("messages", [])
                 
-                # Check top-level for stage if not in model output
+                # Check top-level for stage if not in model output and not already updated
                 if "interview_stage" in final_graph_state and latest_stage_from_graph == graph_input.get("interview_stage"):
                     latest_stage_from_graph = final_graph_state["interview_stage"]
-            elif hasattr(final_graph_state, 'messages'):
+            elif hasattr(final_graph_state, 'messages'): # If final_graph_state is an InterviewState object
                 all_messages_from_state = final_graph_state.messages
                 if hasattr(final_graph_state, 'interview_stage'):
                     latest_stage_from_graph = final_graph_state.interview_stage
             
             logger.info(f"[CORE run_interview] Determined latest_stage_from_graph: {latest_stage_from_graph}")
 
-            # --- Start: Synthetic Challenge Generation Logic ---
-            if latest_stage_from_graph == InterviewStage.CODING_CHALLENGE.value:
-                challenge_already_generated_by_graph = False
-                if all_messages_from_state:
-                    for msg_content_item_check in all_messages_from_state:
-                        if hasattr(msg_content_item_check, 'type') and msg_content_item_check.type == "tool" and \
-                           hasattr(msg_content_item_check, 'name') and msg_content_item_check.name == "generate_coding_challenge_from_jd":
-                            parsed_content_check = None
-                            if hasattr(msg_content_item_check, 'content'):
-                                if isinstance(msg_content_item_check.content, dict):
-                                    parsed_content_check = msg_content_item_check.content
-                                elif isinstance(msg_content_item_check.content, str):
-                                    try:
-                                        parsed_content_check = json.loads(msg_content_item_check.content)
-                                    except json.JSONDecodeError:
-                                        logger.warning(f"Synthetic check: JSONDecodeError for tool message content: {msg_content_item_check.content[:100]}")
-                                    except Exception as e_json:
-                                        logger.error(f"Synthetic check: Unexpected JSON error {e_json} for: {msg_content_item_check.content[:100]}")
+            extracted_challenge_details = None # Initialize here
 
-
-                            if parsed_content_check and isinstance(parsed_content_check, dict) and "problem_statement" in parsed_content_check:
-                                challenge_already_generated_by_graph = True
-                                logger.info(f"Synthetic check: Challenge details found in graph output for session {session_id}.")
-                                break
-                
-                if not challenge_already_generated_by_graph:
-                    logger.warning(f"Graph did not produce 'generate_coding_challenge_from_jd' output in CODING_CHALLENGE stage for session {session_id}. Attempting synthetic generation.")
-                    jd = graph_input.get("job_description", self.job_description)
-                    skills = graph_input.get("required_skills", self.required_skills)
-                    difficulty = "intermediate" # Default
-                    seniority = graph_input.get("seniority_level", self.seniority_level)
-                    if seniority.lower() == "junior": difficulty = "beginner"
-                    elif seniority.lower() in ["senior", "lead", "principal"]: difficulty = "advanced"
-
-                    try:
-                        # generate_coding_challenge_from_jd is already imported at class level
-                        tool_input_args_synth = {
-                            "job_description": jd, "skills_required": skills, "difficulty_level": difficulty
-                        }
-                        synthetic_details = await generate_coding_challenge_from_jd.ainvoke(tool_input_args_synth)
-                        
-                        if synthetic_details and isinstance(synthetic_details, dict) and synthetic_details.get("status") == "success":
-                            extracted_challenge_details = synthetic_details
-                            logger.info(f"Successfully generated coding challenge synthetically for session {session_id}.")
-                        else:
-                            logger.error(f"Synthetic generation of coding challenge failed or returned non-success. Details: {synthetic_details}")
-                    except Exception as e_synth:
-                        logger.error(f"Exception during synthetic 'generate_coding_challenge_from_jd': {e_synth}", exc_info=True)
-            # --- End: Synthetic Challenge Generation Logic ---
-
-            # Extract coding challenge details from ToolMessage (if not synthetically generated)
-            if not extracted_challenge_details and all_messages_from_state:
-                logger.info(f"[run_interview] Iterating {len(all_messages_from_state)} messages to find coding challenge (post-synthetic check)...")
+            # Primary extraction of coding challenge details from ToolMessage
+            if all_messages_from_state:
+                logger.info(f"[run_interview] Primary extraction: Iterating {len(all_messages_from_state)} messages to find coding challenge...")
                 for idx, msg_content_item in enumerate(all_messages_from_state):
                     if not hasattr(msg_content_item, 'type'):
                         logger.debug(f"[run_interview] Msg {idx} has no 'type' attribute, skipping.")
@@ -1609,18 +1648,61 @@ class AIInterviewer:
                                 parsed_content = json.loads(msg_content_item.content)
                             except json.JSONDecodeError as e:
                                 logger.warning(f"Failed to parse ToolMessage string content for generate_coding_challenge_from_jd: {e}. Content: {msg_content_item.content[:200]}")
-                            except Exception as e_json_inner: # Catch other parsing errors
+                            except Exception as e_json_inner: 
                                 logger.error(f"Unexpected error parsing ToolMessage string content: {e_json_inner}", exc_info=True)
                         
+                        # REVISED EXTRACTION LOGIC (AGAIN)
                         if parsed_content and isinstance(parsed_content, dict) and \
-                           "problem_statement" in parsed_content and \
-                           "test_cases" in parsed_content and \
-                           "reference_solution" in parsed_content:
-                           extracted_challenge_details = parsed_content
-                           logger.info(f"Extracted coding challenge details from ToolMessage ID {getattr(msg_content_item, 'id', 'N/A')} named '{msg_content_item.name}'")
-                           break 
-                        elif parsed_content: 
-                            logger.warning(f"ToolMessage for '{msg_content_item.name}' parsed, but did not contain expected challenge keys. Parsed content: {str(parsed_content)[:200]}...")
+                           isinstance(parsed_content.get("challenge"), dict) and \
+                           "problem_statement" in parsed_content.get("challenge", {}) and \
+                           parsed_content.get("status") and ("success" in parsed_content.get("status", "").lower() or "fallback" in parsed_content.get("status", "").lower()):
+                            extracted_challenge_details = parsed_content.get("challenge") # Assign the nested 'challenge' dict
+                            logger.info(f"Primary extraction (NESTED ACCESS): Found coding challenge details from ToolMessage ID {getattr(msg_content_item, 'id', 'N/A')} named '{msg_content_item.name}'")
+                            break # Found it, exit loop
+                        elif parsed_content: # Log why it didn't match the new criteria
+                            challenge_sub_dict = parsed_content.get("challenge") if isinstance(parsed_content, dict) else None
+                            problem_statement_present_in_sub_dict = isinstance(challenge_sub_dict, dict) and "problem_statement" in challenge_sub_dict
+                            logger.warning(
+                                f"Primary extraction (NESTED ACCESS): ToolMessage for '{msg_content_item.name}' parsed, "
+                                f"but did not conform to expected structure or status. "
+                                f"Challenge sub-dict present: {isinstance(challenge_sub_dict, dict)}. "
+                                f"Problem statement in sub-dict: {problem_statement_present_in_sub_dict}. "
+                                f"Overall Status: {parsed_content.get('status') if isinstance(parsed_content, dict) else 'N/A'}. "
+                                f"Parsed content keys: {list(parsed_content.keys()) if isinstance(parsed_content, dict) else 'Not a dict'}."
+                            )
+                            extracted_challenge_details = None # Ensure it's None if conditions not met
+            
+            # --- Start: Synthetic Challenge Generation Logic (Conditional) ---
+            if not extracted_challenge_details and latest_stage_from_graph == InterviewStage.CODING_CHALLENGE.value:
+                logger.warning(f"Primary extraction failed to find challenge details or stage is CODING_CHALLENGE but no details yet. Graph stage is {latest_stage_from_graph}. Attempting synthetic generation for session {session_id}.")
+                jd = graph_input.get("job_description", self.job_description)
+                skills = graph_input.get("required_skills", self.required_skills)
+                difficulty = "intermediate"
+                seniority = graph_input.get("seniority_level", self.seniority_level)
+                if seniority.lower() == "junior": difficulty = "beginner"
+                elif seniority.lower() in ["senior", "lead", "principal"]: difficulty = "advanced"
+
+                try:
+                    tool_input_args_synth = {
+                        "job_description": jd, "skills_required": skills, "difficulty_level": difficulty
+                    }
+                    # generate_coding_challenge_from_jd is an async tool, ensure it's awaited
+                    synthetic_tool_output = await generate_coding_challenge_from_jd.ainvoke(tool_input_args_synth)
+                    
+                    if synthetic_tool_output and isinstance(synthetic_tool_output, dict) and \
+                       synthetic_tool_output.get("status") == "success" and \
+                       isinstance(synthetic_tool_output.get("challenge"), dict):
+                        extracted_challenge_details = synthetic_tool_output.get("challenge")
+                        logger.info(f"Successfully generated and extracted coding challenge synthetically for session {session_id}.")
+                    else:
+                        logger.error(f"Synthetic generation of coding challenge failed or returned unexpected structure. Details: {synthetic_tool_output}")
+                except Exception as e_synth:
+                    logger.error(f"Exception during synthetic 'generate_coding_challenge_from_jd': {e_synth}", exc_info=True)
+            elif extracted_challenge_details:
+                logger.info(f"Primary extraction successful. Skipping synthetic generation for session {session_id}.")
+            else: # Not in coding challenge stage, or synthetic not attempted.
+                 logger.info(f"Not attempting synthetic generation. extracted_challenge_details is {extracted_challenge_details is not None}, stage is {latest_stage_from_graph}.")
+            # --- End: Synthetic Challenge Generation Logic ---
             
             if extracted_challenge_details:
                 logger.info(f"[CORE run_interview] Successfully extracted coding_challenge_detail for session {session_id}")
@@ -2289,7 +2371,20 @@ class AIInterviewer:
                     return InterviewStage.BEHAVIORAL_QUESTIONS.value
         
         elif current_stage == InterviewStage.CODING_CHALLENGE.value:
-            # Check if the candidate has submitted a solution and we should transition
+            # If the AI's current message is *not* a tool call (i.e., it's presenting the challenge),
+            # then transition to WAITING for the user to complete it.
+            if not getattr(ai_message, 'tool_calls', None) and not getattr(ai_message, 'tool_call_chunks', None):
+                # Check if the last message in history was a ToolMessage from 'generate_coding_challenge_from_jd'
+                # This ensures we only transition after the AI has processed the tool output and is now presenting it.
+                last_message_in_history = messages[-1] if messages else None
+                if isinstance(last_message_in_history, ToolMessage) and last_message_in_history.name == "generate_coding_challenge_from_jd":
+                    logger.info(f"AI has presented coding challenge (after processing tool output). Transitioning from {current_stage} to {InterviewStage.CODING_CHALLENGE_WAITING.value}.")
+                    return InterviewStage.CODING_CHALLENGE_WAITING.value
+                elif isinstance(last_message_in_history, dict) and last_message_in_history.get("type") == "tool" and last_message_in_history.get("data", {}).get("name") == "generate_coding_challenge_from_jd":
+                    logger.info(f"AI has presented coding challenge (after processing dict tool output). Transitioning from {current_stage} to {InterviewStage.CODING_CHALLENGE_WAITING.value}.")
+                    return InterviewStage.CODING_CHALLENGE_WAITING.value
+
+            # Original logic for user manually saying they submitted (less likely if API driven)
             submission_keywords = [
                 "submitted my solution", "finished the challenge", "completed the exercise",
                 "here\\'s my solution", "my code is ready", "implemented the solution",
@@ -2310,31 +2405,26 @@ class AIInterviewer:
                 logger.info(f"Transitioning from CODING_CHALLENGE to CODING_CHALLENGE_WAITING stage (triggered by{'metadata' if metadata_transition else 'message content'})")
                 return InterviewStage.CODING_CHALLENGE_WAITING.value
         
-        elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value:
-            # This stage is primarily a UI-driven state that indicates we're waiting for the frontend
-            # to complete the coding challenge submission flow and call the challenge-complete endpoint.
-            # The actual transition to FEEDBACK is typically handled by the continue_after_challenge method.
-            
-            # However, we provide a backup detection mechanism here for text-based interfaces
-            # by checking for evaluation language in the AI's response
-            evaluation_keywords = [
-                "your solution was", "feedback on your code", "your implementation", 
-                "code review", "assessment of your solution", "evaluation of your code"
-            ]
-            has_evaluation = any(keyword in ai_content for keyword in evaluation_keywords)
-            
-            # Also check recent history for coding evaluation data in the metadata
-            has_evaluation_data = False
-            for msg in messages[-5:]:
-                if isinstance(msg, SystemMessage) and hasattr(msg, 'content'):
-                    if "coding_evaluation:" in msg.content.lower():
-                        has_evaluation_data = True
-                        break
-            
-            if has_evaluation or has_evaluation_data:
-                logger.info(f"Transitioning from CODING_CHALLENGE_WAITING to FEEDBACK stage (triggered by{'evaluation data' if has_evaluation_data else 'evaluation keywords'})")
+        elif current_stage == InterviewStage.CODING_CHALLENGE_WAITING.value: 
+            # If the AI is about to respond and the last message in history is a ToolMessage 
+            # from 'submit_code_for_generated_challenge', it means code was submitted and processed.
+            # The stage should now be FEEDBACK for the AI to give feedback.
+            last_message_in_history = messages[-1] if messages else None
+            tool_message_processed = False
+            if isinstance(last_message_in_history, ToolMessage) and last_message_in_history.name == "submit_code_for_generated_challenge":
+                tool_message_processed = True
+            elif isinstance(last_message_in_history, dict) and last_message_in_history.get("type") == "tool" and last_message_in_history.get("data", {}).get("name") == "submit_code_for_generated_challenge":
+                tool_message_processed = True
+
+            if tool_message_processed:
+                logger.info(f"Code submission ToolMessage processed. Transitioning from {current_stage} to {InterviewStage.FEEDBACK.value}.")
                 return InterviewStage.FEEDBACK.value
-        
+            
+            # Fallback: if user explicitly asks for feedback (less common with API flow)
+            if any(kw in latest_human_message for kw in stage_transition_triggers.get(current_stage, {}).get("keywords", [])):
+                 logger.info(f"User requested feedback. Transitioning from {current_stage} to {InterviewStage.FEEDBACK.value}.")
+                 return InterviewStage.FEEDBACK.value
+
         elif current_stage == InterviewStage.FEEDBACK.value:
             # After providing feedback, transition to behavioral questions if not already done
             behavioral_transition = any(keyword in ai_content for keyword in [
@@ -2373,7 +2463,7 @@ class AIInterviewer:
                 if role_match:
                     job_role_from_state = role_match.group(1).strip()
                 
-                if coding_flag_match: # If we found the flag, we can stop searching
+                if coding_flag_match: # If we found the flag, we can stop searching this message
                     break
         
         if requires_coding_flag_from_state is not None:

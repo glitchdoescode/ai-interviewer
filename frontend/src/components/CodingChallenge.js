@@ -23,8 +23,12 @@ import {
   AccordionIcon,
   Select,
   Textarea,
+  Switch,
+  FormControl,
+  FormLabel,
+  Icon,
 } from '@chakra-ui/react';
-import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo } from 'react-icons/fa';
+import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo, FaCommentDots } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
 // import { submitChallengeCode } from '../api/interviewService'; // Comment out for Sprint 1
@@ -58,7 +62,13 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   const [evaluationResult, setEvaluationResult] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   
-  const { setInterviewStage, jobDetails } = useInterview();
+  // State for CodeMirror theme (Sprint 5 UI/UX)
+  const [editorTheme, setEditorTheme] = useState(() => {
+    const savedTheme = localStorage.getItem('editorTheme');
+    return savedTheme || 'light'; // Default to light if no saved theme
+  });
+  
+  const { setInterviewStage, jobDetails, interviewStage, setCurrentCodingChallenge } = useInterview();
   
   // Function to fetch a new coding challenge
   const fetchNewChallenge = async () => {
@@ -157,11 +167,38 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChallengeData]); // Only re-run if initialChallengeData changes
 
-  // Set the interview stage to coding challenge
+  // Add this useEffect to update internal state when the challenge prop changes
   useEffect(() => {
-    setInterviewStage('coding_challenge');
-  }, [setInterviewStage]);
+    if (initialChallengeData) {
+      console.log("CodingChallenge.js: (useEffect for initialChallengeData) Prop updated:", JSON.stringify(initialChallengeData, null, 2));
+      setCurrentChallengeDetails(initialChallengeData);
+      setLanguage(initialChallengeData.language || 'python');
+      setEvaluationResult(null); // Clear previous evaluation results
+
+      const newStarterCode = initialChallengeData.starter_code || '';
+      console.log("CodingChallenge.js: (useEffect for initialChallengeData) Preparing to setCode with:", newStarterCode);
+      setCode(newStarterCode);
+    }
+  }, [initialChallengeData]);
+
+  // Set the interview stage to coding challenge waiting
+  useEffect(() => {
+    // Only set if a challenge is loaded and the stage isn't already reflecting a waiting/active coding state
+    if (currentChallengeDetails && interviewStage !== 'coding_challenge_waiting') {
+      console.log("CodingChallenge.js: Setting interview stage to coding_challenge_waiting");
+      setInterviewStage('coding_challenge_waiting'); 
+    }
+  }, [setInterviewStage, currentChallengeDetails, interviewStage]); // Added currentChallengeDetails and interviewStage to dependencies
   
+  // Effect to save theme to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('editorTheme', editorTheme);
+  }, [editorTheme]);
+
+  const handleThemeChange = (event) => {
+    setEditorTheme(event.target.checked ? 'dark' : 'light');
+  };
+
   const handleRunCode = async () => {
     if (!code.trim()) {
       toast({
@@ -392,6 +429,22 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     });
   };
   
+  const handleReturnToInterviewer = () => {
+    console.log("CodingChallenge.js: User clicked 'Return to Interviewer'");
+    // Signal that the user is done with the coding panel and wants AI feedback.
+    // The AIInterviewer's should_continue or _determine_interview_stage should see
+    // the FEEDBACK stage and know to provide feedback on the code.
+    setInterviewStage('FEEDBACK'); // Transition to FEEDBACK stage
+    
+    // Call the onComplete prop if it exists, to let parent (ChatInterface) know.
+    // This might also hide the coding panel if ChatInterface logic depends on it.
+    if (onComplete) {
+      onComplete(code, evaluationResult); 
+    }
+    // Optionally, clear the current challenge from the context if it should disappear immediately
+    // setCurrentCodingChallenge(null);
+  };
+  
   // If no challenge is provided, show a placeholder and a button to fetch one
   if (!currentChallengeDetails) {
     return (
@@ -409,6 +462,7 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     );
   }
   
+  console.log("CodingChallenge.js: Rendering with 'code' state:", code, "and currentChallengeDetails?.id:", currentChallengeDetails?.id);
   return (
     <Box 
       borderWidth="1px" 
@@ -545,6 +599,17 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
           {/* Code Editor Tab */}
           <TabPanel>
             <VStack spacing={4} align="stretch">
+              <FormControl display="flex" alignItems="center" justifyContent="flex-end">
+                <FormLabel htmlFor="theme-switcher" mb="0">
+                  Dark Mode
+                </FormLabel>
+                <Switch 
+                  id="theme-switcher" 
+                  isChecked={editorTheme === 'dark'} 
+                  onChange={handleThemeChange} 
+                />
+              </FormControl>
+
               <HStack>
                 <Text>Language:</Text>
                 <Select 
@@ -552,17 +617,23 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                   onChange={(e) => setLanguage(e.target.value)}
                   size="sm"
                   maxW="150px"
+                  isDisabled={isEvaluating}
                 >
                   <option value="python">Python</option>
                   <option value="javascript">JavaScript</option>
-                  {/* Add more languages as supported */}
+                  <option value="java">Java</option>
+                  {/* Add more languages as supported by CodeEditor.js */}
                 </Select>
               </HStack>
+
               <CodeEditor
+                key={currentChallengeDetails?.challenge_id || currentChallengeDetails?.id || 'default-editor-key'}
+                code={code}
                 language={language}
-                value={code}
                 onChange={(newCode) => setCode(newCode)}
-                height="400px" // Adjust as needed
+                theme={editorTheme === 'dark' ? 'materialDark' : 'light'}
+                height="400px"
+                readOnly={isEvaluating || isRunningCode}
               />
               <HStack justifyContent="flex-end" spacing={4}>
                 {/* <Button 
@@ -579,6 +650,7 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                   onClick={handleRunCode}
                   isLoading={isRunningCode}
                   leftIcon={<FaPlay />}
+                  isDisabled={isEvaluating} // UI Lock: Disable Run Code during evaluation
                 >
                   Run Code
                 </Button>
@@ -663,7 +735,6 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                 )}
 
                 {/* Detailed Test Case Results */}
-                {/* Check if test_case_results exists and is an array */}
                 {evaluationResult.execution_results && evaluationResult.execution_results.detailed_results && Array.isArray(evaluationResult.execution_results.detailed_results.test_results) && evaluationResult.execution_results.detailed_results.test_results.length > 0 && (
                   <>
                     <Heading size="sm" mt={4}>Detailed Test Cases</Heading>
@@ -751,6 +822,47 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                     )}
                   </Box>
                 )}
+
+                {/* Detailed Test Case Results */}
+                {evaluationResult.test_cases_results && evaluationResult.test_cases_results.length > 0 && (
+                  <Box>
+                    <Heading size="sm" mb={2} mt={4}>Detailed Test Results</Heading>
+                    <Accordion allowMultiple>
+                      {evaluationResult.test_cases_results.map((result, index) => (
+                        <AccordionItem key={index}>
+                          <h2>
+                            <AccordionButton>
+                              <Box flex="1" textAlign="left">
+                                Test Case {index + 1}: <Badge colorScheme={result.passed ? 'green' : 'red'}>{result.passed ? 'Passed' : 'Failed'}</Badge>
+                              </Box>
+                              <AccordionIcon />
+                            </AccordionButton>
+                          </h2>
+                          <AccordionPanel pb={4}>
+                            <VStack align="stretch" spacing={2}>
+                              <Text><strong>Input:</strong> <pre>{JSON.stringify(result.input, null, 2)}</pre></Text>
+                              <Text><strong>Expected Output:</strong> <pre>{JSON.stringify(result.expected_output, null, 2)}</pre></Text>
+                              <Text><strong>Actual Output:</strong> <pre>{result.actual_output !== undefined ? JSON.stringify(result.actual_output, null, 2) : (result.stdout || '(No output)')}</pre></Text>
+                              {result.error && <Text><strong>Error:</strong> <pre>{result.error}</pre></Text>}
+                              {result.stdout && <Text><strong>Stdout:</strong> <pre>{result.stdout}</pre></Text>}
+                              {result.stderr && <Text><strong>Stderr:</strong> <pre>{result.stderr}</pre></Text>}
+                              {result.reason && !result.passed && <Text><strong>Reason:</strong> {result.reason}</Text>}
+                            </VStack>
+                          </AccordionPanel>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  </Box>
+                )}
+                {/* Button to return to interviewer */} 
+                <Button 
+                  mt={6}
+                  colorScheme="blue"
+                  leftIcon={<Icon as={FaCommentDots} />}
+                  onClick={handleReturnToInterviewer}
+                >
+                  Return to Interviewer for Feedback
+                </Button>
               </VStack>
             </TabPanel>
           )}

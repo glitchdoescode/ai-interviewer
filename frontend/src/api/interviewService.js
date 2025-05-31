@@ -87,7 +87,10 @@ export const startInterview = async (message, userId = null, jobRoleData = null)
     }
     
     const response = await api.post('/interview', requestBody);
-    return response.data;
+    return {
+      ...response.data,
+      codingChallengeDetail: response.data.coding_challenge_detail
+    };
   } catch (error) {
     return handleApiError(error, 'Failed to start interview');
   }
@@ -125,7 +128,10 @@ export const continueInterview = async (message, sessionId, userId, jobRoleData 
     }
     
     const response = await api.post(`/interview/${sessionId}`, requestBody);
-    return response.data;
+    return {
+      ...response.data,
+      codingChallengeDetail: response.data.coding_challenge_detail
+    };
   } catch (error) {
     return handleApiError(error, 'Failed to continue interview');
   }

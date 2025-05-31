@@ -183,33 +183,44 @@ const ChatInterface = ({ jobRoleData }) => {
         response = await startInterview(messageInput, userId, contextJobRoleData);
         
         // Set the session ID from the response
-        setSessionId(response.session_id);
+        if (response && response.session_id) {
+          setSessionId(response.session_id);
+        }
       }
       
       // Add AI response to chat
-      addMessage({
-        role: 'assistant',
-        content: response.response,
-        tool_calls: response.tool_calls,
-        audioUrl: response.audio_response_url
-      });
+      if (response && response.response) {
+        addMessage({
+          role: 'assistant',
+          content: response.response,
+          tool_calls: response.tool_calls,
+          audioUrl: response.audio_response_url
+        });
+      }
       
-      // Update interview stage if provided in the response
-      if (response.interview_stage) {
-        console.log('Updating interview stage to:', response.interview_stage);
+      // Update interview stage and coding challenge if provided in the response
+      if (response && response.interview_stage) {
+        console.log('ChatInterface.js: API response received. Full response:', JSON.stringify(response, null, 2));
+        console.log('ChatInterface.js: Updating interview stage to:', response.interview_stage);
         setInterviewStage(response.interview_stage);
         
-        // Check for coding challenge data if stage is coding_challenge
-        if (response.interview_stage === 'coding_challenge' && response.coding_challenge_detail) {
-          console.log("Received structured coding challenge data:", response.coding_challenge_detail);
-          setCurrentCodingChallenge(response.coding_challenge_detail);
-        } else if (response.interview_stage !== 'coding_challenge') {
-          // If not in coding challenge stage, ensure any previous challenge is cleared
-          // This handles cases where the interview might move away from a challenge
-          // without an explicit submission from the user via UI (e.g. AI moves on)
-          if (currentCodingChallenge) {
-            console.log("Interview stage is not coding_challenge, clearing any active challenge.");
-            setCurrentCodingChallenge(null);
+        // Log the details before the conditional check
+        console.log('ChatInterface.js: Raw API response.codingChallengeDetail from service:', JSON.stringify(response.codingChallengeDetail, null, 2));
+        console.log('ChatInterface.js: API response.interview_stage for challenge check:', response.interview_stage);
+
+        // Check for coding challenge data if stage is coding_challenge or coding_challenge_waiting
+        if ((response.interview_stage === 'coding_challenge' || response.interview_stage === 'coding_challenge_waiting') && response.codingChallengeDetail) {
+          console.log(`ChatInterface.js: Stage is '${response.interview_stage}' AND response.codingChallengeDetail is TRUTHY.`);
+          console.log("ChatInterface.js: Inspecting response.codingChallengeDetail before calling setCurrentCodingChallenge:", JSON.stringify(response.codingChallengeDetail, null, 2));
+          
+          setCurrentCodingChallenge(response.codingChallengeDetail);
+          console.log("ChatInterface.js: setCurrentCodingChallenge CALLED with:", JSON.stringify(response.codingChallengeDetail, null, 2));
+        } else {
+          console.log(`ChatInterface.js: Stage is '${response.interview_stage}' OR response.codingChallengeDetail is FALSY.`);
+          if (response.interview_stage === 'coding_challenge' || response.interview_stage === 'coding_challenge_waiting') {
+            console.warn(`ChatInterface.js: Stage IS '${response.interview_stage}', but response.codingChallengeDetail is FALSY. Value:`, response.codingChallengeDetail);
+            // If stage indicates challenge but no details, might clear existing if any, or rely on Interview.js to show loading
+            // setCurrentCodingChallenge(null); // Optionally clear if stage is challenge but no details given
           }
         }
       }

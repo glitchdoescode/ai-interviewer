@@ -29,14 +29,13 @@ from slowapi.errors import RateLimitExceeded
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 from starlette.middleware.sessions import SessionMiddleware # <--- ADD IMPORT
 
-from ai_interviewer.core.ai_interviewer import AIInterviewer
-
+from ai_interviewer.core.ai_interviewer import AIInterviewer, InterviewStage # MODIFIED
 from ai_interviewer.utils.speech_utils import VoiceHandler
 from ai_interviewer.utils.config import get_llm_config, get_db_config, get_speech_config
 from ai_interviewer.utils.transcript import extract_messages_from_transcript, safe_extract_content
 from ai_interviewer.utils.memory_manager import InterviewMemoryManager
 from langgraph.types import interrupt, Command
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage, ToolMessage # ADDED ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd, submit_code_for_generated_challenge # MODIFIED
@@ -1357,6 +1356,13 @@ async def submit_code_solution(
         logger.warning(f"'current_coding_challenge_details_for_submission' in session {submission.session_id} is not a dict or list. Type: {type(challenge_data_from_session)}")
         raise HTTPException(status_code=400, detail="Invalid format for 'current_coding_challenge_details_for_submission' in session metadata")
 
+    # --- ADDED LOG FOR TEST CASES ---
+    retrieved_test_cases = challenge_data_from_session.get('test_cases') if isinstance(challenge_data_from_session, dict) else "Not a dict"
+    logger.info(f"[SUBMIT_CODE] Test cases retrieved from session for challenge {submission.challenge_id}: {json.dumps(retrieved_test_cases, indent=2)}")
+    if isinstance(retrieved_test_cases, list):
+        logger.info(f"[SUBMIT_CODE] Number of test cases retrieved: {len(retrieved_test_cases)}")
+    # --- END ADDED LOG ---
+
     try:
         # Assume skill_level might be part of session or a default
         # For now, using a default. This should ideally come from user context or session.
@@ -1452,6 +1458,121 @@ async def submit_code_solution(
         logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] evaluation_results_dict: {json.dumps(evaluation_results_dict, indent=2)}")
         logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] Constructed overall_summary_data: {json.dumps(overall_summary_data, indent=2)}")
         # --- END ADDED DETAILED LOGGING ---
+
+        # --- MODIFICATION START: Update session with ToolMessage and set stage to FEEDBACK ---
+        if interviewer_instance and interviewer_instance.session_manager:
+            try:
+                # Create a ToolMessage with the evaluation results
+                # The 'name' of the tool that was conceptually called by the submission.
+                # The 'tool_call_id' should ideally be unique or linked if possible.
+                tool_call_id = f"eval_{submission.challenge_id}_{uuid.uuid4().hex[:4]}"
+                
+                # The content of the ToolMessage is typically a string representation of the tool's output.
+                # submit_code_for_generated_challenge already returns a dict. We'll use its JSON string.
+                tool_message_content = json.dumps(evaluation_results_dict)
+                
+                tool_message = ToolMessage(content=tool_message_content, tool_call_id=tool_call_id, name="submit_code_for_generated_challenge")
+                
+                # Add this ToolMessage to the session history
+                # This assumes session_manager has a method like add_message_to_session or similar
+                # For now, let's fetch messages, append, and update.
+                # More robust way: interviewer_instance.workflow.update_state(...) if graph directly managed
+                
+                current_messages = session_data.get("messages", [])
+                current_messages.append({
+                    "type": "tool", # Storing as dict for now, as per current session format
+                    "data": {
+                        "content": tool_message_content,
+                        "tool_call_id": tool_call_id,
+                        # Add name if your AIMessage processing expects it for tool messages
+                        "name": "submit_code_for_generated_challenge" 
+                    }
+                })
+                session_data["messages"] = current_messages
+                
+                # Update the interview stage to FEEDBACK
+                session_metadata["interview_stage"] = InterviewStage.FEEDBACK.value
+                session_data["metadata"] = session_metadata # Ensure metadata is part of session_data being updated
+
+                # Corrected session update:
+                # 1. Update metadata (which includes the stage)
+                interviewer_instance.session_manager.update_session_metadata(submission.session_id, session_metadata)
+                
+                # 2. Add the tool message to the session's message history
+                # Assuming add_message_to_session handles storing the message appropriately
+                interviewer_instance.session_manager.add_message_to_session(
+                    session_id=submission.session_id,
+                    message_content=tool_message_content, # This is the JSON string of evaluation_results_dict
+                    role="tool",
+                    # Pass name and tool_call_id if your add_message_to_session supports them as kwargs
+                    # or if it expects a more structured message object.
+                    # Based on the ToolMessage object created above:
+                    name="submit_code_for_generated_challenge",
+                    tool_call_id=tool_call_id 
+                )
+                logger.info(f"Session {submission.session_id} updated with ToolMessage and stage set to FEEDBACK using corrected methods.")
+
+                # --- REVISED SESSION AND GRAPH STATE UPDATE (PART 1: Checkpoint) ---
+                if interviewer_instance.checkpointer:
+                    config = {"configurable": {"thread_id": submission.session_id}}
+                    try:
+                        checkpoint_tuple = await interviewer_instance.checkpointer.aget_tuple(config)
+                        if checkpoint_tuple and checkpoint_tuple.checkpoint:
+                            current_graph_messages = []
+                            # Handle if checkpoint is a dict (common for LangGraph state)
+                            if isinstance(checkpoint_tuple.checkpoint, dict):
+                                current_graph_messages = checkpoint_tuple.checkpoint.get("messages", [])
+                            # Handle if checkpoint is an InterviewState object itself
+                            elif hasattr(checkpoint_tuple.checkpoint, "messages"):
+                                current_graph_messages = checkpoint_tuple.checkpoint.messages
+                            else:
+                                logger.warning(f"Unrecognized checkpoint structure for session {submission.session_id}. Type: {type(checkpoint_tuple.checkpoint)}")
+                                # Default to empty list if structure is unknown, or handle error
+
+                            if not isinstance(current_graph_messages, list):
+                                logger.error(f"Messages in checkpoint for session {submission.session_id} is not a list but {type(current_graph_messages)}. Re-initializing.")
+                                current_graph_messages = []
+                            
+                            current_graph_messages.append(tool_message)
+                            
+                            # Update the messages back into the checkpoint structure
+                            if isinstance(checkpoint_tuple.checkpoint, dict):
+                                checkpoint_tuple.checkpoint["messages"] = current_graph_messages
+                            elif hasattr(checkpoint_tuple.checkpoint, "messages"):
+                                checkpoint_tuple.checkpoint.messages = current_graph_messages
+                            
+                            # Preserve existing metadata and parent_config from the tuple
+                            await interviewer_instance.checkpointer.aput(
+                                config, 
+                                checkpoint_tuple.checkpoint, # The modified checkpoint object/dict
+                                checkpoint_tuple.metadata, 
+                                checkpoint_tuple.parent_config
+                            )
+                            logger.info(f"Appended ToolMessage to LangGraph checkpoint for session {submission.session_id}")
+                        else:
+                            logger.warning(f"Could not retrieve valid LangGraph checkpoint tuple for session {submission.session_id} to append ToolMessage.")
+                    except Exception as e_checkpoint_get_put:
+                        logger.error(f"Error getting or putting checkpoint for session {submission.session_id}: {e_checkpoint_get_put}", exc_info=True)
+                else:
+                    logger.warning(f"No checkpointer in interviewer_instance for session {submission.session_id}. Cannot append ToolMessage to graph state.")
+
+                # --- (PART 2: Metadata update - temporarily commented out) ---
+                # # Fetch fresh metadata to avoid overwriting concurrent updates
+                # fresh_session_data = interviewer_instance.session_manager.get_session(submission.session_id)
+                # if fresh_session_data and "metadata" in fresh_session_data:
+                #     session_metadata_for_stage_update = fresh_session_data["metadata"]
+                # else:
+                #     logger.warning(f"Could not fetch fresh metadata for session {submission.session_id} before stage update. Using existing or empty metadata.")
+                #     session_metadata_for_stage_update = session_metadata # Fallback to potentially stale
+                # session_metadata_for_stage_update["interview_stage"] = InterviewStage.FEEDBACK.value
+                # interviewer_instance.session_manager.update_session_metadata(submission.session_id, session_metadata_for_stage_update)
+                # logger.info(f"Session {submission.session_id} metadata updated to stage FEEDBACK.")
+                # --- END REVISED SESSION AND GRAPH STATE UPDATE ---
+
+            except Exception as e_session_update:
+                logger.error(f"Error updating session after code submission for {submission.session_id}: {e_session_update}", exc_info=True)
+                # Decide if this should fail the request or just log. For now, just log.
+        # --- MODIFICATION END ---
 
         return CodingSubmissionResponse(
             status=evaluation_results_dict.get("status", "unknown"),

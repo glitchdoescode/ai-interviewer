@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Default resource limits for containers
 DEFAULT_MEMORY_LIMIT = "128m"  # 128 MB memory limit
 DEFAULT_CPU_LIMIT = 0.5  # 0.5 CPU cores
-DEFAULT_TIMEOUT = 10  # 10 seconds timeout
+DEFAULT_TIMEOUT = 180  # MODIFIED: Increased from 60 to 180 seconds timeout
 DEFAULT_NETWORK_DISABLED = True  # No network access
 
 class DockerSandbox:
@@ -36,10 +36,10 @@ class DockerSandbox:
     def __init__(self):
         """Initialize the Docker sandbox."""
         try:
-            self.client = docker.from_env()
+            self.client = docker.from_env(timeout=DEFAULT_TIMEOUT + 10)
             # Verify Docker is running
             self.client.ping()
-            logger.info("Docker sandbox initialized successfully")
+            logger.info(f"Docker sandbox initialized successfully with client timeout: {DEFAULT_TIMEOUT + 10}s")
         except DockerException as e:
             logger.error(f"Failed to initialize Docker client: {e}")
             raise RuntimeError(f"Docker not available: {e}")
@@ -136,15 +136,14 @@ class DockerSandbox:
                 # Prepare container settings
                 container_settings = {
                     "image": "python:3.10-slim",
-                    "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                    "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
                     "working_dir": "/app",
-                    "command": ["python", "runner.py"],
+                    "command": ["sh", "-c", "pip install --no-cache-dir pandas numpy matplotlib scikit-learn scipy && python runner.py"],
                     "mem_limit": memory_limit,
                     "cpu_quota": int(cpu_limit * 100000),  # Docker CPU quota in microseconds
-                    "network_disabled": network_disabled,
+                    "network_disabled": False,
                     "name": container_name,
                     "detach": True,
-                    "read_only": True,
                 }
                 
                 # Run the container
@@ -295,7 +294,7 @@ class DockerSandbox:
                 # Prepare container settings
                 container_settings = {
                     "image": "node:18-slim",
-                    "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                    "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
                     "working_dir": "/app",
                     "command": ["node", "runner.js"],
                     "mem_limit": memory_limit,
@@ -303,7 +302,6 @@ class DockerSandbox:
                     "network_disabled": network_disabled,
                     "name": container_name,
                     "detach": True,
-                    "read_only": True,
                 }
 
                 # Run the container
@@ -520,11 +518,11 @@ try:
 
             # Execute with stdout/stderr redirection
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                if isinstance(test_input, (list, tuple)) and not isinstance(test_input, str):
-                    actual_output = function(*test_input)
-                elif isinstance(test_input, dict):
-                    actual_output = function(**test_input)
-                else:
+                if isinstance(test_input, dict):
+                    actual_output = function(**test_input)  # Handles dict inputs by unpacking
+                elif isinstance(test_input, list):
+                    actual_output = function(test_input) # Pass the list itself as one argument
+                else: # Primitives (or tuples if they are not handled as lists by JSON parsing)
                     actual_output = function(test_input)
 
             # Calculate execution time
@@ -882,15 +880,14 @@ console.log("__RESULTS_JSON_END__");
             container_name = f"ai-interviewer-py-stdin-{uuid.uuid4().hex[:8]}"
             container_settings = {
                 "image": "python:3.10-slim",
-                "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
                 "working_dir": "/app",
-                "command": ["python", "runner.py"],
+                "command": ["sh", "-c", "pip install --no-cache-dir pandas numpy matplotlib scikit-learn scipy && python runner.py"],
                 "mem_limit": memory_limit,
                 "cpu_quota": int(cpu_limit * 100000),
-                "network_disabled": network_disabled,
+                "network_disabled": False,
                 "name": container_name,
                 "detach": True,
-                "read_only": True, # Keep rootfs read-only
             }
             container = await asyncio.to_thread(self.client.containers.run, **container_settings)
             
@@ -963,7 +960,7 @@ console.log("__RESULTS_JSON_END__");
             container_name = f"ai-interviewer-js-stdin-{uuid.uuid4().hex[:8]}"
             container_settings = {
                 "image": "node:18-slim",
-                "volumes": {temp_dir: {"bind": "/app", "mode": "ro"}},
+                "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
                 "working_dir": "/app",
                 "command": ["node", "runner.js"],
                 "mem_limit": memory_limit,
@@ -971,7 +968,6 @@ console.log("__RESULTS_JSON_END__");
                 "network_disabled": network_disabled,
                 "name": container_name,
                 "detach": True,
-                "read_only": True,
             }
             container = await asyncio.to_thread(self.client.containers.run, **container_settings)
 

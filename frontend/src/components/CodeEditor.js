@@ -1,9 +1,12 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { javascript } from '@codemirror/lang-javascript';
 import { java } from '@codemirror/lang-java';
 import { Box } from '@chakra-ui/react';
+
+// Import a dark theme
+import { materialDark } from '@uiw/codemirror-theme-material';
 
 // You can explore themes here: https://uiwjs.github.io/react-codemirror/#/theme/home
 // For example, to use a dark theme like aiu:
@@ -11,7 +14,15 @@ import { Box } from '@chakra-ui/react';
 // Or for a material dark theme:
 // import { materialDark } from '@uiw/codemirror-theme-material';
 
-const CodeEditor = ({ code, language, onChange, theme = 'light' /* or your preferred theme e.g., aiu */ }) => {
+const CodeEditor = ({ code, language, onChange, theme = 'light', height = '400px', readOnly = false }) => {
+  // Log on every render, to see what props it gets
+  console.log(`CodeEditor.js: Component rendered. 'code' prop is: "${code}", Language: "${language}", ReadOnly: ${readOnly}`);
+
+  // Log when the 'code' prop specifically changes
+  useEffect(() => {
+    console.log(`CodeEditor.js: (useEffect) 'code' prop received/changed to: "${code}"`);
+  }, [code]);
+
   const getLanguageExtension = (lang) => {
     const langLower = lang?.toLowerCase();
     if (langLower === 'python' || langLower === 'py') return [python()];
@@ -28,22 +39,15 @@ const CodeEditor = ({ code, language, onChange, theme = 'light' /* or your prefe
   return (
     <Box borderWidth="1px" borderRadius="md" overflow="hidden">
       <CodeMirror
-        value={code}
-        height="400px" // Or use CSS to make it flexible
+        value={code || ''} // Ensure value is never null/undefined for CodeMirror
+        height={height}
         extensions={extensions}
-        onChange={onChange} // `onChange` in react-codemirror passes the value directly
-        theme={theme} // Example: 'light', 'dark', or imported themes like `aiu`
-        // Common options you might want to set:
-        // basicSetup={{
-        //   foldGutter: true,
-        //   dropCursor: true,
-        //   allowMultipleSelections: true,
-        //   indentOnInput: true,
-        //   // You can disable lineNumbers, highlightActiveLineGutter, etc. here
-        // }}
+        onChange={onChange}
+        theme={theme === 'materialDark' ? materialDark : theme} // Apply imported theme
+        readOnly={readOnly}
       />
     </Box>
   );
 };
 
-export default CodeEditor; 
+export default CodeEditor;

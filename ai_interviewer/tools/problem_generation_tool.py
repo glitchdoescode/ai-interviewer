@@ -26,6 +26,9 @@ from ai_interviewer.tools.pair_programming import HintGenerator
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Constants for fallback challenge generation
+FALLBACK_PROBLEM_STATEMENT = "Write a Python function to reverse a given string."
+
 class TestCase(BaseModel):
     """Model for a single test case."""
     input: Any = Field(..., description="Input for the test case")
@@ -63,18 +66,18 @@ async def generate_coding_challenge_from_jd(
         Dictionary containing the generated coding challenge with problem statement,
         test cases, and reference solution.
     """
+    logger.info(f"[generate_coding_challenge_from_jd] Called with difficulty: {difficulty_level}, skills: {skills_required}, job_description: {job_description[:100]}...")
+
     try:
         logger.info(f"Generating coding challenge for skills: {skills_required}")
         logger.info(f"Difficulty level: {difficulty_level}")
         
-        # Initialize LLM with appropriate temperature for consistent problem generation
         llm_config = get_llm_config()
         model = ChatGoogleGenerativeAI(
             model=llm_config["model"],
-            temperature=0.2  # Lower temperature for more consistent output
+            temperature=0.2
         )
         
-        # Get formatted prompt from template
         prompt_text = format_problem_generation_prompt(
             job_description=job_description,
             skills_required=skills_required,
@@ -82,28 +85,20 @@ async def generate_coding_challenge_from_jd(
         )
         logger.debug(f"Formatted prompt for LLM: {prompt_text}")
         
-        # Call the LLM
+        response_content = ""
         try:
             logger.info("Attempting to call the LLM for problem generation...")
             response = await asyncio.wait_for(
                 model.ainvoke(prompt_text), 
-                timeout=90.0  # Add a 90-second timeout
+                timeout=90.0
             )
             response_content = response.content
-            logger.info("Successfully received response from LLM.")
-            # logger.debug(f"Raw LLM response content: {response_content}")
-
-            # Strip markdown fences if present
+            logger.info(f"[generate_coding_challenge_from_jd] Raw LLM Response for challenge generation: {response_content[:500]}...") # LOG RAW LLM RESPONSE
+            
             if response_content.strip().startswith("```json"):
-                # Handles ```json ... ```
                 response_content = response_content.strip()[7:-3].strip()
             elif response_content.strip().startswith("```"):
-                # Handles ``` ... ```
                 response_content = response_content.strip()[3:-3].strip()
-            
-            # Pre-process the response_content to fix common LLM JSON errors
-            # (Existing pre-processing code, if any, would be here)
-            # Based on current file, there isn't any complex re.sub here anymore.
 
         except asyncio.TimeoutError:
             logger.error("LLM call timed out after 90 seconds.")
@@ -112,58 +107,66 @@ async def generate_coding_challenge_from_jd(
             logger.error(f"Error during LLM invocation: {e}", exc_info=True)
             return generate_fallback_challenge(skills_required, difficulty_level, f"LLM invocation error: {e}")
         
-        # Parse and validate the response
         try:
-            result = json.loads(response_content)
+            parsed_json_result = json.loads(response_content)
+            logger.info(f"[generate_coding_challenge_from_jd] Successfully parsed LLM response. Problem statement: {parsed_json_result.get('problem_statement', 'N/A')[:100]}...") # LOG PARSED DATA
             
-            # Validate with Pydantic model
-            challenge = CodingChallenge(**result)
+            challenge = CodingChallenge(**parsed_json_result)
             
-            # Add metadata
-            result["difficulty_level"] = difficulty_level
-            result["skills_targeted"] = skills_required
-            
-            # Generate a unique challenge ID
-            challenge_id = f"gen_{uuid.uuid4().hex[:8]}"
-            result["challenge_id"] = challenge_id
-            result["id"] = challenge_id  # For compatibility
-            
-            # Generate starter code from the reference solution
+            # Log reference solution before starter code generation
+            ref_solution_for_log = challenge.reference_solution if challenge.reference_solution else ""
+            logger.info(f"[generate_coding_challenge_from_jd] Reference solution received: \'{ref_solution_for_log[:200]}...\'")
+
             if challenge.reference_solution:
                 challenge.starter_code = _generate_starter_code(challenge.reference_solution).strip()
             else:
-                challenge.starter_code = "# TODO: Write your Python solution here\n".strip()
+                challenge.starter_code = "# TODO: Write your Python solution here\\n".strip()
+            logger.info(f"[generate_coding_challenge_from_jd] Generated starter_code: \'{challenge.starter_code[:200]}...\'") # LOG GENERATED STARTER CODE
             
-            # Add language, defaults to Python
-            if "language" not in result:
-                result["language"] = "python"
+            result_dict = challenge.model_dump() # Use .model_dump() for Pydantic v2+
+            
+            result_dict["difficulty_level"] = difficulty_level
+            result_dict["skills_targeted"] = skills_required
+            
+            challenge_id = f"gen_{uuid.uuid4().hex[:8]}"
+            result_dict["challenge_id"] = challenge_id
+            result_dict["id"] = challenge_id
+            
+            if "language" not in result_dict:
+                result_dict["language"] = "python"
                 
-            # Add title if not present
-            if "title" not in result:
-                # Extract a title from the problem statement
-                first_line = result["problem_statement"].strip().split("\n")[0]
-                result["title"] = first_line[:50] + ("..." if len(first_line) > 50 else "")
+            if "title" not in result_dict:
+                first_line = result_dict["problem_statement"].strip().split("\\n")[0]
+                result_dict["title"] = first_line[:50] + ("..." if len(first_line) > 50 else "")
                 
-            # Add success status for compatibility with frontend expectations
-            result["status"] = "success"
-            
-            # Make test cases compatible with the coding_tools format
-            result["visible_test_cases"] = _prepare_visible_test_cases(result["test_cases"])
-            
-            # Add evaluation criteria for frontend
-            result["evaluation_criteria"] = {
+            result_dict["status"] = "success"
+            result_dict["visible_test_cases"] = _prepare_visible_test_cases(result_dict["test_cases"])
+            result_dict["evaluation_criteria"] = {
                 "correctness": "Code produces correct output for all test cases",
                 "efficiency": "Code uses efficient algorithms and data structures",
                 "code_quality": "Code follows best practices and style guidelines",
                 "documentation": "Code is well-documented with comments and docstrings"
             }
             
-            return result
+            # Ensure optional fields are present
+            result_dict.setdefault("tags", [])
+            result_dict.setdefault("hints", [])
+
+            logger.info(f"[generate_coding_challenge_from_jd] Final challenge_data before returning (starter_code snippet): \'{result_dict.get('starter_code', 'N/A')[:200]}...\'")
+
+            return {
+                "status": "success",
+                "challenge": result_dict # Return the dictionary representation
+            }
             
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing LLM response as JSON: {e}")
-            logger.error(f"Raw response: {response_content}")
-            raise
+            logger.error(f"Raw response content that failed parsing: {response_content}")
+            # Return fallback, do not raise, as per original structure.
+            return generate_fallback_challenge(skills_required, difficulty_level, f"JSON parsing error: {e}. Response: {response_content[:200]}")
+        except Exception as e_pydantic: # Catch Pydantic validation errors or other issues
+            logger.error(f"Error creating CodingChallenge model or processing data: {e_pydantic}", exc_info=True)
+            return generate_fallback_challenge(skills_required, difficulty_level, f"Data validation or processing error: {e_pydantic}")
             
     except Exception as e:
         logger.error(f"Outer error generating coding challenge: {e}", exc_info=True)
@@ -258,11 +261,11 @@ async def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], ca
         return {
             "status": "submitted",
             "challenge_id": challenge_id,
+            "candidate_code": candidate_code,
             "execution_results": execution_results,
             "feedback": feedback,
             "evaluation": {
-                "passed": execution_results.get("status") == "success" and 
-                         execution_results.get("pass_count", 0) == execution_results.get("total_tests", 0),
+                "passed": execution_results.get("status") == "success" and execution_results.get("pass_count", 0) == execution_results.get("total_tests", 0),
                 "pass_rate": feedback["correctness"].get("pass_rate", 0),
                 "code_quality_score": feedback["code_quality"].get("overall_score", 0),
                 "summary": feedback["summary"],
@@ -273,14 +276,13 @@ async def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], ca
         }
         
     except Exception as e:
-        logger.error(f"Error processing code submission: {e}")
+        logger.error(f"Error processing code submission for generated challenge: {e}")
         import traceback
-        traceback_str = traceback.format_exc()
-        logger.error(f"Detailed traceback: {traceback_str}")
+        logger.error(traceback.format_exc()) # Ensure full traceback is logged
         return {
             "status": "error",
-            "message": str(e),
-            "traceback": traceback_str
+            "challenge_id": challenge_id,
+            "message": str(e)
         }
 
 @tool
@@ -295,48 +297,45 @@ async def get_hint_for_generated_challenge(challenge_data: Dict[str, Any], curre
         A dictionary containing the generated hint.
     """
     try:
-        problem_statement = challenge_data.get("problem_statement", "")
-        reference_solution = challenge_data.get("reference_solution", "")
-        
-        if not problem_statement or not reference_solution:
-            logger.warning("Missing problem statement or reference solution for hint generation.")
-            return {"status": "error", "message": "Challenge data is incomplete for hint generation."}
+        challenge_id = challenge_data.get("challenge_id", challenge_data.get("id", "unknown"))
+        logger.info(f"Generating hint for generated challenge: {challenge_id}")
 
-        llm_config = get_llm_config()
-        model = ChatGoogleGenerativeAI(model=llm_config["model"], temperature=0.3) # Slightly higher temp for creative hints
+        # Prepare challenge_info for HintGenerator
+        challenge_info_for_generator = {
+            "id": challenge_id,
+            "title": challenge_data.get("title", ""),
+            "description": challenge_data.get("problem_statement", ""),
+            "difficulty": challenge_data.get("difficulty_level", "intermediate"),
+            "language": challenge_data.get("language", "python"),
+            "hints": challenge_data.get("hints", []),
+            "tags": challenge_data.get("tags", [])
+            # Add other fields if HintGenerator uses them, e.g. reference_solution if needed by a specific hint strategy
+        }
 
-        prompt = format_hint_generation_prompt(
-            problem_statement=problem_statement,
-            current_code=current_code,
-            reference_solution=reference_solution,
-            error_message=error_message
+        # Use the more sophisticated HintGenerator
+        # skill_level can be passed if available, defaulting to intermediate for now
+        hints_list = HintGenerator.generate_hints(
+            code=current_code,
+            challenge_info=challenge_info_for_generator,
+            error_message=error_message,
+            skill_level="intermediate" 
         )
-        logger.info("Attempting to call LLM for hint generation...")
         
-        response = await asyncio.wait_for(
-            model.ainvoke(prompt),
-            timeout=30.0 # 30 second timeout for hint generation
-        )
+        logger.info(f"Successfully generated {len(hints_list)} hints using HintGenerator for challenge {challenge_id}.")
         
-        hints_text = response.content
-        logger.info("Successfully received hint response from LLM.")
-        
-        # Parse numbered hints
-        hints_list = [h.strip() for h in re.findall(r'\\d+\\.\\s*(.*)', hints_text)]
-        
-        if not hints_list and hints_text: # Fallback if regex doesn't match but we have content
-            hints_list = [hints_text.strip()]
-
         return {
             "status": "success",
+            "challenge_id": challenge_id,
             "hints": hints_list if hints_list else ["Sorry, I could not generate a specific hint right now. Try to break down the problem into smaller steps."],
+            "related_concepts": challenge_data.get("tags", []) # Include relevant concepts/tags
         }
-    except asyncio.TimeoutError:
-        logger.error("Hint generation LLM call timed out.")
-        return {"status": "error", "message": "Hint generation timed out."}
     except Exception as e:
-        logger.error(f"Error generating hint: {e}", exc_info=True)
-        return {"status": "error", "message": f"Could not generate hint: {e}"}
+        logger.error(f"Error generating hint for generated challenge: {e}", exc_info=True)
+        return {
+            "status": "error", 
+            "challenge_id": challenge_id,
+            "message": f"Could not generate hint: {e}"
+        }
 
 def generate_fallback_challenge(skills_required: List[str], difficulty_level: str, error_info: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -350,9 +349,9 @@ def generate_fallback_challenge(skills_required: List[str], difficulty_level: st
     fallback_data = {
         "problem_statement": f"This is a fallback coding challenge for {primary_skill} at {difficulty_level} level. Implement a function that reverses a string.",
         "test_cases": [
-            {"input": "hello", "expected_output": "olleh", "is_hidden": False, "explanation": "Simple case"},
-            {"input": "Python", "expected_output": "nohtyP", "is_hidden": False, "explanation": "Case with capitals"},
-            {"input": "", "expected_output": "", "is_hidden": False, "explanation": "Empty string"}
+            TestCase(input="hello", expected_output="olleh", is_hidden=False, explanation="Simple case"),
+            TestCase(input="Python", expected_output="nohtyP", is_hidden=False, explanation="Case with capitals"),
+            TestCase(input="", expected_output="", is_hidden=False, explanation="Empty string")
         ],
         "reference_solution": "def reverse_string(s):\\n    return s[::-1]",
         "language": "python",
@@ -373,55 +372,94 @@ def generate_fallback_challenge(skills_required: List[str], difficulty_level: st
             "correctness": "Code produces correct output for all test cases",
         }
     }
-    # Make test cases compatible with Pydantic model if needed for other parts of system
-    validated_test_cases = []
-    for tc_data in fallback_data["test_cases"]:
-        # Ensure all required fields for TestCase model are present, even if with defaults
-        tc_data.setdefault("is_hidden", False) 
-        tc_data.setdefault("explanation", "")
-        validated_test_cases.append(TestCase(**tc_data)) # Validate against TestCase model
-    fallback_data["test_cases"] = validated_test_cases
+    # Convert TestCase objects in test_cases to simple dicts for JSON serializability
+    fallback_data["test_cases"] = [tc.model_dump() for tc in fallback_data["test_cases"]]
     
     return fallback_data
 
 def _generate_starter_code(reference_solution: str) -> str:
     """
-    Generate starter code from a reference solution.
-    
+    Generate starter code from a Python reference solution.
+    Attempts to remove comments, docstrings, and function bodies,
+    replacing them with 'pass' and a TODO comment.
+    Keeps import statements and class definitions if possible.
+
     Args:
-        reference_solution: The reference solution
-        
+        reference_solution: The reference solution in Python.
+
     Returns:
-        Starter code template
+        Starter code template.
     """
-    # Extract function signature
-    lines = reference_solution.strip().split('\n')
-    if not lines:
-        return "# Please implement your solution here"
-    
-    # Get function definition line
-    func_def = lines[0]
-    
-    # Create starter code with function signature and placeholders
-    starter_code = [func_def]
-    starter_code.append("    # Write your code here")
-    starter_code.append("    pass")
-    starter_code.append("")
-    
-    # Add example usage comments
-    if "def " in func_def:
-        # Extract function name
-        func_name = func_def.split("def ")[1].split("(")[0].strip()
-        starter_code.append("# Example usage:")
+    logger.info(f"[generate_starter_code] Input reference_solution (first 300 chars): '{reference_solution[:300]}...'")
+
+    # 1. Remove multiline docstrings (greedy match)
+    # This handles both """...""" and '''...'''
+    code = re.sub(r'"""[\s\S]*?"""', '', reference_solution, flags=re.MULTILINE)
+    code = re.sub(r"'''[\s\S]*?'''", '', code, flags=re.MULTILINE)
+
+    # 2. Process line by line
+    lines = code.split('\n')
+    processed_lines = []
+    in_function_body = False
+    function_indent = 0
+
+    for line in lines:
+        stripped_line = line.strip()
+
+        # Remove single-line comments
+        if '#' in stripped_line:
+            stripped_line = stripped_line.split('#', 1)[0].rstrip()
+            line = line[:len(line) - len(line.lstrip())] + stripped_line # Preserve original indent
+
+        if not stripped_line: # Keep empty lines outside function bodies for readability
+            if not in_function_body:
+                processed_lines.append("")
+            continue
+
+        current_indent = len(line) - len(line.lstrip())
+
+        if in_function_body:
+            if current_indent <= function_indent:
+                # Exited the function body
+                in_function_body = False
+                # Fall-through to process this line normally
+            else:
+                # Still in function body, skip the line
+                continue
         
-        # Get test cases from function parameters
-        params = func_def.split("(")[1].split(")")[0].strip()
-        if params:
-            starter_code.append(f"# print({func_name}(...))  # Add test cases here")
-        else:
-            starter_code.append(f"# print({func_name}())  # Add test cases here")
+        # Detect function definitions
+        func_match = re.match(r'^(\s*)def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*:', line)
+        if func_match:
+            indent_str = func_match.group(1)
+            func_signature = line # Keep the full signature line
+            processed_lines.append(func_signature)
+            processed_lines.append(f"{indent_str}    pass")
+            processed_lines.append(f"{indent_str}    # TODO: Implement this function")
+            in_function_body = True
+            function_indent = current_indent
+            continue
+
+        # Detect class definitions (keep them and their content for now, can be refined)
+        class_match = re.match(r'^(\s*)class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(?(.*?)\)?\s*:', line)
+        if class_match:
+            # If we were in a function (e.g. nested class, though less common for starter), stop.
+            in_function_body = False 
+            processed_lines.append(line)
+            # Future: could try to process methods within classes similarly
+            continue
+        
+        # Keep import statements and other top-level code
+        if not in_function_body: # Ensure we are not accidentally grabbing lines from a function body
+            processed_lines.append(line)
+
+    final_starter_code = "\n".join(processed_lines).strip()
     
-    return "\n".join(starter_code)
+    # If the result is empty or just whitespace (e.g. solution was only comments), provide a default
+    if not final_starter_code.strip():
+        final_starter_code = "# TODO: Write your Python solution here"
+
+    logger.info(f"[generate_starter_code] Final starter code (first 300 chars): '{final_starter_code[:300]}...'")
+    return final_starter_code
 
 def _prepare_visible_test_cases(test_cases: List[Dict]) -> List[Dict]:
     """
