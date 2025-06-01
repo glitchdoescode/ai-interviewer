@@ -287,34 +287,26 @@ export const checkVoiceAvailability = async () => {
 };
 
 /**
- * Submit code for a coding challenge
- * @param {string} challengeId - Challenge ID
- * @param {string} code - Candidate's code
- * @param {string} userId - User ID
- * @param {string} sessionId - Session ID
- * @returns {Promise} Promise with evaluation results
+ * Submit coding challenge code for evaluation by the backend tools.
+ * This corresponds to the /api/coding/submit endpoint.
+ * 
+ * @param {Object} submissionData - Object containing challenge_id, language, code, user_id, session_id
+ * @returns {Promise} Promise with the full evaluation response from the backend
  */
-export const submitChallengeCode = async (challengeId, code, userId = null, sessionId = null) => {
+export const submitCodingChallengeForEvaluation = async (submissionData) => {
   try {
-    if (!challengeId) {
-      throw new Error('Challenge ID is required');
+    if (!submissionData.challenge_id || !submissionData.language || !submissionData.code) {
+      throw new Error('Challenge ID, language, and code are required for submission.');
     }
-    
-    if (!code || code.trim() === '') {
-      throw new Error('Code solution is required');
-    }
-    
-    const requestBody = {
-      challenge_id: challengeId,
-      code: code,
-      user_id: userId,
-      session_id: sessionId
-    };
-    
-    const response = await api.post('/coding/submit', requestBody);
+    // user_id and session_id are also expected by the payload in CodingChallenge.js
+    console.log('Submitting code for evaluation (interviewService.js):', submissionData);
+    const response = await api.post('/coding/submit', submissionData);
+    // The backend for /api/coding/submit should return CodingSubmissionResponse model
+    // which includes execution_results, feedback, evaluation, overall_summary
     return response.data;
   } catch (error) {
-    return handleApiError(error, 'Failed to submit code solution');
+    // Use a more specific error message
+    return handleApiError(error, 'Failed to submit code for evaluation. Please check the details and try again.');
   }
 };
 
@@ -349,33 +341,34 @@ export const getChallengeHint = async (challengeId, code, userId = null, session
 };
 
 /**
- * Continue after completing a coding challenge
- * @param {string} message - User message (typically about the completed challenge)
- * @param {string} sessionId - Session ID
+ * Sends the candidate's code submission evaluation and a summary message to the AI 
+ * to get feedback. This calls the /api/interview/{session_id}/challenge-complete endpoint.
+ * 
+ * @param {string} sessionId - Interview session ID
  * @param {string} userId - User ID
- * @param {boolean} completed - Whether the challenge was completed successfully
- * @returns {Promise} Promise with response data
+ * @param {string} detailedMessageToAI - The comprehensive message including code, results, and analysis.
+ * @param {Object} evaluationSummary - Summary of the coding evaluation.
+ * @param {boolean} challengeCompleted - Whether the challenge was considered completed.
+ * @returns {Promise} Promise with the AI's feedback response (MessageResponse model)
  */
-export const continueAfterCodingChallenge = async (message, sessionId, userId, completed = true) => {
+export const submitChallengeFeedbackToServer = async (sessionId, userId, detailedMessageToAI, evaluationSummary, challengeCompleted = true) => {
   try {
-    if (!sessionId) {
-      throw new Error('Session ID is required');
+    if (!sessionId || !userId || !detailedMessageToAI) {
+      throw new Error('Session ID, User ID, and the detailed message to the AI are required.');
     }
-    
-    if (!userId) {
-      throw new Error('User ID is required');
-    }
-    
-    const requestBody = {
-      message,
+
+    const payload = {
+      message: detailedMessageToAI,
       user_id: userId,
-      challenge_completed: completed
+      challenge_completed: challengeCompleted,
+      evaluation_summary: evaluationSummary, // This should be the object itself
     };
-    
-    const response = await api.post(`/interview/${sessionId}/challenge-complete`, requestBody);
+    console.log('Submitting challenge feedback to server (interviewService.js):', payload);
+    const response = await api.post(`/interview/${sessionId}/challenge-complete`, payload);
+    // Expects MessageResponse model from backend: { response, session_id, interview_stage, audio_response_url, etc. }
     return response.data;
   } catch (error) {
-    return handleApiError(error, 'Failed to continue after challenge');
+    return handleApiError(error, 'Failed to submit challenge feedback to the AI interviewer.');
   }
 };
 
@@ -556,9 +549,9 @@ const interviewService = {
   getUserSessions,
   transcribeAndRespond,
   checkVoiceAvailability,
-  submitChallengeCode,
+  submitCodingChallengeForEvaluation,
   getChallengeHint,
-  continueAfterCodingChallenge,
+  submitChallengeFeedbackToServer,
   getJobRoles,
   testAudioTranscription,
   generateCodingProblem

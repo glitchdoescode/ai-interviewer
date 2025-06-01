@@ -26,7 +26,7 @@ import Navbar from '../components/Navbar';
 import ChatInterface from '../components/ChatInterface';
 import CodingChallenge from '../components/CodingChallenge';
 import { useInterview } from '../context/InterviewContext';
-import { checkVoiceAvailability } from '../api/interviewService';
+import { checkVoiceAvailability, submitChallengeFeedbackToServer } from '../api/interviewService';
 import JobRoleSelector from '../components/JobRoleSelector';
 
 /**
@@ -56,6 +56,7 @@ const Interview = () => {
     setVoiceMode,
     voiceMode,
     setJobRoleData,
+    playAudioResponse,
   } = useInterview();
 
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
@@ -140,6 +141,81 @@ const Interview = () => {
       duration: 3000,
       isClosable: true,
     });
+  };
+
+  // New handler to be passed to CodingChallenge for when feedback is submitted
+  const handleCodingFeedbackSubmitted = async (detailedMessageToAI, evaluationSummary) => {
+    if (!sessionId || !userId) {
+      setError('Session ID or User ID is missing. Cannot submit for feedback.');
+      toast({
+        title: 'Error',
+        description: 'Session ID or User ID missing.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // This function is from interviewService.js and calls /api/interview/{session_id}/challenge-complete
+      const aiFeedbackResponse = await submitChallengeFeedbackToServer(
+        sessionId,
+        userId,
+        detailedMessageToAI,
+        evaluationSummary, // Pass the evaluation summary
+        true // challenge_completed = true
+      );
+
+      console.log('[Interview.js] AI Feedback Response from server:', JSON.stringify(aiFeedbackResponse, null, 2));
+
+      if (aiFeedbackResponse && aiFeedbackResponse.response) {
+        const messagePayload = {
+          sender: 'ai',
+          text: aiFeedbackResponse.response,
+          audioUrl: aiFeedbackResponse.audio_response_url, // Get audio URL from response
+          timestamp: new Date(),
+          isFeedback: true, // Mark this as a feedback message if needed for UI styling
+        };
+        console.log('[Interview.js] Payload for addMessage:', JSON.stringify(messagePayload, null, 2));
+
+        addMessage(messagePayload);
+        setInterviewStage(aiFeedbackResponse.interview_stage || 'feedback'); // Update stage from response
+        
+        // If audio URL exists, play it
+        if (aiFeedbackResponse.audio_response_url && voiceMode) {
+          playAudioResponse(aiFeedbackResponse.audio_response_url);
+        }
+        
+        toast({
+          title: 'Feedback Received',
+          description: 'AI has provided feedback on your coding challenge.',
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+      } else {
+        throw new Error(aiFeedbackResponse?.error || 'No response from AI after submitting feedback.');
+      }
+    } catch (err) {
+      console.error("Error in handleCodingFeedbackSubmitted:", err);
+      setError(err.message || 'Failed to get feedback from AI.');
+      addMessage({
+        sender: 'system',
+        text: `Error: ${err.message || 'Failed to get feedback from AI.'}`,
+        timestamp: new Date(),
+      });
+      toast({
+        title: 'Feedback Error',
+        description: err.message || 'Could not retrieve AI feedback.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Get stage badge color based on interview stage
@@ -299,6 +375,8 @@ const Interview = () => {
                   (interviewStage === 'coding_challenge' || interviewStage === 'coding_challenge_waiting') && currentCodingChallenge ? (
                     <CodingChallenge 
                       challenge={currentCodingChallenge}
+                      onComplete={handleCodingFeedbackSubmitted}
+                      onRequestHint={() => { /* Implement hint request if needed */ }}
                       sessionId={sessionId}
                       userId={userId}
                     />

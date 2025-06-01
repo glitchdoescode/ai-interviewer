@@ -31,7 +31,7 @@ import {
 import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo, FaCommentDots } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
-// import { submitChallengeCode } from '../api/interviewService'; // Comment out for Sprint 1
+import { submitCodingChallengeForEvaluation } from '../api/interviewService';
 
 /**
  * CodingChallenge component for handling coding challenge interactions
@@ -68,7 +68,13 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     return savedTheme || 'light'; // Default to light if no saved theme
   });
   
-  const { setInterviewStage, jobDetails, interviewStage, setCurrentCodingChallenge } = useInterview();
+  const { 
+    setInterviewStage, 
+    jobDetails, 
+    interviewStage, 
+    addMessage,
+    playAudioResponse
+  } = useInterview();
   
   // Function to fetch a new coding challenge
   const fetchNewChallenge = async () => {
@@ -167,19 +173,27 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialChallengeData]); // Only re-run if initialChallengeData changes
 
-  // Add this useEffect to update internal state when the challenge prop changes
+  // Update currentChallengeDetails when initialChallengeData (from context/prop) changes
   useEffect(() => {
-    if (initialChallengeData) {
+    if (initialChallengeData && initialChallengeData.challenge_id) { // Ensure challenge_id exists
       console.log("CodingChallenge.js: (useEffect for initialChallengeData) Prop updated:", JSON.stringify(initialChallengeData, null, 2));
-      setCurrentChallengeDetails(initialChallengeData);
-      setLanguage(initialChallengeData.language || 'python');
+      setCurrentChallengeDetails(initialChallengeData); 
+      // Ensure language and starter_code are also set from initialChallengeData if they exist
+      if (initialChallengeData.language) {
+        setLanguage(initialChallengeData.language);
+      }
+      if (initialChallengeData.starter_code) {
+        const newStarterCode = initialChallengeData.starter_code;
+        console.log("CodingChallenge.js: (useEffect for initialChallengeData) Preparing to setCode with:", newStarterCode);
+        setCode(newStarterCode);
+      }
       setEvaluationResult(null); // Clear previous evaluation results
-
-      const newStarterCode = initialChallengeData.starter_code || '';
-      console.log("CodingChallenge.js: (useEffect for initialChallengeData) Preparing to setCode with:", newStarterCode);
-      setCode(newStarterCode);
+    } else if (!initialChallengeData && currentChallengeDetails) {
+      // If initialChallengeData becomes null (e.g. interview reset), clear local state if needed
+      // setCurrentChallengeDetails(null); // Or handle as appropriate
     }
-  }, [initialChallengeData]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialChallengeData]); // React to changes in initialChallengeData from context
 
   // Set the interview stage to coding challenge waiting
   useEffect(() => {
@@ -319,93 +333,90 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
       return;
     }
 
-    setIsEvaluating(true);
-    setEvaluationResult(null); // Clear previous results
-    toast({
-      title: 'Submitting Solution...',
-      description: 'Evaluating your code against test cases.',
-      status: 'info',
-      duration: null, // Keep open until closed by success/error
-      isClosable: false,
-    });
-
-    const authToken = localStorage.getItem('authToken');
-    if (!authToken) {
-      toast.closeAll();
+    if (!currentChallengeDetails || !currentChallengeDetails.challenge_id) {
       toast({
-        title: 'Authentication Error',
-        description: 'Auth token not found. Please log in.',
+        title: 'Error',
+        description: 'Challenge details are missing. Cannot submit.',
         status: 'error',
-        duration: 5000,
+        duration: 3000,
         isClosable: true,
       });
-      setIsEvaluating(false);
       return;
     }
 
+    setIsEvaluating(true); // Use isEvaluating for this button
+    // setTestResults(null); // Clear previous results
+    setEvaluationResult(null); // Clear previous full evaluation
+    // setFeedback(null); // Clear previous feedback
+    toast({
+      title: 'Submitting Code for Evaluation...',
+      status: 'info',
+      duration: null, 
+      isClosable: false,
+    });
+
     try {
-      const response = await fetch('/api/coding/submit', { // Target the new endpoint
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          challenge_id: currentChallengeDetails?.challenge_id || currentChallengeDetails?.id, // Ensure we get the ID
-          language: language,
-          code: code,
-          user_id: userId, // ADDED
-          session_id: sessionId, // ADDED
-          // challenge_data: currentChallengeDetails, // REMOVED - backend expects challenge_id
-        }),
-      });
-
-      toast.closeAll(); // Close the "Submitting..." toast
-      const result = await response.json();
-
-      if (!response.ok) {
-        // Log the detailed error from the backend if available
-        console.error('Submission Error Response:', result);
-        const errorDetail = result.detail || (result.error_message ? `Evaluation Error: ${result.error_message}` : 'An unknown error occurred during submission.');
-        throw new Error(errorDetail);
-      }
+      const submissionPayload = {
+        challenge_id: currentChallengeDetails.challenge_id,
+        language: language,
+        code: code,
+        user_id: userId,
+        session_id: sessionId,
+      };
       
-      setEvaluationResult(result);
-      toast({
-        title: 'Evaluation Complete',
-        description: `Passed ${result.overall_summary?.pass_count || 0}/${result.overall_summary?.total_tests || 0} test cases.`,
-        status: result.overall_summary?.all_tests_passed ? 'success' : 'warning',
-        duration: 5000,
-        isClosable: true,
-      });
+      // This calls /api/coding/submit
+      const result = await submitCodingChallengeForEvaluation(submissionPayload);
+      toast.closeAll();
 
-      // Optionally, call onComplete with the evaluation results if the parent component needs it
-      if (onComplete) {
-        // Decide what to pass to onComplete. The full result might be useful.
-        // It might also include a simple boolean for overall pass/fail.
-        onComplete(result, result.overall_summary?.all_tests_passed || false);
+      if (result && result.status) { // Check if result and result.status exist
+        // STORE THE ENTIRE RESULT which includes:
+        // status, challenge_id, execution_results, feedback, evaluation, overall_summary
+        setEvaluationResult(result); 
+        
+        // Display success/failure based on overall_summary or status
+        const summary = result.overall_summary;
+        if (summary && summary.all_tests_passed) {
+          toast({
+            title: 'Evaluation Complete: All Tests Passed!',
+            description: summary.status_text || 'All tests passed successfully.',
+            status: 'success',
+            duration: 5000,
+            isClosable: true,
+          });
+        } else if (summary) {
+          toast({
+            title: 'Evaluation Complete: Some Tests Failed',
+            description: summary.status_text || `${summary.pass_count || 0}/${summary.total_tests || 0} tests passed.`,
+            status: 'warning',
+            duration: 5000,
+            isClosable: true,
+          });
+        } else { // Fallback if overall_summary is not as expected
+            toast({
+                title: `Evaluation Status: ${result.status}`,
+                description: 'Code submitted and evaluated.',
+                status: result.status === 'success' ? 'success' : 'info', // Adjust status based on general status
+                duration: 5000,
+                isClosable: true,
+            });
+        }
+      } else {
+        throw new Error(result?.error || 'Unknown error during code evaluation.');
       }
-
     } catch (error) {
       toast.closeAll();
       console.error('Error submitting code for evaluation:', error);
+      // setTestResults({ error: error.message });
+      setEvaluationResult({ error: error.message }); // Store error in evaluationResult
       toast({
         title: 'Submission Error',
-        description: error.message || 'Could not connect to the server or process the submission.',
+        description: error.message || 'Could not submit or evaluate code.',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
-      // Set a minimal error structure for display if needed
-      setEvaluationResult({ 
-        status: 'error',
-        error_message: error.message || 'Submission failed.',
-        overall_summary: { pass_count: 0, fail_count: 0, total_tests: 0, all_tests_passed: false },
-        execution_results: { detailed_results: { test_results: [] } },
-      });
     } finally {
       setIsEvaluating(false);
-      // setIsSubmitting(false); // This was for the old Sprint 1 submission logic, isEvaluating covers it now
     }
   };
   
@@ -429,20 +440,95 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     });
   };
   
-  const handleReturnToInterviewer = () => {
-    console.log("CodingChallenge.js: User clicked 'Return to Interviewer'");
-    // Signal that the user is done with the coding panel and wants AI feedback.
-    // The AIInterviewer's should_continue or _determine_interview_stage should see
-    // the FEEDBACK stage and know to provide feedback on the code.
-    setInterviewStage('FEEDBACK'); // Transition to FEEDBACK stage
-    
-    // Call the onComplete prop if it exists, to let parent (ChatInterface) know.
-    // This might also hide the coding panel if ChatInterface logic depends on it.
-    if (onComplete) {
-      onComplete(code, evaluationResult); 
+  const handleReturnToInterviewer = async () => {
+    if (!evaluationResult) {
+      toast({
+        title: 'No Evaluation Data',
+        description: 'Please submit your code for evaluation first.',
+        status: 'warning',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
     }
-    // Optionally, clear the current challenge from the context if it should disappear immediately
-    // setCurrentCodingChallenge(null);
+    if (evaluationResult.error) {
+        toast({
+            title: 'Evaluation Error',
+            description: `Cannot return to interviewer. Previous evaluation failed: ${evaluationResult.error}`,
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+        });
+        return;
+    }
+
+    setIsSubmitting(true); // Indicate loading state for this action
+    toast({
+      title: 'Returning to Interviewer...',
+      description: 'Preparing your submission for feedback.',
+      status: 'info',
+      duration: null,
+      isClosable: false,
+    });
+
+    // Construct the detailed message for the AI, including all relevant parts from evaluationResult
+    // This message will be passed to the AIInterviewer's run_interview method
+    // The AI prompt for FEEDBACK stage expects: candidate_code, execution_results, Structured Feedback Analysis
+    
+    const candidateCode = code; // The current code in the editor
+    const executionResultsSummary = evaluationResult.overall_summary || {}; // From /api/coding/submit
+    // The detailed structured feedback should be in evaluationResult.feedback or evaluationResult.evaluation
+    const structuredFeedbackAnalysis = evaluationResult.feedback || evaluationResult.evaluation || {}; 
+
+    let detailedMessageToAI = `System: The candidate has completed the coding challenge and is ready for feedback.
+Challenge ID: ${currentChallengeDetails?.challenge_id || 'N/A'}
+Language: ${language}
+
+Candidate Code (language: ${language}):
+\`\`\`${language}
+${candidateCode}
+\`\`\`
+
+Execution Results:
+Status: ${executionResultsSummary.status_text || 'N/A'}
+Passed: ${executionResultsSummary.pass_count !== undefined ? executionResultsSummary.pass_count : 'N/A'} / ${executionResultsSummary.total_tests !== undefined ? executionResultsSummary.total_tests : 'N/A'}
+All Tests Passed: ${executionResultsSummary.all_tests_passed !== undefined ? executionResultsSummary.all_tests_passed : 'N/A'}
+Error Message (if any): ${executionResultsSummary.error_message || 'None'}
+
+Structured Feedback Analysis (from automated tools):
+${JSON.stringify(structuredFeedbackAnalysis, null, 2)}
+
+Interviewer, please provide comprehensive feedback to the candidate based on all the information above.
+Focus on their approach, code quality, correctness, and the automated analysis.
+`;
+
+    try {
+      // onComplete is handleCodingFeedbackSubmitted from Interview.js
+      // It expects (detailedMessageToAI, evaluationSummary)
+      // We pass overall_summary as the evaluationSummary for the ChallengeCompleteRequest model
+      await onComplete(detailedMessageToAI, executionResultsSummary); 
+      
+      toast.closeAll(); // Close the "Returning..." toast
+      // Success toast will be shown by Interview.js's handleCodingFeedbackSubmitted
+      
+      // Optionally, you might want to disable further actions on the coding challenge here,
+      // or change the UI to indicate feedback is being/has been given.
+      // This might involve setting a new local state or relying on interviewStage changes from context.
+
+    } catch (error) {
+      toast.closeAll();
+      console.error('Error returning to interviewer for feedback:', error);
+      setIsSubmitting(false);
+      toast({
+        title: 'Error Returning to Interviewer',
+        description: error.message || 'Could not process your request for feedback.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      // setIsSubmitting(false); // setLoading(false) is handled by Interview.js's handler
+    }
   };
   
   // If no challenge is provided, show a placeholder and a button to fetch one
@@ -860,6 +946,8 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
                   colorScheme="blue"
                   leftIcon={<Icon as={FaCommentDots} />}
                   onClick={handleReturnToInterviewer}
+                  isLoading={isSubmitting}
+                  isDisabled={isSubmitting || !currentChallengeDetails}
                 >
                   Return to Interviewer for Feedback
                 </Button>

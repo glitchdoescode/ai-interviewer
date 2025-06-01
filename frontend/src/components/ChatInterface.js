@@ -29,7 +29,6 @@ import {
   startInterview, 
   continueInterview, 
   transcribeAndRespond,
-  continueAfterCodingChallenge,
   getChallengeHint,
   generateCodingProblem
 } from '../api/interviewService';
@@ -164,21 +163,7 @@ const ChatInterface = ({ jobRoleData }) => {
       
       // If we have a session ID, continue the interview, otherwise start a new one
       if (sessionId) {
-        // Check if we were in a coding challenge
-        if (isWaitingForCodingChallenge) {
-          response = await continueAfterCodingChallenge(
-            messageInput, 
-            sessionId, 
-            userId, 
-            true // assume user is done with challenge when they send a message
-          );
-          
-          // Reset coding challenge state
-          setCurrentCodingChallenge(null);
-          setIsWaitingForCodingChallenge(false);
-        } else {
-          response = await continueInterview(messageInput, sessionId, userId, contextJobRoleData);
-        }
+        response = await continueInterview(messageInput, sessionId, userId, contextJobRoleData);
       } else {
         response = await startInterview(messageInput, userId, contextJobRoleData);
         
@@ -427,14 +412,15 @@ const ChatInterface = ({ jobRoleData }) => {
     <Flex direction="column" h="100vh" overflow="hidden">
       <Box flex="1" overflow="auto" p={4}>
         <VStack spacing={4} align="stretch">
-          {messages.map((message, index) => (
+          {messages.map((msg, index) => (
             <ChatMessage 
               key={index} 
-              message={message.content || message.message || ''} 
-              sender={message.role || message.sender || 'assistant'} 
-              audioUrl={message.audioUrl || ''} 
-              isHint={message.isHint || false} 
-              isLoading={message.loading || false} 
+              message={msg.text || msg.content || ''}
+              sender={msg.role || msg.sender || 'assistant'} 
+              audioUrl={msg.audioUrl || ''} 
+              isHint={msg.isHint || false} 
+              isLoading={msg.loading || false} 
+              toolCalls={msg.tool_calls || msg.toolCalls} 
             />
           ))}
           
