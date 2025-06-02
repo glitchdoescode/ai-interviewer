@@ -54,6 +54,9 @@ from ai_interviewer.auth.security import RoleChecker
 from ai_interviewer.models.user_models import UserRole
 from starlette import status
 
+# Proctoring imports
+from ai_interviewer.routers import proctoring
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -205,6 +208,12 @@ app.include_router(
     prefix=f"{auth_settings.API_V1_STR}/auth",
     tags=["Authentication"],
     dependencies=[Depends(log_request_time)]
+)
+
+# Include proctoring routes
+app.include_router(
+    proctoring.router
+    # Removed dependencies=[Depends(log_request_time)] as WebSocket endpoints can't use HTTP dependencies
 )
 
 # Async function to setup memory manager (adapted from existing code)

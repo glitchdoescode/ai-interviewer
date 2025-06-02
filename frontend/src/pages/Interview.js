@@ -25,6 +25,7 @@ import { FaInfoCircle, FaHistory } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import ChatInterface from '../components/ChatInterface';
 import CodingChallenge from '../components/CodingChallenge';
+import ProctoringPanel from '../components/proctoring/ProctoringPanel';
 import { useInterview } from '../context/InterviewContext';
 import { checkVoiceAvailability, submitChallengeFeedbackToServer } from '../api/interviewService';
 import JobRoleSelector from '../components/JobRoleSelector';
@@ -45,7 +46,7 @@ const Interview = () => {
     loading,
     error,
     interviewStage,
-    selectedJobRole,
+    jobRoleData: selectedJobRole,
     currentCodingChallenge,
     addMessage,
     setSessionId,
@@ -56,12 +57,35 @@ const Interview = () => {
     setVoiceMode,
     voiceMode,
     setJobRoleData,
-    playAudioResponse,
   } = useInterview();
 
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
   const [showJobSelector, setShowJobSelector] = useState(true);
   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
+  const [proctoringEnabled, setProctoringEnabled] = useState(false);
+  const [proctoringStatus, setProctoringStatus] = useState({
+    isActive: false,
+    hasCamera: false,
+    hasDetection: false,
+    hasWebSocket: false,
+  });
+
+  // Audio playback function
+  const playAudioResponse = (audioUrl) => {
+    if (!audioUrl) return;
+    
+    const audio = new Audio(audioUrl);
+    audio.play().catch(err => {
+      console.error('Error playing audio:', err);
+      toast({
+        title: 'Audio Playback Failed',
+        description: 'Could not play audio response',
+        status: 'warning',
+        duration: 3000,
+        isClosable: true,
+      });
+    });
+  };
 
   // Check if the requested session ID should be loaded
   useEffect(() => {
@@ -116,6 +140,9 @@ const Interview = () => {
   const handleStartInterview = () => {
     setShowJobSelector(false);
     
+    // Enable proctoring for the interview
+    setProctoringEnabled(true);
+    
     // If we have job role data, include it in the initial toast notification
     if (selectedJobRole) {
       toast({
@@ -127,10 +154,26 @@ const Interview = () => {
       });
     }
   };
+
+  // Handle proctoring status changes
+  const handleProctoringStatusChange = (status) => {
+    setProctoringStatus(status);
+    
+    if (status.isActive && status.hasCamera && status.hasDetection && status.hasWebSocket) {
+      toast({
+        title: 'Proctoring Active',
+        description: 'AI proctoring is now monitoring the interview',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  };
   
   // Handle ending the interview
   const handleEndInterview = () => {
     onClose();
+    setProctoringEnabled(false);
     resetInterview();
     navigate('/');
     
@@ -291,6 +334,16 @@ const Interview = () => {
                 )}
               </Box>
               
+              {/* Proctoring Info */}
+              <Box mb={6}>
+                <Text fontWeight="bold" mb={2}>Proctoring</Text>
+                {proctoringEnabled ? (
+                  <Badge colorScheme="green">Active</Badge>
+                ) : (
+                  <Badge colorScheme="red">Inactive</Badge>
+                )}
+              </Box>
+              
               {/* Help/Info */}
               <Box mb={6}>
                 <Text fontWeight="bold" mb={2}>Interview Tips</Text>
@@ -319,6 +372,18 @@ const Interview = () => {
                   View Interview History
                 </Button>
               </Box>
+              
+              {/* Proctoring Panel */}
+              {!showJobSelector && (
+                <Box mt={4}>
+                  <ProctoringPanel
+                    sessionId={sessionId}
+                    userId={userId}
+                    isEnabled={proctoringEnabled}
+                    onStatusChange={handleProctoringStatusChange}
+                  />
+                </Box>
+              )}
             </Box>
           </GridItem>
           
