@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Default resource limits for containers
 DEFAULT_MEMORY_LIMIT = "128m"  # 128 MB memory limit
 DEFAULT_CPU_LIMIT = 0.5  # 0.5 CPU cores
-DEFAULT_TIMEOUT = 180  # MODIFIED: Increased from 60 to 180 seconds timeout
+DEFAULT_TIMEOUT = 300  # MODIFIED: Increased from 180 to 300 seconds timeout
 DEFAULT_NETWORK_DISABLED = True  # No network access
 
 class DockerSandbox:

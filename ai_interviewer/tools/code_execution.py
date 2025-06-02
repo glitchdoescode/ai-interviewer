@@ -83,7 +83,7 @@ async def execute_candidate_code(language: str, code: str, test_cases: List[Dict
             return {
                 "status": results.get("status", "error"),
                 "pass_count": results.get("passed", 0),
-                "total_tests": results.get("passed", 0) + results.get("failed", 0),
+                "total_tests": len(test_cases),
                 "outputs": [t.get("output") for t in results.get("test_results", [])],
                 "errors": results.get("error_message", ""),
                 "detailed_results": results
@@ -97,7 +97,7 @@ async def execute_candidate_code(language: str, code: str, test_cases: List[Dict
                 return {
                     "status": results.get("status", "error"),
                     "pass_count": results.get("passed", 0),
-                    "total_tests": results.get("passed", 0) + results.get("failed", 0),
+                    "total_tests": len(test_cases),
                     "outputs": [t.get("output") for t in results.get("test_results", [])],
                     "errors": results.get("error_message", ""),
                     "detailed_results": results

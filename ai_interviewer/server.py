@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, List, Literal, Union
 from datetime import datetime
 import inspect # <--- Import inspect
 import contextlib # Add for lifespan manager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +41,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from ai_interviewer.tools.question_tools import generate_interview_question, analyze_candidate_response
 from ai_interviewer.tools.problem_generation_tool import generate_coding_challenge_from_jd, submit_code_for_generated_challenge # MODIFIED
 from ai_interviewer.tools.docker_sandbox import DockerSandbox # ADDED
+from ai_interviewer.utils.constants import INTERVIEW_STAGE_KEY, InterviewStage # ADDED THIS LINE
+from ai_interviewer.utils.feedback_memory import create_feedback_memory_manager
 
 # Auth imports
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -349,6 +352,7 @@ class MessageResponse(BaseModel):
     job_role: Optional[str] = Field(None, description="Job role for the interview")
     requires_coding: Optional[bool] = Field(None, description="Whether this role requires coding challenges")
     coding_challenge_detail: Optional[Dict[str, Any]] = Field(None, description="Structured details of the coding challenge, if applicable") # ADDED
+    audio_response_url: Optional[str] = Field(None, description="URL to the synthesized audio response, if available") # ADDED
     
     class Config:
         schema_extra = {
@@ -365,7 +369,8 @@ class MessageResponse(BaseModel):
                     "user_id": "user-123",
                     "session_id": "sess-abc123",
                     "timestamp": "2023-07-15T14:30:00.000Z"
-                }
+                },
+                "audio_response_url": "https://example.com/audio-response.mp3"
             }
         }
 
@@ -635,7 +640,8 @@ async def start_interview(
             interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
             job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding"),
-            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
+            coding_challenge_detail=response_data.get("coding_challenge_detail"), # ADDED
+            audio_response_url=response_data.get("audio_response_url") # ADDED
         )
     except Exception as e:
         logger.error(f"Error starting interview: {e}")
@@ -716,7 +722,8 @@ async def continue_interview(
             interview_stage=response_data.get("interview_stage"), # Use stage from run_interview
             job_role=metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=metadata.get("requires_coding"),
-            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
+            coding_challenge_detail=response_data.get("coding_challenge_detail"), # ADDED
+            audio_response_url=response_data.get("audio_response_url") # ADDED
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -1152,7 +1159,7 @@ async def get_audio_response(filename: str):
     
     return StreamingResponse(
         iterfile(),
-        media_type="audio/wav"
+        media_type="audio/wav" # CHANGED back to audio/wav for .wav files
     )
 
 @app.get("/api/health",
@@ -1311,281 +1318,218 @@ async def submit_code_solution(
     submission: CodingSubmissionRequest,
     current_user: User = Depends(get_current_active_user)
 ):
-    logger.info(
-        f"Received code submission: Challenge ID: {submission.challenge_id}, "
-        f"Language: {submission.language}, User ID: {submission.user_id or current_user.id}, "
-        f"Session ID: {submission.session_id}, Code: {submission.code[:100]}..."
-    )
-
-    # Get the AIInterviewer instance from app state
-    interviewer_instance = getattr(request.app.state, 'interviewer', None)
-
-    if not interviewer_instance or not interviewer_instance.session_manager: # MODIFIED
-        raise HTTPException(status_code=503, detail="Session management or interviewer not available")
-
-    # Retrieve session metadata
-    session_data = interviewer_instance.session_manager.get_session(submission.session_id) # MODIFIED
-    if not session_data or "metadata" not in session_data:
-        logger.error(f"Session {submission.session_id} not found or has no metadata.")
-        raise HTTPException(status_code=404, detail="Session not found or invalid.")
+    logger.info(f"[SUBMIT_CODE] Received submission for challenge_id: {submission.challenge_id}, session_id: {submission.session_id}, user_id (from submission): {submission.user_id}")
+    # CORRECTED: Access app.state.interviewer instead of app.state.active_interviewer
+    active_interviewer = request.app.state.interviewer 
     
-    session_metadata = session_data["metadata"]
+    if not active_interviewer or not active_interviewer.session_manager:
+        logger.error("[SUBMIT_CODE] AI Interviewer (from app.state.interviewer) or Session Manager not initialized.")
+        raise HTTPException(status_code=500, detail="AI Interviewer not available")
+
+    # Prioritize user_id from token, fallback to submission
+    user_id_from_token = current_user.id # CHANGED from current_user.username
+    submission_user_id = submission.user_id or user_id_from_token # Use token ID if submission ID is missing
     
-    # --- ADDED LOGS FOR FULL METADATA INSPECTION ---
-    logger.info(f"[SUBMIT_CODE] Full session_metadata for session {submission.session_id}: {session_metadata}")
-    # --- END ADDED LOGS ---
+    # Ensure session_id is present
+    if not submission.session_id:
+        logger.warning("[SUBMIT_CODE] No session_id provided in submission.")
+        raise HTTPException(status_code=400, detail="session_id is required for code submission.")
     
-    # --- ADDED LOG ---
-    raw_challenge_details_from_session = session_metadata.get("current_coding_challenge_details_for_submission")
-    logger.info(f"[SUBMIT_CODE] Raw 'current_coding_challenge_details_for_submission' from session {submission.session_id}: {raw_challenge_details_from_session}")
-    # --- END ADDED LOG ---
+    session_id = submission.session_id
 
-    # ADDED: Strip the submitted code
-    candidate_submitted_code = submission.code.strip()
-    logger.info(f"[SUBMIT_CODE] Original submitted code length: {len(submission.code)}, Stripped code length: {len(candidate_submitted_code)}")
-    if len(submission.code) != len(candidate_submitted_code):
-        logger.info(f"[SUBMIT_CODE] Whitespace was stripped. First 50 chars of stripped code: {candidate_submitted_code[:50]}")
-
-    challenge_data = None # Initialize challenge_data
-
-    # Validate and retrieve challenge_data from session_metadata
-    # challenge_data_from_session = session_metadata.get("current_coding_challenge_details_for_submission") # Original line
-    challenge_data_from_session = raw_challenge_details_from_session # Use the already fetched value
-
-    if not isinstance(challenge_data_from_session, (dict, list)): # Check if it's a dict or list
-        logger.warning(f"'current_coding_challenge_details_for_submission' in session {submission.session_id} is not a dict or list. Type: {type(challenge_data_from_session)}")
-        raise HTTPException(status_code=400, detail="Invalid format for 'current_coding_challenge_details_for_submission' in session metadata")
-
-    # --- ADDED LOG FOR TEST CASES ---
-    retrieved_test_cases = challenge_data_from_session.get('test_cases') if isinstance(challenge_data_from_session, dict) else "Not a dict"
-    logger.info(f"[SUBMIT_CODE] Test cases retrieved from session for challenge {submission.challenge_id}: {json.dumps(retrieved_test_cases, indent=2)}")
-    if isinstance(retrieved_test_cases, list):
-        logger.info(f"[SUBMIT_CODE] Number of test cases retrieved: {len(retrieved_test_cases)}")
-    # --- END ADDED LOG ---
-
+    # Wrap the core logic in a try-except block
     try:
-        # Assume skill_level might be part of session or a default
-        # For now, using a default. This should ideally come from user context or session.
-        skill_level = "intermediate" 
-        if submission.session_id and interviewer_instance and interviewer_instance.session_manager:
-            session_data = interviewer_instance.session_manager.get_session(submission.session_id)
-            if session_data and session_data.get("metadata"):
-                skill_level = session_data["metadata"].get("seniority_level", "intermediate") # Use seniority as proxy
-                skill_level = skill_level.lower() if skill_level else "intermediate"
-                if skill_level not in ["beginner", "intermediate", "advanced"]:
-                    skill_level = "intermediate" # Default if not one of the expected
+        # Validate session and user
+        session_data = active_interviewer.session_manager.get_session(session_id)
+        if not session_data:
+            logger.warning(f"[SUBMIT_CODE] Session {session_id} not found.")
+            raise HTTPException(status_code=404, detail="Session not found.")
+
+        # Ensure 'metadata' exists and is a dictionary
+        session_metadata = session_data.get("metadata", {})
+        if not isinstance(session_metadata, dict):
+            logger.warning(f"Metadata for session {session_id} is not a dict. Re-initializing.")
+            session_metadata = {}
+
+        # Check ownership of session (optional, but good practice)
+        session_owner_user_id = session_metadata.get("user_id", session_data.get("user_id"))
+
+        if session_owner_user_id and session_owner_user_id != user_id_from_token:
+            # Log a warning but allow submission if submission.user_id matches session_owner_user_id
+            # This handles cases where an admin might be testing or if user_id in token is different from user_id that started session.
+            # Stricter check: if session_owner_user_id != submission_user_id:
+            logger.warning(f"User ID mismatch for session {session_id}. Submission user: {submission_user_id}, Session owner: {session_owner_user_id}")
+            # Depending on policy, you might raise HTTPException(status_code=403, detail="User not authorized for this session")
+
+        # Retrieve challenge details from session metadata
+        challenge_details_from_session = session_metadata.get("current_coding_challenge_details_for_submission")
+        if not challenge_details_from_session or not isinstance(challenge_details_from_session, dict):
+            logger.error(f"[SUBMIT_CODE] Coding challenge details not found or invalid in session {session_id} metadata.")
+            raise HTTPException(status_code=400, detail="Coding challenge details not found in session. Please start a challenge first.")
+
+        logger.info(f"[SUBMIT_CODE] Challenge details retrieved from session for challenge_id (from session): {challenge_details_from_session.get('challenge_id')}")
+        
+        # Verify the submitted challenge_id matches what's in the session (if available)
+        if challenge_details_from_session.get("challenge_id") and submission.challenge_id != challenge_details_from_session.get("challenge_id"):
+            logger.warning(f"[SUBMIT_CODE] Submitted challenge_id '{submission.challenge_id}' does not match challenge_id '{challenge_details_from_session.get('challenge_id')}' in session {session_id}.")
+            # Potentially raise an error or handle as a new/different submission if logic allows
+            # For now, we'll proceed but this is a point of attention.
+
+        # Strip common markdown fences from code if present
+        stripped_code = submission.code
+        if submission.code.strip().startswith("```") and submission.code.strip().endswith("```"):
+            lines = submission.code.strip().split('\\n')
+            if len(lines) > 1: # Ensure there's content after the first line
+                stripped_code = '\\n'.join(lines[1:-1]) # Remove first and last lines
+        logger.info(f"[SUBMIT_CODE] Original submitted code length: {len(submission.code)}, Stripped code length: {len(stripped_code)}")
+
+
+        # Use the retrieved challenge details (which include test cases) for the tool
+        # MODIFICATION START: Restructure for submit_code_for_generated_challenge tool
+        challenge_data_for_tool = {
+            "challenge_id": submission.challenge_id, # from submission
+            "test_cases": challenge_details_from_session.get("test_cases", []),
+            "reference_solution": challenge_details_from_session.get("reference_solution", ""),
+            "evaluation_criteria": challenge_details_from_session.get("evaluation_criteria", {}),
+            "language": submission.language, # ensure language is part of challenge_data if tool expects it there
+            # Add any other fields from challenge_details_from_session that the tool might need under challenge_data
+            # For example, problem_statement, title, etc., if they are used by the tool's logic indirectly.
+            "problem_statement": challenge_details_from_session.get("problem_statement", ""), # Added for completeness
+            "title": challenge_details_from_session.get("title", ""), # Added for completeness
+            "description": challenge_details_from_session.get("description", ""), # Added for completeness
+            "difficulty": challenge_details_from_session.get("difficulty", "intermediate"), # Added
+            "starter_code": challenge_details_from_session.get("starter_code", "") # Added
+        }
 
         tool_input_args = {
-            "challenge_data": challenge_data_from_session,
-            "candidate_code": candidate_submitted_code, # MODIFIED to use stripped code
-            "skill_level": skill_level
+            "challenge_data": challenge_data_for_tool,
+            "candidate_code": stripped_code,
+            "skill_level": session_metadata.get("seniority_level", "intermediate") # Pass skill_level
         }
-        evaluation_results_dict = await submit_code_for_generated_challenge.ainvoke(tool_input_args) # MODIFIED to use .ainvoke()
+        # MODIFICATION END
 
-        # Ensure the response matches the CodingSubmissionResponse model
-        # The tool's output structure is already very close.
-        # CodingSubmissionResponse: status, challenge_id, execution_results, feedback, evaluation
-        # Tool output: status, challenge_id, execution_results, feedback, evaluation
+        if not challenge_data_for_tool["test_cases"]:
+            logger.warning(f"[SUBMIT_CODE] No test cases found in session metadata for challenge {submission.challenge_id}. Execution might be limited.")
+        else:
+            logger.info(f"[SUBMIT_CODE] Test cases retrieved from session for challenge {submission.challenge_id}: {json.dumps(challenge_data_for_tool['test_cases'][:2], indent=2)}...") # Log first 2 test cases
+        logger.info(f"[SUBMIT_CODE] Number of test cases retrieved: {len(challenge_data_for_tool['test_cases'])}")
 
-        if evaluation_results_dict.get("status") == "error":
-             # If the tool itself returned an error (e.g. processing issue)
-            logger.error(f"Tool 'submit_code_for_generated_challenge' returned an error: {evaluation_results_dict.get('message')}")
-            # Return a 500 or a more specific error based on tool output
-            return CodingSubmissionResponse(
-                status="ERROR_TOOL_FAILURE",
-                challenge_id=submission.challenge_id,
-                execution_results={"message": evaluation_results_dict.get('message', "Tool execution failed")},
-                feedback={"message": "Feedback generation failed due to tool error."},
-                evaluation={"message": "Evaluation failed due to tool error."}
-            )
+        # Call the tool - ensure it's awaited if it's async
+        # Assuming submit_code_for_generated_challenge is the correct tool and it's async
+        try:
+            evaluation_results_dict = await submit_code_for_generated_challenge.ainvoke(tool_input_args)
+        except Exception as tool_error:
+            logger.error(f"[SUBMIT_CODE] Error calling submit_code_for_generated_challenge tool: {tool_error}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error processing code submission: {str(tool_error)}")
 
-        # Store code snapshot for submission event
-        if submission.session_id and interviewer_instance and interviewer_instance.session_manager:
-            session_data = interviewer_instance.session_manager.get_session(submission.session_id)
-            if session_data:
-                # Verify user ownership
-                if session_data.get("user_id") != (submission.user_id or current_user.id):
-                    logger.warning(f"User ID mismatch for session {submission.session_id}. Submission user: {submission.user_id or current_user.id}, Session owner: {session_data.get('user_id')}")
-                    # Decide if this should be an error or just a warning
-                
-                metadata = session_data.get("metadata", {})
-                code_snapshots = metadata.get("code_snapshots", [])
-                
-                snapshot = {
-                    "challenge_id": submission.challenge_id,
-                    "code": candidate_submitted_code, # MODIFIED to store stripped code
-                    "timestamp": submission.timestamp or datetime.now().isoformat(),
-                    "event_type": "submission",
-                    "execution_results": evaluation_results_dict.get("execution_results"),
-                    # "error_message": None, # No direct error message here, it's in execution_results
-                    # "hints_provided": None 
-                }
-                code_snapshots.append(snapshot)
-                metadata["code_snapshots"] = code_snapshots
-                interviewer_instance.session_manager.update_session_metadata(submission.session_id, metadata)
-                logger.info(f"Stored submission snapshot for session {submission.session_id}, challenge {submission.challenge_id}")
 
-        # Construct overall_summary for the frontend
-        overall_summary_data = None
-        if "execution_results" in evaluation_results_dict and isinstance(evaluation_results_dict["execution_results"], dict):
-            exec_res = evaluation_results_dict["execution_results"]
-            overall_summary_data = {
-                "pass_count": exec_res.get("pass_count", 0),
-                "fail_count": exec_res.get("fail_count", (exec_res.get("total_tests", 0) - exec_res.get("pass_count", 0))),
-                "total_tests": exec_res.get("total_tests", 0),
-                "status_text": exec_res.get("status", "unknown").upper(), # Initialize status_text here
-                "error_message": None,
-                "all_tests_passed": False # Initialize all_tests_passed
-            }
+        if not isinstance(evaluation_results_dict, dict):
+            logger.error(f"[SUBMIT_CODE] Tool submit_code_for_generated_challenge did not return a dictionary. Received: {type(evaluation_results_dict)}")
+            raise HTTPException(status_code=500, detail="Internal error: Code evaluation tool returned an unexpected format.")
+
+        # Log the raw evaluation results structure for debugging
+        logger.debug(f"[SUBMIT_CODE] Raw evaluation_results_dict from tool: {json.dumps(evaluation_results_dict, indent=2)[:1000]}...")
+
+
+        # Ensure all necessary keys are present for CodingSubmissionResponse
+        # This is where we construct the final response for this endpoint
+        # We need to map `evaluation_results_dict` (from the tool) to `CodingSubmissionResponse` fields
+
+        final_status = evaluation_results_dict.get("status", "error")
+        final_challenge_id = evaluation_results_dict.get("challenge_id", submission.challenge_id)
+        
+        # 'execution_results' from tool should map to 'execution_results' in response
+        final_execution_results = evaluation_results_dict.get("execution_results", {})
+        if not isinstance(final_execution_results, dict): # Ensure it's a dict
+            logger.warning(f"[SUBMIT_CODE] 'execution_results' from tool is not a dict: {type(final_execution_results)}. Defaulting to empty dict.")
+            final_execution_results = {}
+
+        # 'feedback' from tool maps to 'feedback'
+        final_feedback = evaluation_results_dict.get("feedback", {})
+        if not isinstance(final_feedback, dict):
+            logger.warning(f"[SUBMIT_CODE] 'feedback' from tool is not a dict: {type(final_feedback)}. Defaulting to empty dict.")
+            final_feedback = {}
+        
+        # 'evaluation' from tool maps to 'evaluation'
+        final_evaluation = evaluation_results_dict.get("evaluation", {})
+        if not isinstance(final_evaluation, dict):
+            logger.warning(f"[SUBMIT_CODE] 'evaluation' from tool is not a dict: {type(final_evaluation)}. Defaulting to empty dict.")
+            final_evaluation = {}
+
+        # Construct overall_summary based on execution_results
+        overall_summary_data = {
+            "pass_count": final_execution_results.get("pass_count", final_execution_results.get("detailed_results", {}).get("passed", 0)),
+            "fail_count": final_execution_results.get("fail_count", final_execution_results.get("detailed_results", {}).get("failed", 0)),
+            "total_tests": final_execution_results.get("total_tests", 0), # Ensure total_tests is derived correctly
+            "status_text": "UNKNOWN",
+            "error_message": final_execution_results.get("errors"),
+            "all_tests_passed": False
+        }
+        if overall_summary_data["total_tests"] == 0 and isinstance(final_execution_results.get("detailed_results", {}).get("test_results"), list):
+            overall_summary_data["total_tests"] = len(final_execution_results["detailed_results"]["test_results"])
+        
+        if overall_summary_data["total_tests"] > 0:
+            if overall_summary_data["pass_count"] == overall_summary_data["total_tests"] and overall_summary_data["fail_count"] == 0:
+                overall_summary_data["status_text"] = "ALL TESTS PASSED"
+                overall_summary_data["all_tests_passed"] = True
+            elif overall_summary_data["pass_count"] > 0:
+                overall_summary_data["status_text"] = f"{overall_summary_data['pass_count']}/{overall_summary_data['total_tests']} TESTS PASSED"
+            else:
+                overall_summary_data["status_text"] = "ALL TESTS FAILED"
+        elif final_execution_results.get("status") == "error":
+             overall_summary_data["status_text"] = "EXECUTION ERROR"
+        
+        logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] Constructed overall_summary_data: {overall_summary_data}")
+
+
+        # Save snapshot of submission
+        snapshot_timestamp = submission.timestamp or datetime.now().isoformat()
+        snapshot_data = {
+            "challenge_id": submission.challenge_id,
+            "code": stripped_code, # Save stripped code
+            "timestamp": snapshot_timestamp,
+            "event_type": "submission",
+            "execution_results": final_execution_results, # Store the detailed execution results
+            "user_id": submission_user_id # Log which user made this submission snapshot
+        }
+        
+        # Add snapshot to session metadata
+        # Ensure 'code_snapshots' list exists in metadata
+        if "code_snapshots" not in session_metadata:
+            session_metadata["code_snapshots"] = []
+        elif not isinstance(session_metadata["code_snapshots"], list): # If it exists but isn't a list
+            logger.warning(f"code_snapshots in session {session_id} was not a list, re-initializing.")
+            session_metadata["code_snapshots"] = []
             
-            # If the primary status is 'error', capture the error message
-            if overall_summary_data["status_text"] == "ERROR":
-                overall_summary_data["error_message"] = evaluation_results_dict["execution_results"].get("errors", "Unknown execution error")
-            
-            # Refine status_text based on counts if specific status isn't "ERROR"
-            if overall_summary_data["status_text"] != "ERROR":
-                if overall_summary_data["pass_count"] == overall_summary_data["total_tests"] and overall_summary_data["total_tests"] > 0:
-                    overall_summary_data["status_text"] = "ALL TESTS PASSED"
-                    overall_summary_data["all_tests_passed"] = True # Set all_tests_passed to True
-                elif overall_summary_data["pass_count"] > 0 and overall_summary_data["pass_count"] < overall_summary_data["total_tests"]:
-                    overall_summary_data["status_text"] = "SOME TESTS FAILED"
-                elif overall_summary_data["total_tests"] > 0 and overall_summary_data["pass_count"] == 0:
-                    overall_summary_data["status_text"] = "ALL TESTS FAILED"
-                elif overall_summary_data["total_tests"] == 0:
-                     overall_summary_data["status_text"] = "NO TESTS EXECUTED"
-
-        # --- ADDED DETAILED LOGGING ---
-        logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] evaluation_results_dict: {json.dumps(evaluation_results_dict, indent=2)}")
-        logger.info(f"[SUBMIT_CODE_FINAL_ASSEMBLY] Constructed overall_summary_data: {json.dumps(overall_summary_data, indent=2)}")
-        # --- END ADDED DETAILED LOGGING ---
-
-        # --- MODIFICATION START: Update session with ToolMessage and set stage to FEEDBACK ---
-        if interviewer_instance and interviewer_instance.session_manager:
-            try:
-                # Create a ToolMessage with the evaluation results
-                # The 'name' of the tool that was conceptually called by the submission.
-                # The 'tool_call_id' should ideally be unique or linked if possible.
-                tool_call_id = f"eval_{submission.challenge_id}_{uuid.uuid4().hex[:4]}"
-                
-                # The content of the ToolMessage is typically a string representation of the tool's output.
-                # submit_code_for_generated_challenge already returns a dict. We'll use its JSON string.
-                tool_message_content = json.dumps(evaluation_results_dict)
-                
-                tool_message = ToolMessage(content=tool_message_content, tool_call_id=tool_call_id, name="submit_code_for_generated_challenge")
-                
-                # Add this ToolMessage to the session history
-                # This assumes session_manager has a method like add_message_to_session or similar
-                # For now, let's fetch messages, append, and update.
-                # More robust way: interviewer_instance.workflow.update_state(...) if graph directly managed
-                
-                current_messages = session_data.get("messages", [])
-                current_messages.append({
-                    "type": "tool", # Storing as dict for now, as per current session format
-                    "data": {
-                        "content": tool_message_content,
-                        "tool_call_id": tool_call_id,
-                        # Add name if your AIMessage processing expects it for tool messages
-                        "name": "submit_code_for_generated_challenge" 
-                    }
-                })
-                session_data["messages"] = current_messages
-                
-                # Update the interview stage to FEEDBACK
-                session_metadata["interview_stage"] = InterviewStage.FEEDBACK.value
-                session_data["metadata"] = session_metadata # Ensure metadata is part of session_data being updated
-
-                # Corrected session update:
-                # 1. Update metadata (which includes the stage)
-                interviewer_instance.session_manager.update_session_metadata(submission.session_id, session_metadata)
-                
-                # 2. Add the tool message to the session's message history
-                # Assuming add_message_to_session handles storing the message appropriately
-                interviewer_instance.session_manager.add_message_to_session(
-                    session_id=submission.session_id,
-                    message_content=tool_message_content, # This is the JSON string of evaluation_results_dict
-                    role="tool",
-                    # Pass name and tool_call_id if your add_message_to_session supports them as kwargs
-                    # or if it expects a more structured message object.
-                    # Based on the ToolMessage object created above:
-                    name="submit_code_for_generated_challenge",
-                    tool_call_id=tool_call_id 
-                )
-                logger.info(f"Session {submission.session_id} updated with ToolMessage and stage set to FEEDBACK using corrected methods.")
-
-                # --- REVISED SESSION AND GRAPH STATE UPDATE (PART 1: Checkpoint) ---
-                if interviewer_instance.checkpointer:
-                    config = {"configurable": {"thread_id": submission.session_id}}
-                    try:
-                        checkpoint_tuple = await interviewer_instance.checkpointer.aget_tuple(config)
-                        if checkpoint_tuple and checkpoint_tuple.checkpoint:
-                            current_graph_messages = []
-                            # Handle if checkpoint is a dict (common for LangGraph state)
-                            if isinstance(checkpoint_tuple.checkpoint, dict):
-                                current_graph_messages = checkpoint_tuple.checkpoint.get("messages", [])
-                            # Handle if checkpoint is an InterviewState object itself
-                            elif hasattr(checkpoint_tuple.checkpoint, "messages"):
-                                current_graph_messages = checkpoint_tuple.checkpoint.messages
-                            else:
-                                logger.warning(f"Unrecognized checkpoint structure for session {submission.session_id}. Type: {type(checkpoint_tuple.checkpoint)}")
-                                # Default to empty list if structure is unknown, or handle error
-
-                            if not isinstance(current_graph_messages, list):
-                                logger.error(f"Messages in checkpoint for session {submission.session_id} is not a list but {type(current_graph_messages)}. Re-initializing.")
-                                current_graph_messages = []
-                            
-                            current_graph_messages.append(tool_message)
-                            
-                            # Update the messages back into the checkpoint structure
-                            if isinstance(checkpoint_tuple.checkpoint, dict):
-                                checkpoint_tuple.checkpoint["messages"] = current_graph_messages
-                            elif hasattr(checkpoint_tuple.checkpoint, "messages"):
-                                checkpoint_tuple.checkpoint.messages = current_graph_messages
-                            
-                            # Preserve existing metadata and parent_config from the tuple
-                            await interviewer_instance.checkpointer.aput(
-                                config, 
-                                checkpoint_tuple.checkpoint, # The modified checkpoint object/dict
-                                checkpoint_tuple.metadata, 
-                                checkpoint_tuple.parent_config
-                            )
-                            logger.info(f"Appended ToolMessage to LangGraph checkpoint for session {submission.session_id}")
-                        else:
-                            logger.warning(f"Could not retrieve valid LangGraph checkpoint tuple for session {submission.session_id} to append ToolMessage.")
-                    except Exception as e_checkpoint_get_put:
-                        logger.error(f"Error getting or putting checkpoint for session {submission.session_id}: {e_checkpoint_get_put}", exc_info=True)
-                else:
-                    logger.warning(f"No checkpointer in interviewer_instance for session {submission.session_id}. Cannot append ToolMessage to graph state.")
-
-                # --- (PART 2: Metadata update - temporarily commented out) ---
-                # # Fetch fresh metadata to avoid overwriting concurrent updates
-                # fresh_session_data = interviewer_instance.session_manager.get_session(submission.session_id)
-                # if fresh_session_data and "metadata" in fresh_session_data:
-                #     session_metadata_for_stage_update = fresh_session_data["metadata"]
-                # else:
-                #     logger.warning(f"Could not fetch fresh metadata for session {submission.session_id} before stage update. Using existing or empty metadata.")
-                #     session_metadata_for_stage_update = session_metadata # Fallback to potentially stale
-                # session_metadata_for_stage_update["interview_stage"] = InterviewStage.FEEDBACK.value
-                # interviewer_instance.session_manager.update_session_metadata(submission.session_id, session_metadata_for_stage_update)
-                # logger.info(f"Session {submission.session_id} metadata updated to stage FEEDBACK.")
-                # --- END REVISED SESSION AND GRAPH STATE UPDATE ---
-
-            except Exception as e_session_update:
-                logger.error(f"Error updating session after code submission for {submission.session_id}: {e_session_update}", exc_info=True)
-                # Decide if this should fail the request or just log. For now, just log.
-        # --- MODIFICATION END ---
+        session_metadata["code_snapshots"].append(snapshot_data)
+        
+        # Prepare for feedback stage
+        session_metadata[INTERVIEW_STAGE_KEY] = InterviewStage.FEEDBACK # ENSURE THIS LINE IS CORRECT
+        
+        try:
+            active_interviewer.session_manager.update_session_metadata(session_id, session_metadata)
+            logger.info(f"Updated session metadata for {session_id} after code submission, stage set to FEEDBACK.")
+        except Exception as e_meta_update:
+            logger.error(f"Error updating session metadata after code submission for {session_id}: {e_meta_update}", exc_info=True)
+            # Decide if this should be a critical failure
+            # For now, log and continue, but this means stage might not be correctly set for the next call.
+        
+        logger.info(f"Stored submission snapshot for session {session_id}, challenge {submission.challenge_id}")
 
         return CodingSubmissionResponse(
-            status=evaluation_results_dict.get("status", "unknown"),
-            challenge_id=evaluation_results_dict.get("challenge_id", submission.challenge_id),
-            execution_results=evaluation_results_dict.get("execution_results", {}),
-            feedback=evaluation_results_dict.get("feedback", {}),
-            evaluation=evaluation_results_dict.get("evaluation", {}),
-            overall_summary=overall_summary_data
+            status=final_status,
+            challenge_id=final_challenge_id,
+            execution_results=final_execution_results,
+            feedback=final_feedback,
+            evaluation=final_evaluation,
+            overall_summary=overall_summary_data # Pass the constructed summary
         )
 
+    except HTTPException: # Re-raise HTTPExceptions directly
+        raise
     except Exception as e:
-        logger.error(f"Error in submit_code_solution endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing submission: {str(e)}")
+        logger.error(f"[SUBMIT_CODE] Unexpected error processing submission for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @app.post(
     "/api/coding/hint",
@@ -1730,6 +1674,10 @@ async def continue_after_challenge(
 
         # Update metadata to indicate we're resuming from a challenge
         metadata = session.get("metadata", {})
+        if not isinstance(metadata, dict): # Should not happen with good session creation
+            logger.warning(f"Metadata for session {session_id} is not a dict. Re-initializing.")
+            metadata = {}
+            
         metadata["resuming_from_challenge"] = True
         metadata["challenge_completed"] = request_data.challenge_completed
         
@@ -1738,8 +1686,13 @@ async def continue_after_challenge(
             metadata["coding_evaluation"] = request_data.evaluation_summary
             logger.info(f"Stored coding evaluation in session metadata: {request_data.evaluation_summary}")
         
-        session["metadata"] = metadata
-        active_interviewer.session_manager.update_session(session_id, session)
+        # --- MODIFICATION START: Set stage to FEEDBACK ---
+        logger.info(f"Setting interview stage to FEEDBACK for session {session_id} before calling run_interview.")
+        metadata[INTERVIEW_STAGE_KEY] = InterviewStage.FEEDBACK # Explicitly set stage
+        # --- MODIFICATION END ---
+
+        # Corrected line: Use update_session_metadata
+        active_interviewer.session_manager.update_session_metadata(session_id, metadata)
         
         # Prepare a more detailed message if evaluation summary is provided
         message = request_data.message
@@ -1758,13 +1711,110 @@ async def continue_after_challenge(
             if feedback and feedback not in message:
                 message += f" Feedback: {feedback}"
         
+        # ENHANCEMENT: Generate rubric evaluation and create enhanced message
+        enhanced_message = message
+        rubric_evaluation_data = None
+        
+        if request_data.evaluation_summary:
+            try:
+                # Extract coding details from evaluation summary
+                submitted_code = request_data.evaluation_summary.get("candidate_code", "")
+                execution_results = request_data.evaluation_summary.get("execution_results", {})
+                language = request_data.evaluation_summary.get("language", "python")
+                
+                # Get problem statement from session metadata
+                problem_statement = ""
+                if active_interviewer.session_manager:
+                    session = active_interviewer.session_manager.get_session(session_id)
+                    if session and "metadata" in session:
+                        challenge_details = session["metadata"].get("current_coding_challenge_details_for_submission", {})
+                        problem_statement = challenge_details.get("problem_statement", "")
+                
+                # Generate rubric evaluation if we have the necessary data
+                if submitted_code and execution_results and problem_statement:
+                    logger.info("Generating enhanced rubric evaluation for coding submission")
+                    
+                    # Import the tool locally to avoid circular imports
+                    from ai_interviewer.tools.rubric_evaluation import evaluate_coding_submission_with_rubric
+                    
+                    rubric_result = await evaluate_coding_submission_with_rubric.ainvoke({
+                        "code": submitted_code,
+                        "execution_results": execution_results,
+                        "problem_statement": problem_statement,
+                        "language": language,
+                        "candidate_explanation": ""
+                    })
+                    
+                    rubric_evaluation_data = json.loads(rubric_result)
+                    logger.info(f"Rubric evaluation generated with score: {rubric_evaluation_data.get('total_score', 'N/A')}")
+                    
+                    # Store rubric evaluation in session memory
+                    from ai_interviewer.utils.feedback_memory import create_feedback_memory_manager
+                    feedback_memory = create_feedback_memory_manager(active_interviewer.session_manager)
+                    feedback_memory.store_rubric_evaluation(session_id, rubric_evaluation_data)
+                    
+                    # Create enhanced message with rubric data
+                    enhanced_message = f"""System: The candidate has completed the coding challenge and is ready for feedback.
+
+CODING SUBMISSION DETAILS:
+Candidate Code (Language: {language}):
+```{language}
+{submitted_code}
+```
+
+Execution Results:
+{json.dumps(execution_results, indent=2)}
+
+Problem Statement:
+{problem_statement}
+
+COMPREHENSIVE RUBRIC EVALUATION:
+{json.dumps(rubric_evaluation_data, indent=2)}
+
+Structured Feedback Analysis:
+- Overall Score: {rubric_evaluation_data.get('total_score', 'N/A')}/4.0 ({rubric_evaluation_data.get('percentage', 'N/A')}%)
+- Trust Score: {rubric_evaluation_data.get('trust_score', 'N/A')}
+- Assessment: {rubric_evaluation_data.get('overall_assessment', '')}
+
+IMPORTANT: You are now in the FEEDBACK stage with enhanced interactive capabilities:
+1. Use 'initiate_feedback_interaction' to present multiple feedback options to the candidate
+2. Be proactive - ASK the candidate what they want to explore: rubric scores, code quality, efficiency, strengths, or improvement areas
+3. Use the specific feedback tools to provide detailed, targeted feedback based on their choices
+4. Guide them through different feedback areas sequentially using 'suggest_next_feedback_area'
+
+The candidate's message: {message}"""
+                    
+            except Exception as e:
+                logger.error(f"Error generating enhanced rubric evaluation: {e}")
+                # Use original message if enhancement fails
+        
         # Continue the interview with enhanced context
         # run_interview now returns a dictionary
         response_data = await active_interviewer.run_interview(
             user_id_from_token, # Use ID from token
-            message,
+            enhanced_message,
             session_id
         )
+        
+        # MODIFICATION START: Handle audio_data from response_data
+        audio_response_url = None
+        if response_data.get("audio_data"):
+            audio_bytes = response_data["audio_data"]
+            logger.info(f"Received audio_data with length: {len(audio_bytes)} bytes in continue_after_challenge.") # ADDED Log
+            # Save audio and generate URL (similar to /api/audio/transcribe)
+            audio_dir = Path("ai_interviewer/audio_responses") # CHANGED to user's desired path
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure uuid is imported: import uuid
+            audio_filename = f"response_{session_id}_{uuid.uuid4().hex[:8]}.wav" # CHANGED extension to .wav
+            audio_path = audio_dir / audio_filename
+            try:
+                audio_path.write_bytes(audio_bytes)
+                logger.info(f"Successfully wrote {len(audio_bytes)} bytes to {audio_path}. File size on disk: {audio_path.stat().st_size} bytes.") # ADDED Log
+                audio_response_url = f"{request.url_for('get_audio_response', filename=audio_filename)}" # Ensure full URL
+            except Exception as e:
+                logger.error(f"Failed to write audio file {audio_path}: {e}", exc_info=True)
+                # audio_response_url will remain None
+        # MODIFICATION END
         
         # Get updated session metadata (session_id is in response_data)
         current_session_id = response_data["session_id"]
@@ -1782,7 +1832,8 @@ async def continue_after_challenge(
             interview_stage=current_interview_stage, # Use stage from run_interview
             job_role=updated_metadata.get("job_role"), # Keep these from potentially updated session metadata
             requires_coding=updated_metadata.get("requires_coding"),
-            coding_challenge_detail=response_data.get("coding_challenge_detail") # ADDED
+            coding_challenge_detail=response_data.get("coding_challenge_detail"), # ADDED
+            audio_response_url=audio_response_url # Ensure this line is present and uses the variable
         )
     except ValueError as e:
         if "session" in str(e).lower():
@@ -2583,13 +2634,11 @@ class CodingProblemResponse(BaseModel):
     class Config:
         schema_extra = {
             "example": {
-                "problem_statement": "Write a function that finds the most frequent element in a list",
-                "test_cases": [
-                    {"input": [1, 2, 2, 3], "expected_output": 2}
-                ],
-                "reference_solution": "def find_most_frequent(lst):\n    return max(set(lst), key=lst.count)",
+                "problem_statement": "Write a function to find the longest palindromic substring",
+                "test_cases": [{"input": "babad", "expected": "bab"}],
+                "reference_solution": "def longest_palindrome(s): ...",
                 "difficulty_level": "intermediate",
-                "skills_targeted": ["Python", "Data Structures"]
+                "skills_targeted": ["dynamic programming", "string manipulation"]
             }
         }
 
@@ -2605,49 +2654,116 @@ class CodingProblemResponse(BaseModel):
 )
 @limiter.limit("10/minute")
 async def generate_coding_problem(request: Request, req_data: ProblemGenerationRequest):
-    """
-    Generate a coding problem based on job description and required skills.
-    """
+    """Generate a coding problem based on job requirements and difficulty level."""
     try:
-        # Log detailed request information
-        logger.info("=== PROBLEM GENERATION REQUEST RECEIVED ===")
-        logger.info(f"Client IP: {request.client.host}")
-        logger.info(f"Job Description: {req_data.job_description[:50]}...")
-        logger.info(f"Skills Required: {req_data.skills_required}")
-        logger.info(f"Difficulty Level: {req_data.difficulty_level}")
+        result = await generate_coding_challenge_from_jd.ainvoke({
+            "job_description": req_data.job_description,
+            "skills_required": req_data.skills_required,
+            "difficulty_level": req_data.difficulty_level
+        })
         
-        # Call the problem generation tool using the invoke method
-        logger.info("Calling generate_coding_challenge_from_jd tool asynchronously...")
-        # Ensure the tool is awaited correctly if it's an async function
-        if asyncio.iscoroutinefunction(generate_coding_challenge_from_jd.func):
-            result = await generate_coding_challenge_from_jd.ainvoke({
-                "job_description": req_data.job_description,
-                "skills_required": req_data.skills_required,
-                "difficulty_level": req_data.difficulty_level
-            })
-        else: # Fallback if it's somehow not an async func (shouldn't happen with @tool async def)
-            result = generate_coding_challenge_from_jd.invoke({
-                "job_description": req_data.job_description,
-                "skills_required": req_data.skills_required,
-                "difficulty_level": req_data.difficulty_level
-            })
+        # Parse the JSON result
+        parsed_result = json.loads(result)
         
-        # Log the successful response
-        logger.info("Problem generation successful!")
-        logger.info(f"Problem Statement (first 50 chars): {result.get('problem_statement', '')[:50]}...")
-        logger.info(f"Number of Test Cases: {len(result.get('test_cases', []))}")
-        logger.info(f"Skills Targeted: {result.get('skills_targeted', [])}")
-        
-        return result
+        if parsed_result.get("status") == "success":
+            challenge = parsed_result.get("challenge", {})
+            return CodingProblemResponse(
+                problem_statement=challenge.get("problem_statement", ""),
+                test_cases=challenge.get("test_cases", []),
+                reference_solution=challenge.get("reference_solution", ""),
+                difficulty_level=challenge.get("difficulty_level", req_data.difficulty_level),
+                skills_targeted=challenge.get("skills_targeted", req_data.skills_required)
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate coding problem")
+            
+    except json.JSONDecodeError:
+        logger.error("Failed to parse coding problem generation result")
+        raise HTTPException(status_code=500, detail="Failed to parse problem generation result")
     except Exception as e:
-        logger.error("=== PROBLEM GENERATION ERROR ===")
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error(f"Stack trace:", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate coding problem: {str(e)}"
+        logger.error(f"Error generating coding problem: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating coding problem: {str(e)}")
+
+# Move FeedbackSummaryResponse class definition here, before the endpoint
+class FeedbackSummaryResponse(BaseModel):
+    """Response model for feedback summary."""
+    session_id: str = Field(..., description="Session ID")
+    total_interactions: int = Field(..., description="Total number of feedback interactions")
+    explored_areas: List[str] = Field(..., description="List of feedback areas explored")
+    candidate_preferences: Dict[str, Any] = Field(..., description="Candidate's feedback preferences")
+    has_rubric_evaluation: bool = Field(..., description="Whether rubric evaluation exists")
+    rubric_score: Optional[float] = Field(None, description="Overall rubric score")
+    rubric_percentage: Optional[float] = Field(None, description="Rubric score as percentage")
+    trust_score: Optional[float] = Field(None, description="Trust score")
+    last_interaction: Optional[str] = Field(None, description="Timestamp of last interaction")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "session_id": "sess-123",
+                "total_interactions": 5,
+                "explored_areas": ["rubric_scores", "code_quality"],
+                "candidate_preferences": {"most_engaged": "code_quality"},
+                "has_rubric_evaluation": True,
+                "rubric_score": 3.2,
+                "rubric_percentage": 80.0,
+                "trust_score": 0.85,
+                "last_interaction": "2023-12-01T10:30:00Z"
+            }
+        }
+
+# ADDED: Feedback summary endpoint
+@app.get(
+    "/api/interview/{session_id}/feedback-summary",
+    response_model=FeedbackSummaryResponse,
+    responses={
+        200: {"description": "Successfully retrieved feedback summary"},
+        404: {"description": "Session not found", "model": ErrorResponse},
+        429: {"description": "Rate limit exceeded", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse}
+    },
+    dependencies=[Depends(log_request_time)]
+)
+@limiter.limit("30/minute")
+async def get_feedback_summary(
+    request: Request,
+    session_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get feedback interaction summary for a session."""
+    try:
+        if not ai_interviewer.session_manager:
+            raise HTTPException(status_code=500, detail="Session management not available")
+        
+        # Create feedback memory manager
+        feedback_memory = create_feedback_memory_manager(ai_interviewer.session_manager)
+        
+        # Get feedback summary
+        summary = feedback_memory.get_feedback_summary(session_id)
+        
+        if "error" in summary:
+            if "not found" in summary["error"].lower():
+                raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+            else:
+                raise HTTPException(status_code=500, detail=summary["error"])
+        
+        return FeedbackSummaryResponse(
+            session_id=summary["session_id"],
+            total_interactions=summary["total_interactions"],
+            explored_areas=summary["explored_areas"],
+            candidate_preferences=summary["candidate_preferences"],
+            has_rubric_evaluation=summary["has_rubric_evaluation"],
+            rubric_score=summary["rubric_score"],
+            rubric_percentage=summary["rubric_percentage"],
+            trust_score=summary["trust_score"],
+            last_interaction=summary["last_interaction"]
         )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting feedback summary for session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving feedback summary: {str(e)}")
 
 def start_server(host: str = "0.0.0.0", port: int = 8000):
     """
@@ -2843,8 +2959,6 @@ async def get_candidate_profile(
             status_code=500,
             detail=f"Failed to retrieve candidate profile: {str(e)}"
         )
-
-
 
 if __name__ == "__main__":
     # Run the server directly if this module is executed

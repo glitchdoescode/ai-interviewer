@@ -364,7 +364,13 @@ export const submitChallengeFeedbackToServer = async (sessionId, userId, detaile
       evaluation_summary: evaluationSummary, // This should be the object itself
     };
     console.log('Submitting challenge feedback to server (interviewService.js):', payload);
-    const response = await api.post(`/interview/${sessionId}/challenge-complete`, payload);
+
+    // Add a specific timeout for this request
+    const requestConfig = {
+      timeout: 300000, // 5 minutes
+    };
+
+    const response = await api.post(`/interview/${sessionId}/challenge-complete`, payload, requestConfig);
     // Expects MessageResponse model from backend: { response, session_id, interview_stage, audio_response_url, etc. }
     return response.data;
   } catch (error) {

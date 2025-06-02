@@ -68,6 +68,17 @@ from ai_interviewer.tools.problem_generation_tool import (
     get_hint_for_generated_challenge
 )
 
+# Import new rubric evaluation and feedback interaction tools
+from ai_interviewer.tools.rubric_evaluation import (
+    evaluate_coding_submission_with_rubric,
+    generate_detailed_report
+)
+from ai_interviewer.tools.feedback_interaction import (
+    initiate_feedback_interaction,
+    provide_feedback_for_area,
+    suggest_next_feedback_area
+)
+
 # Import custom modules
 from ai_interviewer.utils.session_manager import SessionManager
 from ai_interviewer.utils.memory_manager import InterviewMemoryManager
@@ -147,13 +158,35 @@ ADAPTING TO INTERVIEW STAGES:
 - Technical Questions: Assess depth of knowledge with progressive difficulty. Ask 3-4 technical questions before moving on. If the candidate explicitly requests to move to the coding challenge, and the role requires coding, you should honor this request even if you haven't asked 3-4 questions yet.
 - Coding Challenge: IMPORTANT - When you decide to use the `generate_coding_challenge_from_jd` tool, your response should *only* contain the tool call. This means you must output a valid JSON object that represents the tool call, structured like this: `{{"name": "tool_name", "args": {{"arg1": "value1", ...}}, "id": "unique_tool_call_id"}}`. For the `generate_coding_challenge_from_jd` tool specifically, the JSON would be: `{{"name": "generate_coding_challenge_from_jd", "args": {{"job_description": "<full job description text>", "skills_required": ["Skill1", "Skill2"], "difficulty_level": "<level>"}}, "id": "call_xyz"}}`. Replace `<full job description text>` with the actual job description from your context, `["Skill1", "Skill2"]` with the actual list of skills, `<level>` with the chosen difficulty, and `"call_xyz"` with a unique ID for this specific tool call. Do not wrap this JSON in any other keys like "tool_code". Provide the `job_description` from your context, and ensure `skills_required` is a LIST of strings. `difficulty_level` is optional but can be "beginner", "intermediate", or "advanced".
 - Behavioral Questions: Look for evidence of soft skills and experience. Ask 2-3 behavioral questions.
-- Feedback: Be constructive, balanced, and specific
+- Feedback: **NEW ENHANCED FEEDBACK APPROACH** - You now have advanced feedback capabilities! When in the feedback stage:
+  1. **Use `evaluate_coding_submission_with_rubric` first** if you have code submission details to get a comprehensive rubric-based evaluation
+  2. **Then use `initiate_feedback_interaction`** to start an interactive feedback session where YOU ASK the candidate what they want to explore
+  3. **Be proactive** - instead of waiting for the candidate to ask questions, offer specific feedback areas like:
+     - "Would you like to see your detailed rubric scores first?"
+     - "I can walk you through your code quality analysis, or would you prefer to start with your strengths?"
+     - "There are several areas we could explore - efficiency, problem-solving approach, or overall performance. What interests you most?"
+  4. **Use `provide_feedback_for_area`** to give detailed feedback on specific areas the candidate chooses
+  5. **Use `suggest_next_feedback_area`** to guide the conversation to the next logical feedback topic
+  6. **Store feedback insights in memory** by referencing specific areas explored and candidate preferences
 - Conclusion: End on a positive note with clear next steps
 
 TOOLS USAGE:
 - generate_coding_challenge_from_jd: When you reach the `coding_challenge` stage and need to generate a problem, invoke this tool. To do this, your *entire response* should be a single JSON object representing the tool call. The JSON should look like: `{{"name": "generate_coding_challenge_from_jd", "args": {{"job_description": "...full job description...", "skills_required": ["Python", "APIs"], "difficulty_level": "intermediate"}}, "id": "call_123"}}`. Ensure `skills_required` is a JSON list of strings. You MUST include a unique `id` field for each tool call.
 - analyze_candidate_response: To use this tool, your response should be a JSON tool call: `{{"name": "analyze_candidate_response", "args": {{...arguments...}}, "id": "call_456"}}`.
 - generate_interview_question: To use this tool, your response should be a JSON tool call: `{{"name": "generate_interview_question", "args": {{...arguments...}}, "id": "call_789"}}`.
+- **NEW FEEDBACK TOOLS**:
+  - evaluate_coding_submission_with_rubric: Use when you have code and execution results to get detailed rubric-based scoring
+  - initiate_feedback_interaction: Use to start interactive feedback sessions - this makes YOU the one asking what the candidate wants to explore
+  - provide_feedback_for_area: Use when candidate chooses a specific feedback area to explore
+  - suggest_next_feedback_area: Use to guide the candidate to the next logical feedback area
+  - generate_detailed_report: Use to create comprehensive reports for session memory
+
+FEEDBACK INTERACTION BEST PRACTICES:
+1. **Be the one asking questions** during feedback - "What would you like to explore first?"
+2. **Offer specific choices** - "I can show you your rubric scores, code quality analysis, or efficiency feedback"
+3. **Build on their interests** - if they seem interested in efficiency, dive deeper into algorithmic analysis
+4. **Store preferences** - remember what areas they've explored and what they found most valuable
+5. **Guide the conversation** - suggest logical next steps rather than asking "any other questions?"
 
 If unsure how to respond to something unusual, stay professional and steer the conversation back to relevant technical topics.
 """
@@ -408,6 +441,7 @@ class AIInterviewer:
         
         # Session tracking
         self.active_sessions = {}
+        self._last_synthesized_audio = None # ADDED for transient audio data
     
     def _setup_tools(self):
         """Set up the tools for the interviewer."""
@@ -428,7 +462,14 @@ class AIInterviewer:
             complete_code,
             review_code_section,
             generate_interview_question,
-            analyze_candidate_response
+            analyze_candidate_response,
+            
+            # New rubric evaluation and feedback interaction tools
+            evaluate_coding_submission_with_rubric,
+            generate_detailed_report,
+            initiate_feedback_interaction,
+            provide_feedback_for_area,
+            suggest_next_feedback_area
         ]
         for tool_instance in self.tools:
             logger.info(f"[AIInterviewer._setup_tools] Tool: {tool_instance.name}, Type: {type(tool_instance)}, Is async: {asyncio.iscoroutinefunction(getattr(tool_instance, 'func', tool_instance))}")
@@ -1038,32 +1079,31 @@ class AIInterviewer:
                 # Check if the last message implies coding feedback is due
                 last_human_or_system_message_content = ""
                 if messages:
-                    # Look at the content of the very last message if it's Human or System
-                    # This is often the system message injected by /api/coding/submit
-                    # or the user's message after clicking "Return to Interviewer for Feedback"
                     last_msg_for_feedback_check = messages[-1]
                     if isinstance(last_msg_for_feedback_check, (HumanMessage, SystemMessage)) and hasattr(last_msg_for_feedback_check, 'content'):
                         last_human_or_system_message_content = str(last_msg_for_feedback_check.content).lower()
                 
-                # Keywords indicating coding feedback is expected
+                logger.info(f"[call_model] FEEDBACK stage: last_human_or_system_message_content (first 300 chars): '{last_human_or_system_message_content[:300]}...'")
+
                 feedback_keywords = [
                     "candidate has submitted their solution", 
                     "evaluation summary:", 
                     "execution results:",
                     "provide feedback to the candidate on their solution",
-                    "return to interviewer for feedback" # Added from frontend button
+                    "return to interviewer for feedback", 
+                    "structured feedback analysis:"
                 ]
                 is_coding_feedback_context = any(kw in last_human_or_system_message_content for kw in feedback_keywords)
 
                 if is_coding_feedback_context:
                     system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. The candidate has just submitted a coding challenge solution, or has explicitly requested feedback on it. "
-                                      "The details of their submission (including `candidate_code`, `execution_results`, and `feedback` from the evaluation tool) are in the last ToolMessage in the conversation history. "
+                                      "The details of their submission (including `candidate_code`, `execution_results`, and especially the `Structured Feedback Analysis` from the evaluation tool) are in the last User/System message. "
                                       "Your primary task is to review all these details thoroughly. "
-                                      "Provide comprehensive, constructive feedback on their approach, the `candidate_code` (correctness, clarity, style, efficiency), and the `execution_results`. "
-                                      "Discuss any errors, strengths, and specific areas for improvement based on the `feedback` object provided by the tool. "
+                                      "Provide comprehensive, constructive, and conversational feedback on their approach, the `candidate_code` (correctness, clarity, style, efficiency), and the `execution_results`. "
+                                      "Discuss any errors, strengths, and specific areas for improvement based on the `Structured Feedback Analysis` provided in the message. "
                                       "After providing detailed feedback on the coding challenge, you can transition to behavioral questions or conclude if appropriate.")
                 else:
-                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. Provide general feedback on the candidate's performance so far, "
+                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. Provide general feedback on the candidate\'s performance so far, "
                                       "or if a specific topic was just discussed, provide feedback on that.")
             
             # Build the full prompt with system message and conversation history
@@ -1150,9 +1190,45 @@ class AIInterviewer:
             logger.info(f"[call_model] After JSON parsing, ai_message.tool_calls: {ai_message.tool_calls}")
 
             # Generate audio response using Gemini TTS if input was audio
-            if audio_data:  # Only generate audio if input was audio
+            # if audio_data:  # Only generate audio if input was audio
+            # MODIFICATION START: Conditional audio synthesis
+            should_synthesize_speech = False
+            if audio_data: # If input was audio
+                should_synthesize_speech = True
+                logger.info("[call_model] Audio synthesis triggered: Input was audio.")
+            elif interview_stage == InterviewStage.FEEDBACK.value:
+                logger.info("[call_model] ENTERED audio synthesis block for FEEDBACK stage. Will check conditions.") # NEW DISTINCT LOG
+                # Check if the AI is about to give detailed coding feedback
+                current_last_message_content_for_audio = ""
+                if messages and isinstance(messages[-1], (HumanMessage, SystemMessage)) and hasattr(messages[-1], 'content'):
+                    current_last_message_content_for_audio = str(messages[-1].content).lower()
+
+                cond1 = current_last_message_content_for_audio.startswith("system: the candidate has completed the coding challenge")
+                cond2 = "candidate code (language:" in current_last_message_content_for_audio
+                cond3 = "execution results:" in current_last_message_content_for_audio
+                cond4 = current_last_message_content_for_audio.rfind("structured feedback analysis") != -1 and \
+                        ("structured feedback analysis:" in current_last_message_content_for_audio or \
+                         current_last_message_content_for_audio[current_last_message_content_for_audio.rfind("structured feedback analysis"):].startswith("structured feedback analysis (from automated tools):"))
+                
+                logger.info(f"[call_model] FEEDBACK Audio Check: Content starts with 'system: the candidate...': {cond1}")
+                logger.info(f"[call_model] FEEDBACK Audio Check: Content includes 'candidate code (language:': {cond2}")
+                logger.info(f"[call_model] FEEDBACK Audio Check: Content includes 'execution results:': {cond3}")
+                logger.info(f"[call_model] FEEDBACK Audio Check: Content includes 'structured feedback analysis:': {cond4}")
+
+                is_detailed_coding_submission_for_feedback_check = cond1 and cond2 and cond3 and cond4
+                logger.info(f"[call_model] FEEDBACK Audio Check: is_detailed_coding_submission_for_feedback_check: {is_detailed_coding_submission_for_feedback_check}")
+                
+                if is_detailed_coding_submission_for_feedback_check:
+                    should_synthesize_speech = True
+                    logger.info("[call_model] Audio synthesis triggered: Detailed coding submission feedback.")
+            
+            logger.info(f"[call_model] Final check before synthesis: should_synthesize_speech = {should_synthesize_speech}")
+
+            if should_synthesize_speech:
+            # MODIFICATION END
                 try:
                     # Initialize VoiceHandler (does not require API key directly if utils handle it)
+                    from ai_interviewer.utils.speech_utils import VoiceHandler # Ensure import
                     voice_handler = VoiceHandler()
                     # The voice parameter in speak will be used by synthesize_speech_gemini
                     # It can be overridden by gemini_live_config if set there.
@@ -1164,13 +1240,18 @@ class AIInterviewer:
                     )
                     if synthesized_audio_bytes:
                         # Attach the audio data directly to the AIMessage
-                        ai_message.additional_kwargs['audio_data'] = synthesized_audio_bytes
-                        logger.info("Successfully attached synthesized audio to AIMessage")
+                        # ai_message.additional_kwargs['audio_data'] = synthesized_audio_bytes # REMOVED
+                        self._last_synthesized_audio = synthesized_audio_bytes # ADDED: Store transiently
+                        logger.info(f"Successfully synthesized audio and stored transiently for stage: {interview_stage}.")
                     else:
-                        logger.warning("TTS synthesis returned no audio data.")
+                        logger.warning(f"TTS synthesis returned no audio data for stage: {interview_stage}.")
+                        self._last_synthesized_audio = None # ADDED: Ensure it's None
                 except Exception as e:
-                    logger.error(f"Gemini TTS error in call_model: {str(e)}", exc_info=True)
+                    logger.error(f"Gemini TTS error in call_model for stage {interview_stage}: {str(e)}", exc_info=True)
+                    self._last_synthesized_audio = None # ADDED: Ensure it's None on error
                     # Continue without audio if TTS fails
+            else:
+                self._last_synthesized_audio = None # ADDED: Ensure it's None if not synthesized
             
             # Update interview stage if needed
             current_stage_val = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
@@ -1319,6 +1400,10 @@ class AIInterviewer:
         effective_requires_coding = requires_coding if requires_coding is not None else True
 
         logger.info(f"[CORE] run_interview effective values: job_role='{effective_job_role}', seniority_level='{effective_seniority_level}', skills='{effective_required_skills}', desc='{effective_job_description}', coding='{effective_requires_coding}'")
+
+        # MODIFICATION START: Clear previous audio data
+        self._last_synthesized_audio = None
+        # MODIFICATION END
 
         # Create a new session if one doesn't exist, passing job details
         if not session_id:
@@ -1836,6 +1921,9 @@ class AIInterviewer:
                                 logger.info(f"Extracted stage '{current_stage_after_turn}' from final_graph_state object attribute for metadata update")
                             # If stage couldn't be determined, it remains default, or could be loaded from existing metadata below.
                         
+                        # MODIFICATION: Extract audio_bytes_for_response earlier to include in return
+                        audio_bytes_for_response = self._last_synthesized_audio # ADDED: Get from instance variable
+
                         if self.session_manager:
                             # CRITICAL: Fetch the LATEST metadata from SessionManager before updating
                             fresh_session_data = self.session_manager.get_session(session_id)
@@ -1911,13 +1999,22 @@ class AIInterviewer:
 
                             logger.info(f"Final in-memory metadata update for session {session_id} with stage: {current_stage_after_turn}, details_present: {extracted_challenge_details is not None}, message_count: {target_metadata_dict.get('message_count')}")
 
-                        logger.info(f"[CORE] run_interview RETURN: ai_response='{ai_response_content[:50]}...', session_id='{session_id}', interview_stage='{current_stage_after_turn}', challenge_detail_present={extracted_challenge_details is not None}") # MODIFIED LOG
-                        return {
+                        response_payload = {
                             "ai_response": ai_response_content,
                             "session_id": session_id,
                             "interview_stage": current_stage_after_turn, # Return the determined stage
-                            "coding_challenge_detail": extracted_challenge_details # ADDED
+                            "coding_challenge_detail": extracted_challenge_details, # ADDED
+                            "audio_data": audio_bytes_for_response # ADDED
                         }
+
+                        # If the stage is FEEDBACK, explicitly set coding_challenge_detail to None
+                        # as the challenge is over and we are providing feedback.
+                        if current_stage_after_turn == InterviewStage.FEEDBACK.value:
+                            response_payload["coding_challenge_detail"] = None
+                            logger.info(f"[CORE run_interview] Set coding_challenge_detail to None for FEEDBACK stage session {session_id}.")
+
+                        logger.info(f"[CORE] run_interview RETURN: ai_response='{ai_response_content[:50]}...', session_id='{session_id}', interview_stage='{current_stage_after_turn}', challenge_detail_present={response_payload['coding_challenge_detail'] is not None}") # MODIFIED LOG
+                        return response_payload
         
         logger.warning(f"No AI message found in final graph state for session {session_id}. State: {final_graph_state}")
         
@@ -1940,7 +2037,8 @@ class AIInterviewer:
             "ai_response": "I'm sorry, I couldn't generate a proper response. Please try again.",
             "session_id": session_id,
             "interview_stage": latest_stage_from_graph, 
-            "coding_challenge_detail": extracted_challenge_details 
+            "coding_challenge_detail": extracted_challenge_details, 
+            "audio_data": None # ADDED for consistency
         }
 
     def _get_or_create_session(self, user_id: str, session_id: Optional[str] = None,
@@ -2426,15 +2524,43 @@ class AIInterviewer:
                  return InterviewStage.FEEDBACK.value
 
         elif current_stage == InterviewStage.FEEDBACK.value:
-            # After providing feedback, transition to behavioral questions if not already done
-            behavioral_transition = any(keyword in ai_content for keyword in [
-                "let\\'s talk about your experience", "tell me about a time", 
-                "describe a situation", "how do you handle", "what would you do if"
-            ])
+            # After providing feedback, transition to behavioral questions
+            # ONLY if the AI actively tries to ask a behavioral question OR
+            # if the user indicates they are ready to move on.
+            behavioral_transition_keywords_in_ai = [
+                "let's talk about your experience", "tell me about a time", 
+                "describe a situation", "how do you handle", "what would you do if",
+                "let's move on to some behavioral questions" # Added more explicit AI transition
+            ]
+            ai_is_initiating_behavioral = any(keyword in ai_content for keyword in behavioral_transition_keywords_in_ai)
+
+            user_ready_to_move_on_keywords = [
+                "next question", "move on", "what else", 
+                "ready for more questions", "ask the next one",
+                "continue", "proceed"
+            ]
+            # latest_human_message is the very last human message in the overall history
             
-            if behavioral_transition or human_message_count > 2: # human_message_count refers to total human messages in interview
-                logger.info("Transitioning from FEEDBACK to BEHAVIORAL_QUESTIONS stage")
+            user_wants_to_move_on = False
+            matched_keyword = None
+            for keyword in user_ready_to_move_on_keywords:
+                if keyword in latest_human_message:
+                    user_wants_to_move_on = True
+                    matched_keyword = keyword
+                    break
+            
+            logger.info(f"[_determine_interview_stage] FEEDBACK check: latest_human_message (first 100): '{latest_human_message[:100]}...'")
+            logger.info(f"[_determine_interview_stage] FEEDBACK check: user_wants_to_move_on: {user_wants_to_move_on}, matched_keyword: {matched_keyword}")
+
+
+            if ai_is_initiating_behavioral:
+                logger.info(f"AI is initiating behavioral questions. Transitioning from {current_stage} to {InterviewStage.BEHAVIORAL_QUESTIONS.value}")
                 return InterviewStage.BEHAVIORAL_QUESTIONS.value
+            elif user_wants_to_move_on:
+                logger.info(f"User indicated readiness to move on from feedback. Transitioning from {current_stage} to {InterviewStage.BEHAVIORAL_QUESTIONS.value}")
+                return InterviewStage.BEHAVIORAL_QUESTIONS.value
+            else:
+                logger.info(f"Staying in {current_stage}. AI content: '{ai_content[:100]}...', User message: '{latest_human_message[:100]}...'")
         
         elif current_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
             # After enough behavioral questions, move to conclusion

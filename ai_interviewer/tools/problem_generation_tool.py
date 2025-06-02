@@ -102,10 +102,20 @@ async def generate_coding_challenge_from_jd(
 
         except asyncio.TimeoutError:
             logger.error("LLM call timed out after 90 seconds.")
-            return generate_fallback_challenge(skills_required, difficulty_level, "LLM call timed out.")
+            fallback_data = generate_fallback_challenge(skills_required, difficulty_level, "LLM call timed out.")
+            return {
+                "status": "error_timeout_fallback",
+                "challenge": fallback_data,
+                "message": fallback_data.get("message")
+            }
         except Exception as e:
             logger.error(f"Error during LLM invocation: {e}", exc_info=True)
-            return generate_fallback_challenge(skills_required, difficulty_level, f"LLM invocation error: {e}")
+            fallback_data = generate_fallback_challenge(skills_required, difficulty_level, f"LLM invocation error: {e}")
+            return {
+                "status": "error_llm_invocation_fallback",
+                "challenge": fallback_data,
+                "message": fallback_data.get("message")
+            }
         
         try:
             parsed_json_result = json.loads(response_content)
@@ -162,15 +172,29 @@ async def generate_coding_challenge_from_jd(
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing LLM response as JSON: {e}")
             logger.error(f"Raw response content that failed parsing: {response_content}")
-            # Return fallback, do not raise, as per original structure.
-            return generate_fallback_challenge(skills_required, difficulty_level, f"JSON parsing error: {e}. Response: {response_content[:200]}")
+            fallback_data = generate_fallback_challenge(skills_required, difficulty_level, f"JSON parsing error: {e}. Response: {response_content[:200]}")
+            return {
+                "status": "error_json_parsing_fallback",
+                "challenge": fallback_data,
+                "message": fallback_data.get("message")
+            }
         except Exception as e_pydantic: # Catch Pydantic validation errors or other issues
             logger.error(f"Error creating CodingChallenge model or processing data: {e_pydantic}", exc_info=True)
-            return generate_fallback_challenge(skills_required, difficulty_level, f"Data validation or processing error: {e_pydantic}")
+            fallback_data = generate_fallback_challenge(skills_required, difficulty_level, f"Data validation or processing error: {e_pydantic}")
+            return {
+                "status": "error_validation_fallback",
+                "challenge": fallback_data,
+                "message": fallback_data.get("message")
+            }
             
     except Exception as e:
         logger.error(f"Outer error generating coding challenge: {e}", exc_info=True)
-        return generate_fallback_challenge(skills_required, difficulty_level, f"Outer error: {e}")
+        fallback_data = generate_fallback_challenge(skills_required, difficulty_level, f"Outer error: {e}")
+        return {
+            "status": "error_outer_fallback",
+            "challenge": fallback_data,
+            "message": fallback_data.get("message")
+        }
 
 @tool
 async def submit_code_for_generated_challenge(challenge_data: Dict[str, Any], candidate_code: str, skill_level: str = "intermediate") -> Dict:

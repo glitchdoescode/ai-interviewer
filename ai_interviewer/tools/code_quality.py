@@ -8,6 +8,8 @@ import ast
 import logging
 import io
 import sys
+import tempfile
+import os
 from typing import Dict, List, Optional, Any
 from radon.complexity import cc_visit
 from radon.metrics import h_visit, mi_visit
@@ -46,26 +48,27 @@ class CodeQualityMetrics:
             pylint_score = 10.0  # Default score
             try:
                 # Create a temporary file for pylint
-                file_path = io.StringIO()
-                file_path.write(code)
-                file_path.seek(0)
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp_file:
+                    tmp_file.write(code)
+                    tmp_file_path = tmp_file.name
                 
                 # Set up a custom JSON reporter to capture output
                 json_reporter = JSONReporter()
                 
                 # Run pylint with the JSON reporter
                 # Newer versions of pylint use Run constructor differently
+                # Removed C0330 as it's deprecated
                 args = ['--output-format=json', '--disable=import-error', '--disable=no-name-in-module']
-                pylint.lint.Run([*args, ''], reporter=json_reporter, exit=False)
+                pylint.lint.Run([*args, tmp_file_path], reporter=json_reporter, exit=False)
                 
                 # Process messages
                 messages = json_reporter.messages
                 
                 # Calculate score based on message types
                 if messages:
-                    error_count = sum(1 for msg in messages if msg.category in ('error', 'fatal'))
-                    warning_count = sum(1 for msg in messages if msg.category == 'warning')
-                    convention_count = sum(1 for msg in messages if msg.category == 'convention')
+                    error_count = sum(1 for msg in messages if msg['category'] in ('error', 'fatal'))
+                    warning_count = sum(1 for msg in messages if msg['category'] == 'warning')
+                    convention_count = sum(1 for msg in messages if msg['category'] == 'convention')
                     
                     # Deduct points based on message severity
                     pylint_score -= error_count * 2.0
@@ -77,29 +80,52 @@ class CodeQualityMetrics:
             except Exception as e:
                 logger.error(f"Error running pylint: {e}")
                 pylint_score = 5.0  # Default score on error
+            finally:
+                if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
+                    os.remove(tmp_file_path)
             
             # Calculate cyclomatic complexity
             try:
                 complexity_results = cc_visit(code)
-                avg_complexity = sum(item.complexity for item in complexity_results) / len(complexity_results) if complexity_results else 0
+                avg_complexity = sum(item.complexity for item in complexity_results) / len(complexity_results) if complexity_results else 0.0
             except Exception as e:
                 logger.error(f"Error calculating cyclomatic complexity: {e}")
                 avg_complexity = 5.0  # Default value on error
             
             # Calculate maintainability index
+            maintainability_index = 70.0  # Default value
+            mi_output = None
             try:
-                mi_result = mi_visit(code, multi=True)
-                maintainability_index = sum(mi_result.values()) / len(mi_result) if mi_result else 100
+                # Attempt to get MI results
+                mi_output = mi_visit(code, multi=True)
+                if isinstance(mi_output, list) and mi_output:
+                    maintainability_index = sum(res.mi for res in mi_output) / len(mi_output)
+                elif isinstance(mi_output, float): # Handle direct float output from mi_visit if it occurs
+                    maintainability_index = mi_output
+                elif mi_output is None or (isinstance(mi_output, list) and not mi_output) : # Handles empty list or if mi_visit returns None
+                     maintainability_index = 100.0 # Default for empty/no results
+                else:
+                    logger.warning(f"Unexpected output type from mi_visit: {type(mi_output)}. Using default MI.")
             except Exception as e:
-                logger.error(f"Error calculating maintainability index: {e}")
-                maintainability_index = 70.0  # Default value on error
+                # This catches errors from mi_visit() itself or during processing its valid list output
+                logger.error(f"Error during maintainability index calculation (mi_output type: {type(mi_output)}): {e}")
+                # maintainability_index remains at its default of 70.0
             
             # Calculate Halstead metrics
+            h_result_obj = None # Initialize a variable to hold the actual Halstead object
             try:
-                h_result = h_visit(code)
+                raw_h_visit_output = h_visit(code)
+                if isinstance(raw_h_visit_output, list) and len(raw_h_visit_output) > 0:
+                    # If h_visit returns a list, take the first element
+                    h_result_obj = raw_h_visit_output[0]
+                    if len(raw_h_visit_output) > 1:
+                        logger.warning(f"h_visit returned a list of {len(raw_h_visit_output)} Halstead objects. Processing only the first one.")
+                elif raw_h_visit_output is not None: # If it's not a list but not None, assume it's the object itself
+                    h_result_obj = raw_h_visit_output
+                # If raw_h_visit_output is None, h_result_obj remains None
             except Exception as e:
-                logger.error(f"Error calculating Halstead metrics: {e}")
-                h_result = None
+                logger.error(f"Error directly from h_visit call: {e}")
+                h_result_obj = None # Ensure it's None on error from h_visit
             
             # Calculate raw metrics
             try:
@@ -132,29 +158,59 @@ class CodeQualityMetrics:
                 "documentation": {
                     "doc_ratio": doc_ratio,
                     "interpretation": "Good" if doc_ratio >= 0.8 else "Medium" if doc_ratio >= 0.5 else "Poor"
+                },
+                # Pre-initialize Halstead and Size with default/empty structures
+                "halstead": { 
+                    "volume": 0, "difficulty": 0, "effort": 0, "time": 0, "bugs": 0 
+                },
+                "size": {
+                    "loc": 0, "lloc": 0, "sloc": 0, "comments": 0, "multi": 0, "blank": 0
                 }
             }
             
-            # Add Halstead metrics if available
-            if h_result:
-                metrics["halstead"] = {
-                    "volume": h_result.volume,
-                    "difficulty": h_result.difficulty,
-                    "effort": h_result.effort,
-                    "time": h_result.time,
-                    "bugs": h_result.bugs
-                }
+            # Add Halstead metrics if we have a valid-looking Halstead object
+            if h_result_obj:
+                try:
+                    # Attempt to construct the Halstead metrics dictionary using getattr for safety
+                    temp_halstead_metrics = {
+                        "volume": getattr(h_result_obj, 'volume', None),
+                        "difficulty": getattr(h_result_obj, 'difficulty', None),
+                        "effort": getattr(h_result_obj, 'effort', None),
+                        "time": getattr(h_result_obj, 'time', None),
+                        "bugs": getattr(h_result_obj, 'bugs', None)
+                    }
+                    
+                    # Check if all essential values were successfully retrieved (i.e., not None)
+                    # Note: Some Halstead values can legitimately be 0, so checking for None is key.
+                    if all(value is not None for value in temp_halstead_metrics.values()):
+                        metrics["halstead"] = temp_halstead_metrics
+                    else:
+                        # Log if h_result_obj was present but yielded None for some attributes via getattr
+                        logger.warning(
+                            f"Halstead result object (type: {type(h_result_obj)}) yielded None for some attributes via getattr. "
+                            f"Retrieved values: {temp_halstead_metrics}. Skipping Halstead metrics section."
+                        )
+                except Exception as he: # Catch any other unexpected error during getattr or dict construction
+                    logger.error(
+                        f"Unexpected error when trying to access or process Halstead attributes from h_result_obj "
+                        f"(type: {type(h_result_obj)}): {he}. Skipping Halstead metrics section."
+                    )
+            # If h_result_obj was None or an error occurred, metrics["halstead"] keeps its default values
             
             # Add raw metrics if available
             if raw_metrics:
-                metrics["size"] = {
-                    "loc": raw_metrics.loc,
-                    "lloc": raw_metrics.lloc,
-                    "sloc": raw_metrics.sloc,
-                    "comments": raw_metrics.comments,
-                    "multi": raw_metrics.multi,
-                    "blank": raw_metrics.blank
-                }
+                try:
+                    metrics["size"] = {
+                        "loc": raw_metrics.loc,
+                        "lloc": raw_metrics.lloc,
+                        "sloc": raw_metrics.sloc,
+                        "comments": raw_metrics.comments,
+                        "multi": raw_metrics.multi,
+                        "blank": raw_metrics.blank
+                    }
+                except Exception as rme: # Catch errors accessing raw_metrics attributes
+                    logger.error(f"Error processing raw_metrics (type: {type(raw_metrics)}): {rme}. Using default size metrics.")
+                    # metrics["size"] keeps its default values
             
             # Add interpretations
             metrics["interpretations"] = [

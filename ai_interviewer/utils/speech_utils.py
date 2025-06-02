@@ -126,26 +126,54 @@ class VoiceHandler:
             audio_data = await synthesize_speech_gemini(text, voice_name=voice)
             
             if audio_data:
-                if output_file:
-                    # Write a proper WAV file
-                    try:
-                        with wave.open(output_file, 'wb') as wf:
+                # --- REMOVE DEBUG SAVE ---
+                # try:
+                #     debug_file_path = Path("temp_tts_output.wav")
+                #     with open(debug_file_path, 'wb') as df:
+                #         df.write(audio_data)
+                #     logger.info(f"DEBUG: Saved raw TTS output directly to {debug_file_path} ({len(audio_data)} bytes)")
+                # except Exception as e_debug:
+                #     logger.error(f"DEBUG: Failed to save raw TTS output for debugging: {e_debug}")
+                # --- END REMOVE DEBUG SAVE ---
+
+                # --- MODIFICATION: Always create full WAV bytes in memory ---
+                formatted_wav_bytes = None
+                try:
+                    import io
+                    with io.BytesIO() as wav_buffer:
+                        with wave.open(wav_buffer, 'wb') as wf:
                             wf.setnchannels(1)  # Mono
                             wf.setsampwidth(2)  # 16-bit PCM
                             wf.setframerate(24000) # Gemini TTS standard rate
-                            wf.writeframes(audio_data)
-                        logger.info(f"Gemini TTS: Saved audio to {output_file} as proper WAV.")
-                    except Exception as e:
-                        logger.error(f"Error writing WAV file {output_file}: {e}")
-                        # Fallback to writing raw bytes if wave writing fails, though less ideal
-                        with open(output_file, 'wb') as f:
-                            f.write(audio_data)
-                        logger.warning(f"Gemini TTS: Saved raw audio to {output_file} due to WAV write error.")
+                            wf.writeframes(audio_data) # audio_data is the raw PCM from Gemini
+                        formatted_wav_bytes = wav_buffer.getvalue()
+                    logger.info(f"Gemini TTS: Successfully created formatted WAV in memory ({len(formatted_wav_bytes)} bytes).")
+                except Exception as e_format:
+                    logger.error(f"Error formatting raw audio data to WAV in memory: {e_format}", exc_info=True)
+                    # If formatting fails, we might have to return raw, but log heavily.
+                    # For now, let's assume formatting should work or it's a critical error.
+                    return None # Or raise, depending on desired handling
+
+                if not formatted_wav_bytes: # Should not happen if above try/except is robust
+                    logger.error("Formatted WAV bytes are None after in-memory processing. Aborting TTS.")
+                    return None
+
+                # Now use formatted_wav_bytes for output_file and return
+                if output_file:
+                    try:
+                        with open(output_file, 'wb') as f_out: # output_file is a path string
+                            f_out.write(formatted_wav_bytes)
+                        logger.info(f"Gemini TTS: Saved formatted audio to {output_file}.")
+                    except Exception as e_write:
+                        logger.error(f"Error writing formatted WAV to file {output_file}: {e_write}")
+                
                 if play_audio:
-                    await self._play_audio(audio_data) 
-                return audio_data # Return the audio data bytes
+                    # _play_audio expects bytes of a fully formed WAV file
+                    await self._play_audio(formatted_wav_bytes) 
+                
+                return formatted_wav_bytes # Return the fully formatted WAV data bytes
             else:
-                logger.warning("Gemini TTS failed to produce audio data.")
+                logger.warning("Gemini TTS failed to produce raw audio data from synthesize_speech_gemini.")
                 return None
         except Exception as e:
             logger.error(f"Error during Gemini TTS in VoiceHandler: {e}", exc_info=True)
