@@ -11,6 +11,7 @@ import {
 } from '@chakra-ui/react';
 import { FaShieldAlt, FaChevronDown, FaChevronUp } from 'react-icons/fa';
 import WebcamMonitor from './WebcamMonitor';
+import ScreenActivityMonitor from './ScreenActivityMonitor';
 
 /**
  * ProctoringPanel component that houses all proctoring functionality
@@ -28,12 +29,36 @@ const ProctoringPanel = ({
     hasCamera: false,
     hasDetection: false,
     hasWebSocket: false,
+    hasScreenMonitoring: false,
   });
   const [eventCount, setEventCount] = useState(0);
 
-  const handleStatusChange = (status) => {
-    setProctoringStatus(status);
-    onStatusChange(status);
+  const handleWebcamStatusChange = (status) => {
+    setProctoringStatus(prevStatus => ({
+      ...prevStatus,
+      isActive: status.isActive,
+      hasCamera: status.hasCamera,
+      hasDetection: status.hasDetection,
+      hasWebSocket: status.hasWebSocket,
+    }));
+    onStatusChange({
+      ...proctoringStatus,
+      isActive: status.isActive,
+      hasCamera: status.hasCamera,
+      hasDetection: status.hasDetection,
+      hasWebSocket: status.hasWebSocket,
+    });
+  };
+
+  const handleScreenActivityStatusChange = (status) => {
+    setProctoringStatus(prevStatus => ({
+      ...prevStatus,
+      hasScreenMonitoring: status.isMonitoring,
+    }));
+    onStatusChange({
+      ...proctoringStatus,
+      hasScreenMonitoring: status.isMonitoring,
+    });
   };
 
   const handleEventGenerated = (event) => {
@@ -43,8 +68,16 @@ const ProctoringPanel = ({
 
   const getOverallStatus = () => {
     if (!proctoringStatus.isActive) return { color: 'gray', text: 'Inactive' };
-    if (proctoringStatus.hasCamera && proctoringStatus.hasDetection && proctoringStatus.hasWebSocket) {
-      return { color: 'green', text: 'Active' };
+    
+    const hasWebcam = proctoringStatus.hasCamera && proctoringStatus.hasDetection;
+    const hasScreenActivity = proctoringStatus.hasScreenMonitoring;
+    const hasConnection = proctoringStatus.hasWebSocket;
+    
+    if (hasWebcam && hasScreenActivity && hasConnection) {
+      return { color: 'green', text: 'Full Monitor' };
+    }
+    if (hasWebcam || hasScreenActivity) {
+      return { color: 'yellow', text: 'Partial Monitor' };
     }
     if (proctoringStatus.hasCamera) return { color: 'yellow', text: 'Starting' };
     return { color: 'red', text: 'Error' };
@@ -92,7 +125,10 @@ const ProctoringPanel = ({
         {/* Status Summary */}
         {!isOpen && isEnabled && (
           <Text fontSize="sm" color="gray.600">
-            {proctoringStatus.isActive ? 'Monitoring active' : 'Click to configure proctoring'}
+            {proctoringStatus.isActive ? 
+              `Webcam: ${proctoringStatus.hasCamera ? '✓' : '✗'} | Activity: ${proctoringStatus.hasScreenMonitoring ? '✓' : '✗'}` : 
+              'Click to configure proctoring'
+            }
           </Text>
         )}
 
@@ -105,17 +141,29 @@ const ProctoringPanel = ({
                   Proctoring is currently disabled for this interview.
                 </Text>
                 <Text fontSize="sm" color="gray.500">
-                  This feature helps ensure interview integrity through webcam monitoring and behavioral analysis.
+                  This feature helps ensure interview integrity through webcam monitoring, face detection, and screen activity analysis.
                 </Text>
               </Box>
             ) : (
-              <WebcamMonitor
-                sessionId={sessionId}
-                userId={userId}
-                isEnabled={isEnabled}
-                onStatusChange={handleStatusChange}
-                onEventGenerated={handleEventGenerated}
-              />
+              <>
+                {/* Webcam Monitoring */}
+                <WebcamMonitor
+                  sessionId={sessionId}
+                  userId={userId}
+                  isEnabled={isEnabled}
+                  onStatusChange={handleWebcamStatusChange}
+                  onEventGenerated={handleEventGenerated}
+                />
+
+                {/* Screen Activity Monitoring */}
+                <ScreenActivityMonitor
+                  sessionId={sessionId}
+                  userId={userId}
+                  isEnabled={isEnabled}
+                  onStatusChange={handleScreenActivityStatusChange}
+                  onEventGenerated={handleEventGenerated}
+                />
+              </>
             )}
           </VStack>
         </Collapse>

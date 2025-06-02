@@ -28,7 +28,7 @@ import {
   FormLabel,
   Icon,
 } from '@chakra-ui/react';
-import { FaPlay, FaCheck, FaTimes, FaPauseCircle, FaCode, FaRedo, FaCommentDots } from 'react-icons/fa';
+import { FaPlay, FaCheck, FaPauseCircle, FaRedo, FaCommentDots } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
 import { submitCodingChallengeForEvaluation } from '../api/interviewService';
@@ -71,9 +71,7 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   const { 
     setInterviewStage, 
     jobDetails, 
-    interviewStage, 
-    addMessage,
-    playAudioResponse
+    interviewStage
   } = useInterview();
   
   // Function to fetch a new coding challenge
@@ -306,20 +304,6 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     }
   };
 
-  // Run test cases locally for immediate feedback
-  const runTests = async () => {
-    // For now, just inform the user this is a local test
-    toast({
-      title: 'Running Tests',
-      description: 'Tests are running locally. This does not submit your solution.',
-      status: 'info',
-      duration: 3000,
-      isClosable: true,
-    });
-    
-    // This would be expanded to actually run tests in the future
-  };
-  
   // Submit the solution to the AI for evaluation
   const handleSubmit = async () => {
     if (!code.trim()) {
@@ -418,11 +402,6 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     } finally {
       setIsEvaluating(false);
     }
-  };
-  
-  // Request a hint from the AI
-  const handleRequestHint = () => {
-    onRequestHint && onRequestHint(code);
   };
   
   // Toggle between AI and user mode
@@ -722,15 +701,6 @@ Focus on their approach, code quality, correctness, and the automated analysis.
                 readOnly={isEvaluating || isRunningCode}
               />
               <HStack justifyContent="flex-end" spacing={4}>
-                {/* <Button 
-                  colorScheme="teal" 
-                  variant="outline"
-                  onClick={handleRequestHint}
-                  isLoading={isSubmitting} // Consider a separate loading state for hints
-                  leftIcon={<FaQuestionCircle />}
-                >
-                  Request Hint
-                </Button> */}
                 <Button 
                   colorScheme="blue" 
                   onClick={handleRunCode}

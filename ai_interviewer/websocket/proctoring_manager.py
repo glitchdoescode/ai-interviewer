@@ -56,6 +56,17 @@ class ProctoringWebSocketManager:
             "status_update": self._handle_status_update,
             "face_data": self._handle_face_data,
             "screen_activity": self._handle_screen_activity,
+            
+            # Direct routing for specific screen activity types
+            "tab_switch": self._handle_screen_activity,
+            "window_focus": self._handle_screen_activity,
+            "window_blur": self._handle_screen_activity,
+            "copy_action": self._handle_screen_activity,
+            "paste_action": self._handle_screen_activity,
+            "console_access": self._handle_screen_activity,
+            "screenshot_attempt": self._handle_screen_activity,
+            "keyboard_shortcut": self._handle_screen_activity,
+            "tab_management": self._handle_screen_activity,
         }
         
         # Don't start heartbeat monitor here - will be started when first connection is made
@@ -320,32 +331,92 @@ class ProctoringWebSocketManager:
         if not connection:
             return
         
-        activity_type = data.get("activity_type")
+        activity_type = data.get("activity_type") or data.get("type")
         
-        # Map activity types to proctoring events
+        # Map activity types to proctoring events with enhanced coverage
         event_mapping = {
+            # Tab and window management
             "tab_switch": ProctoringEventType.TAB_SWITCH,
-            "copy": ProctoringEventType.COPY_PASTE,
-            "paste": ProctoringEventType.COPY_PASTE,
+            "window_focus": ProctoringEventType.FOCUS_GAINED,
+            "window_blur": ProctoringEventType.FOCUS_LOST,
             "focus_lost": ProctoringEventType.FOCUS_LOST,
             "focus_gained": ProctoringEventType.FOCUS_GAINED,
-            "new_window": ProctoringEventType.NEW_WINDOW
+            "new_window": ProctoringEventType.NEW_WINDOW,
+            "tab_management": ProctoringEventType.TAB_SWITCH,
+            
+            # Copy-paste activities
+            "copy_action": ProctoringEventType.COPY_PASTE,
+            "paste_action": ProctoringEventType.COPY_PASTE,
+            "copy": ProctoringEventType.COPY_PASTE,
+            "paste": ProctoringEventType.COPY_PASTE,
+            
+            # Suspicious activities - map to appropriate existing types
+            "console_access": ProctoringEventType.NEW_WINDOW,  # Using NEW_WINDOW for dev tools
+            "screenshot_attempt": ProctoringEventType.SCREEN_CAPTURE,
+            "keyboard_shortcut": ProctoringEventType.COPY_PASTE,  # Generic suspicious activity
         }
         
+        # Determine severity based on activity type
+        severity_mapping = {
+            "console_access": AnomalySeverity.CRITICAL,
+            "screenshot_attempt": AnomalySeverity.HIGH,
+            "tab_switch": AnomalySeverity.MEDIUM,
+            "tab_management": AnomalySeverity.HIGH,
+            "copy_action": AnomalySeverity.LOW,
+            "paste_action": AnomalySeverity.MEDIUM,
+            "keyboard_shortcut": AnomalySeverity.MEDIUM,
+            "window_blur": AnomalySeverity.MEDIUM,
+            "window_focus": AnomalySeverity.LOW,
+        }
+        
+        # Use provided severity or determine from activity type
+        severity = data.get("severity")
+        if severity:
+            # Map string severity to enum
+            severity_map = {
+                "low": AnomalySeverity.LOW,
+                "medium": AnomalySeverity.MEDIUM,
+                "high": AnomalySeverity.HIGH,
+                "critical": AnomalySeverity.CRITICAL,
+            }
+            severity = severity_map.get(severity.lower(), AnomalySeverity.MEDIUM)
+        else:
+            severity = severity_mapping.get(activity_type, AnomalySeverity.MEDIUM)
+        
         if activity_type in event_mapping:
-            severity = AnomalySeverity.MEDIUM
-            if activity_type in ["copy", "paste", "tab_switch"]:
-                severity = AnomalySeverity.HIGH
+            # Extract additional metadata
+            metadata = data.get("metadata", {})
+            
+            event_data = {
+                "activity_type": activity_type,
+                "timestamp": data.get("timestamp", datetime.utcnow().isoformat()),
+                "description": data.get("description", f"Screen activity: {activity_type}"),
+                **metadata
+            }
             
             await self._handle_event(connection_id, {
                 "event_type": event_mapping[activity_type],
                 "severity": severity,
-                "confidence": 1.0,
-                "data": {
-                    "activity_type": activity_type,
-                    "timestamp": data.get("timestamp", datetime.utcnow().isoformat())
-                }
+                "confidence": data.get("confidence", 1.0),
+                "data": event_data
             })
+            
+            # Send real-time alert for high severity activities
+            if severity in [AnomalySeverity.HIGH, AnomalySeverity.CRITICAL]:
+                await self.send_alert(
+                    connection.session_id,
+                    "screen_activity",
+                    severity.value,
+                    {
+                        "activity_type": activity_type,
+                        "description": data.get("description", f"Suspicious screen activity: {activity_type}"),
+                        "user_id": connection.user_id,
+                        "timestamp": event_data["timestamp"]
+                    }
+                )
+        else:
+            logger.warning(f"Unknown screen activity type: {activity_type}")
+            await self._send_error(connection_id, f"Unknown screen activity type: {activity_type}")
     
     async def _send_to_connection(self, connection_id: str, message: Dict[str, Any]):
         """Send a message to a specific connection."""

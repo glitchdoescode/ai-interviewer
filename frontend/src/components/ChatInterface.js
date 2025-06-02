@@ -29,8 +29,7 @@ import {
   startInterview, 
   continueInterview, 
   transcribeAndRespond,
-  getChallengeHint,
-  generateCodingProblem
+  getChallengeHint
 } from '../api/interviewService';
 import { Link } from 'react-router-dom';
 

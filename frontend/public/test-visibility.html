@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Visibility API Test</title>
+</head>
+<body>
+    <h1>Tab Visibility Test</h1>
+    <div id="status">Waiting for tab switches...</div>
+    <div id="log" style="background: #f0f0f0; padding: 10px; margin-top: 10px; height: 300px; overflow-y: auto;"></div>
+    
+    <script>
+        const log = document.getElementById('log');
+        const status = document.getElementById('status');
+        
+        function addLog(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            log.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            log.scrollTop = log.scrollHeight;
+            console.log(message);
+        }
+        
+        // Check API support
+        addLog('🔧 Checking API support...');
+        addLog(`document.hidden supported: ${typeof document.hidden !== 'undefined'}`);
+        addLog(`visibilitychange event supported: ${typeof document.addEventListener === 'function'}`);
+        addLog(`Current document.hidden: ${document.hidden}`);
+        
+        // Add visibility change listener
+        document.addEventListener('visibilitychange', function() {
+            const isHidden = document.hidden;
+            const message = `🔥🔥🔥 VISIBILITY CHANGE! document.hidden = ${isHidden}`;
+            addLog(message);
+            status.textContent = isHidden ? 'TAB IS HIDDEN' : 'TAB IS VISIBLE';
+            status.style.color = isHidden ? 'red' : 'green';
+        });
+        
+        addLog('✅ Visibility change listener added');
+        addLog('👆 Try switching to another tab and back to see events');
+        
+        // Test manual trigger
+        window.testVisibility = function() {
+            addLog('🧪 Manually triggering visibilitychange event...');
+            const event = new Event('visibilitychange');
+            document.dispatchEvent(event);
+        };
+        
+        addLog('💡 You can also run testVisibility() in console to test manually');
+    </script>
+</body>
+</html> 

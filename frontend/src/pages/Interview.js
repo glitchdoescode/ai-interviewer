@@ -140,8 +140,8 @@ const Interview = () => {
   const handleStartInterview = () => {
     setShowJobSelector(false);
     
-    // Enable proctoring for the interview
-    setProctoringEnabled(true);
+    // Don't enable proctoring here - wait for sessionId to be available
+    // setProctoringEnabled(true);
     
     // If we have job role data, include it in the initial toast notification
     if (selectedJobRole) {
@@ -154,6 +154,25 @@ const Interview = () => {
       });
     }
   };
+
+  // Enable proctoring only after sessionId is available
+  useEffect(() => {
+    if (sessionId && !showJobSelector) {
+      // Interview has started and we have a session ID
+      setProctoringEnabled(true);
+      
+      toast({
+        title: "Proctoring Enabled",
+        description: "AI proctoring will now monitor the interview session.",
+        status: "info",
+        duration: 3000,
+        isClosable: true,
+      });
+    } else if (!sessionId) {
+      // No session yet, disable proctoring
+      setProctoringEnabled(false);
+    }
+  }, [sessionId, showJobSelector, toast]);
 
   // Handle proctoring status changes
   const handleProctoringStatusChange = (status) => {
