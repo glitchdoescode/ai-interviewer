@@ -11,8 +11,8 @@ import {
   calculateTimeAway,
   checkAPISupport,
   getBrowserInfo,
-  ActivityBuffer,
-  ActivityPatternDetector,
+  ActivityBuffer as ActivityBufferClass,
+  ActivityPatternDetector as ActivityPatternDetectorClass,
 } from '../utils/activityDetection';
 
 /**
@@ -27,8 +27,8 @@ export const useScreenActivity = (isEnabled = false, onActivityDetected = () => 
   const [recentPatterns, setRecentPatterns] = useState({});
 
   // Refs for managing state and cleanup
-  const activityBufferRef = useRef(new ActivityBuffer());
-  const patternDetectorRef = useRef(new ActivityPatternDetector());
+  const activityBufferRef = useRef(new ActivityBufferClass());
+  const patternDetectorRef = useRef(new ActivityPatternDetectorClass());
   const tabHiddenAtRef = useRef(null);
   const isTabVisibleRef = useRef(true);
   const lastActivityTimeRef = useRef(Date.now());

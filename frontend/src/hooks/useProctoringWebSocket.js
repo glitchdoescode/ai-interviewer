@@ -323,7 +323,10 @@ export const useProctoringWebSocket = (sessionId, userId, isActive = false) => {
 
     if (wsRef.current) {
       console.log('🔧 Closing WebSocket with code 1000');
-      wsRef.current.close(1000, 'Intentional disconnect');
+      // Safety check for tests and edge cases
+      if (typeof wsRef.current.close === 'function') {
+        wsRef.current.close(1000, 'Intentional disconnect');
+      }
       wsRef.current = null;
     }
 

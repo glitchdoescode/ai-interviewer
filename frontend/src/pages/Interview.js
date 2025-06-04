@@ -20,8 +20,11 @@ import {
   ModalBody,
   ModalFooter,
   ModalCloseButton,
+  HStack,
+  VStack,
+  Icon,
 } from '@chakra-ui/react';
-import { FaInfoCircle, FaHistory } from 'react-icons/fa';
+import { FaInfoCircle, FaHistory, FaCheckCircle } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import ChatInterface from '../components/ChatInterface';
 import CodingChallenge from '../components/CodingChallenge';
@@ -29,6 +32,7 @@ import ProctoringPanel from '../components/proctoring/ProctoringPanel';
 import { useInterview } from '../context/InterviewContext';
 import { checkVoiceAvailability, submitChallengeFeedbackToServer } from '../api/interviewService';
 import JobRoleSelector from '../components/JobRoleSelector';
+import FaceAuthenticationManager from '../components/proctoring/FaceAuthenticationManager';
 
 /**
  * Interview page component
@@ -37,7 +41,17 @@ const Interview = () => {
   const { sessionId: urlSessionId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
-  const { isOpen, onOpen, onClose } = useDisclosure();
+  const { 
+    isOpen: isEndInterviewModalOpen, 
+    onOpen: onOpenEndInterviewModal, 
+    onClose: onCloseEndInterviewModal 
+  } = useDisclosure();
+
+  const { 
+    isOpen: isEnrollmentModalOpen, 
+    onOpen: onOpenEnrollmentModal, 
+    onClose: onCloseEnrollmentModal 
+  } = useDisclosure();
   
   const {
     userId,
@@ -62,13 +76,25 @@ const Interview = () => {
   const [isVoiceAvailable, setIsVoiceAvailable] = useState(true);
   const [showJobSelector, setShowJobSelector] = useState(true);
   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
-  const [proctoringEnabled, setProctoringEnabled] = useState(false);
   const [proctoringStatus, setProctoringStatus] = useState({
     isActive: false,
     hasCamera: false,
     hasDetection: false,
     hasWebSocket: false,
   });
+
+  // New state variables for enrollment flow
+  const [isEnrolling, setIsEnrolling] = useState(false);
+  const [enrollmentProcessComplete, setEnrollmentProcessComplete] = useState(false);
+  const [temporaryEmbedding, setTemporaryEmbedding] = useState(null);
+  const [proctoringEffectivelyEnabled, setProctoringEffectivelyEnabled] = useState(false);
+  
+  // Ref for the video element used by face authentication
+  const videoRef = React.useRef(null); 
+  const proctoringToastShownRef = React.useRef(false);
+
+  // New combined state for enabling the ProctoringPanel and its underlying WebcamMonitor's camera
+  const proctoringIsEnabledForPanel = proctoringEffectivelyEnabled || (isEnrollmentModalOpen && isEnrolling);
 
   // Audio playback function
   const playAudioResponse = (audioUrl) => {
@@ -139,15 +165,16 @@ const Interview = () => {
   // Handle starting interview with selected role
   const handleStartInterview = () => {
     setShowJobSelector(false);
+    setIsEnrolling(true);
+    setEnrollmentProcessComplete(false); 
+    setTemporaryEmbedding(null);        
+    setProctoringEffectivelyEnabled(false); // This will be true later, after session ID and enrollment
+    onOpenEnrollmentModal(); 
     
-    // Don't enable proctoring here - wait for sessionId to be available
-    // setProctoringEnabled(true);
-    
-    // If we have job role data, include it in the initial toast notification
     if (selectedJobRole) {
       toast({
         title: "Interview Started",
-        description: `Your interview for ${selectedJobRole.role_name} (${selectedJobRole.seniority_level}) is ready to begin.`,
+        description: `Your interview for ${selectedJobRole.role_name} (${selectedJobRole.seniority_level}) is ready to begin. Please complete face enrollment.`,
         status: "success",
         duration: 5000,
         isClosable: true,
@@ -155,30 +182,65 @@ const Interview = () => {
     }
   };
 
-  // Enable proctoring only after sessionId is available
-  useEffect(() => {
-    if (sessionId && !showJobSelector) {
-      // Interview has started and we have a session ID
-      setProctoringEnabled(true);
-      
+  // New callbacks for enrollment process
+  const handleInitialEnrollmentSuccess = (embedding) => {
+    toast({
+      title: 'Enrollment Successful',
+      description: 'Your face has been enrolled.',
+      status: 'success',
+      duration: 3000,
+      isClosable: true,
+    });
+    setTemporaryEmbedding(embedding);
+    setEnrollmentProcessComplete(true);
+    setIsEnrolling(false);
+    onCloseEnrollmentModal();
+  };
+
+  const handleInitialEnrollmentFailure = (errorMsg) => {
+    toast({
+      title: 'Enrollment Failed',
+      description: (errorMsg?.message || String(errorMsg)) || 'Could not enroll face. Please try again.',
+      status: 'error',
+      duration: 5000,
+      isClosable: true,
+    });
+    // Modal remains open for retry, FaceEnrollment component handles retries
+  };
+  
+  const handleEnrollmentModalClose = () => {
+    if (isEnrolling && !enrollmentProcessComplete) { // Check if still enrolling and not completed
       toast({
-        title: "Proctoring Enabled",
-        description: "AI proctoring will now monitor the interview session.",
-        status: "info",
+        title: 'Enrollment Cancelled',
+        description: 'Face enrollment was not completed. Proctoring will be disabled.',
+        status: 'warning',
         duration: 3000,
         isClosable: true,
       });
-    } else if (!sessionId) {
-      // No session yet, disable proctoring
-      setProctoringEnabled(false);
+      setIsEnrolling(false); // Stop enrollment process
+      // Optionally, reset interview or prevent progress if enrollment is mandatory
     }
-  }, [sessionId, showJobSelector, toast]);
+    onCloseEnrollmentModal();
+  };
+
+  // Corrected useEffect for proctoringEffectivelyEnabled. 
+  // This enables the *continuous proctoring part* after enrollment and session ID exist.
+  useEffect(() => {
+    if (sessionId && enrollmentProcessComplete && temporaryEmbedding) {
+      setProctoringEffectivelyEnabled(true);
+      // Toast moved to ProctoringPanel for when it actually becomes active
+      // Reset toast shown flag when proctoring becomes effectively enabled, so it can show again for this session.
+      proctoringToastShownRef.current = false; 
+    } else {
+      setProctoringEffectivelyEnabled(false);
+    }
+  }, [sessionId, enrollmentProcessComplete, temporaryEmbedding]);
 
   // Handle proctoring status changes
   const handleProctoringStatusChange = (status) => {
     setProctoringStatus(status);
     
-    if (status.isActive && status.hasCamera && status.hasDetection && status.hasWebSocket) {
+    if (status.isActive && status.hasCamera && status.hasDetection && status.hasWebSocket && !proctoringToastShownRef.current) {
       toast({
         title: 'Proctoring Active',
         description: 'AI proctoring is now monitoring the interview',
@@ -186,13 +248,15 @@ const Interview = () => {
         duration: 3000,
         isClosable: true,
       });
+      proctoringToastShownRef.current = true; // Mark toast as shown for this session
     }
   };
   
   // Handle ending the interview
   const handleEndInterview = () => {
-    onClose();
-    setProctoringEnabled(false);
+    onCloseEndInterviewModal();
+    setProctoringEffectivelyEnabled(false);
+    proctoringToastShownRef.current = false; // Reset for next interview
     resetInterview();
     navigate('/');
     
@@ -356,7 +420,7 @@ const Interview = () => {
               {/* Proctoring Info */}
               <Box mb={6}>
                 <Text fontWeight="bold" mb={2}>Proctoring</Text>
-                {proctoringEnabled ? (
+                {proctoringEffectivelyEnabled ? (
                   <Badge colorScheme="green">Active</Badge>
                 ) : (
                   <Badge colorScheme="red">Inactive</Badge>
@@ -374,7 +438,7 @@ const Interview = () => {
                   leftIcon={<FaInfoCircle />}
                   colorScheme="blue"
                   variant="outline"
-                  onClick={onOpen}
+                  onClick={() => setIsInfoModalOpen(true)}
                 >
                   How It Works
                 </Button>
@@ -395,11 +459,32 @@ const Interview = () => {
               {/* Proctoring Panel */}
               {!showJobSelector && (
                 <Box mt={4}>
+                  {/* Render the shared video element here for ProctoringPanel */}
+                  {proctoringIsEnabledForPanel && ( 
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted 
+                      style={{
+                        width: '100%',
+                        maxWidth: '320px', // Max width for sidebar
+                        height: 'auto',
+                        borderRadius: '8px', // chakra 'md'
+                        marginBottom: '1rem', // chakra '4'
+                        backgroundColor: '#1A202C', // chakra gray.800 - dark placeholder
+                        aspectRatio: '16/9', // Maintain aspect ratio
+                        display: proctoringEffectivelyEnabled || isEnrolling ? 'block' : 'none', // Show if proctoring or enrolling
+                      }}
+                    />
+                  )}
                   <ProctoringPanel
                     sessionId={sessionId}
                     userId={userId}
-                    isEnabled={proctoringEnabled}
+                    isEnabled={proctoringIsEnabledForPanel}
                     onStatusChange={handleProctoringStatusChange}
+                    temporaryEmbedding={temporaryEmbedding}
+                    videoRef={videoRef}
                   />
                 </Box>
               )}
@@ -441,7 +526,7 @@ const Interview = () => {
                     colorScheme="red" 
                     variant="outline" 
                     size="sm"
-                    onClick={onOpen}
+                    onClick={onOpenEndInterviewModal}
                   >
                     End Interview
                   </Button>
@@ -479,7 +564,7 @@ const Interview = () => {
       </Container>
       
       {/* Info Modal */}
-      <Modal isOpen={isOpen} onClose={onClose} size="lg">
+      <Modal isOpen={isInfoModalOpen} onClose={() => setIsInfoModalOpen(false)} size="lg">
         <ModalOverlay />
         <ModalContent>
           <ModalHeader color="brand.700">How AI Interviewer Works</ModalHeader>
@@ -520,29 +605,86 @@ const Interview = () => {
             </Box>
           </ModalBody>
           <ModalFooter>
-            <Button colorScheme="brand" onClick={onClose}>
+            <Button colorScheme="brand" onClick={() => setIsInfoModalOpen(false)}>
               Got it
             </Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
       
-      <Modal isOpen={isOpen} onClose={onClose}>
+      {/* End Interview Confirmation Modal */}
+      <Modal isOpen={isEndInterviewModalOpen} onClose={onCloseEndInterviewModal}>
         <ModalOverlay />
         <ModalContent>
           <ModalHeader>End Interview</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
-            <Text>
-              Are you sure you want to end this interview? Your session will be saved.
-            </Text>
+            <Text>Are you sure you want to end this interview session?</Text>
           </ModalBody>
           <ModalFooter>
-            <Button variant="ghost" mr={3} onClick={onClose}>
-              Cancel
-            </Button>
-            <Button colorScheme="red" onClick={handleEndInterview}>
+            <Button variant="ghost" onClick={onCloseEndInterviewModal}>Cancel</Button>
+            <Button colorScheme="red" onClick={handleEndInterview} ml={3}>
               End Interview
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      
+      {/* Enrollment Modal */}
+      <Modal isOpen={isEnrollmentModalOpen} onClose={handleEnrollmentModalClose} size="xl" closeOnOverlayClick={false}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Face Enrollment</ModalHeader>
+          {/* Prevent closing via X button if mid-enrollment and not complete */}
+          { !(isEnrolling && !enrollmentProcessComplete) && <ModalCloseButton /> }
+          <ModalBody>
+            <Box>
+              {/* Hidden video element for the hook, if FaceAuthManager doesn't render its own visible one */}
+              {/* <video ref={videoRef} style={{ display: 'none' }} playsInline /> */}
+              
+              {/* 
+                WebcamMonitor will render the video feed.
+                FaceAuthenticationManager will contain FaceEnrollment and the auth logic.
+                WebcamMonitor (via ProctoringPanel's isEnabled) needs to be active to put a stream on videoRef.
+              */}
+              {isEnrolling && (
+                <FaceAuthenticationManager
+                  videoRef={videoRef} // Pass the ref here
+                  isActive={isEnrolling} 
+                  onAuthenticationEvent={(event) => { // This needs refinement in FaceAuthManager
+                    if (event.type === 'enrollment_success' && event.embedding) {
+                      handleInitialEnrollmentSuccess(event.embedding);
+                    } else if (event.type === 'enrollment_failed') {
+                      handleInitialEnrollmentFailure(event.message || 'Enrollment attempt failed.');
+                    } else if (event.type === 'error' && event.context === 'enrollment') {
+                       handleInitialEnrollmentFailure(event.message || 'An error occurred during enrollment.');
+                    }
+                  }}
+                  // To be implemented in FaceAuthenticationManager:
+                  // isEnrollmentOnlyMode={true} 
+                  onInitialEnrollmentSuccess={handleInitialEnrollmentSuccess} 
+                  onInitialEnrollmentFailure={handleInitialEnrollmentFailure} 
+                  showEnrollmentUI={true} 
+                />
+              )}
+              {!isEnrolling && enrollmentProcessComplete && (
+                <VStack spacing={4} py={6} textAlign="center">
+                  <Icon as={FaCheckCircle} boxSize={12} color="green.500" />
+                  <Text fontSize="lg" fontWeight="bold">Enrollment Complete!</Text>
+                  <Text>You can now proceed with the interview.</Text>
+                </VStack>
+              )}
+               {!isEnrolling && !enrollmentProcessComplete && !isEnrollmentModalOpen && (
+                 <Text>Enrollment was not started or was cancelled. Proctoring may be limited.</Text>
+               )}
+            </Box>
+          </ModalBody>
+          <ModalFooter>
+            <Button 
+              onClick={handleEnrollmentModalClose}
+              isDisabled={isEnrolling && !enrollmentProcessComplete} // Disable if enrolling and not yet complete
+            >
+              {enrollmentProcessComplete ? 'Continue to Interview' : 'Cancel Enrollment'}
             </Button>
           </ModalFooter>
         </ModalContent>

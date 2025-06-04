@@ -15,6 +15,10 @@ export const useCamera = () => {
   
   const videoRef = useRef(null);
 
+  useEffect(() => {
+    console.log('[useCamera] permissionGranted changed:', permissionGranted);
+  }, [permissionGranted]);
+
   /**
    * Get available camera devices
    */
@@ -63,6 +67,7 @@ export const useCamera = () => {
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       
       setStream(mediaStream);
+      console.log('[useCamera] Stream acquired and set:', mediaStream);
       setPermissionGranted(true);
       setIsActive(true);
       

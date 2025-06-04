@@ -19,8 +19,8 @@ import {
 } from '@chakra-ui/react';
 import { FaVideo, FaVideoSlash, FaCog, FaEye, FaEyeSlash } from 'react-icons/fa';
 import { useCamera } from '../../hooks/useCamera';
-import { useFaceDetection } from '../../hooks/useFaceDetection';
 import { useProctoringWebSocket } from '../../hooks/useProctoringWebSocket';
+import FaceAuthenticationManager from './FaceAuthenticationManager';
 
 /**
  * WebcamMonitor component for proctoring
@@ -32,10 +32,12 @@ const WebcamMonitor = ({
   isEnabled = false,
   onStatusChange = () => {},
   onEventGenerated = () => {},
+  initialEmbedding,
+  videoRef: externalVideoRef,
 }) => {
   const toast = useToast();
   const [showControls, setShowControls] = useState(false);
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [isMonitoringActive, setIsMonitoringActive] = useState(false);
 
   // Camera hook
   const {
@@ -45,26 +47,12 @@ const WebcamMonitor = ({
     isLoading: cameraLoading,
     error: cameraError,
     permissionGranted,
-    isActive: cameraActive,
-    videoRef,
+    isActive: cameraIsActive,
     startCamera,
     stopCamera,
     switchCamera,
-    toggleCamera,
     isSupported: cameraSupported,
   } = useCamera();
-
-  // Face detection hook
-  const {
-    isLoading: detectionLoading,
-    isReady: detectionReady,
-    error: detectionError,
-    detectionResults,
-    detectionStats,
-    events: detectionEvents,
-    clearEvents,
-    isSupported: detectionSupported,
-  } = useFaceDetection(videoRef, cameraActive && isMonitoring);
 
   // WebSocket hook
   const {
@@ -73,135 +61,160 @@ const WebcamMonitor = ({
     alerts,
     isConnected: wsConnected,
     sendEvent,
-    clearAlerts,
-  } = useProctoringWebSocket(sessionId, userId, isMonitoring);
+  } = useProctoringWebSocket(sessionId, userId, isMonitoringActive && isEnabled);
 
   // Combined loading state
-  const isLoading = cameraLoading || detectionLoading;
+  const isLoading = cameraLoading;
 
   // Combined error state
-  const error = cameraError || detectionError || wsError;
+  const combinedError = cameraError || wsError;
 
-  /**
-   * Start monitoring process
-   */
-  const startMonitoring = async () => {
-    try {
-      // Start camera first
-      await startCamera();
-      setIsMonitoring(true);
-      
+  // Effect to manage the stream on the external video ref
+  useEffect(() => {
+    console.log('[WebcamMonitor] External video ref effect triggered. Stream available:', !!stream, 'Camera isActive:', cameraIsActive, 'externalVideoRef.current available:', !!externalVideoRef?.current);
+    if (externalVideoRef && externalVideoRef.current) {
+      if (stream && cameraIsActive) {
+        if (externalVideoRef.current.srcObject !== stream) {
+          console.log('[WebcamMonitor] Attaching stream to externalVideoRef.current');
+          externalVideoRef.current.srcObject = stream;
+          externalVideoRef.current.playsInline = true; 
+          externalVideoRef.current.autoplay = true; 
+          externalVideoRef.current.muted = true; 
+          externalVideoRef.current.play().then(() => {
+            console.log('[WebcamMonitor] externalVideoRef.current.play() successful');
+          }).catch(e => console.warn("[WebcamMonitor] Error playing external video ref:", e));
+        } else {
+          console.log('[WebcamMonitor] Stream already attached to externalVideoRef or no change needed.');
+        }
+      } else {
+        console.log('[WebcamMonitor] Stream not available or camera not active for externalVideoRef. Not attaching/clearing stream.');
+        // Consider if srcObject should be cleared here if we are solely responsible for it.
+        // externalVideoRef.current.srcObject = null; // Example if needed
+      }
+    } else {
+      console.log('[WebcamMonitor] externalVideoRef or externalVideoRef.current is not available.');
+    }
+  }, [stream, cameraIsActive, externalVideoRef]);
+
+  const handleFaceAuthEvent = (event) => {
+    onEventGenerated(event); // Pass all events up to ProctoringPanel -> InterviewPage
+
+    let newStatus = {
+        isActive: isMonitoringActive && isEnabled,
+        hasCamera: cameraIsActive,
+        hasDetection: false, // Default, will be updated based on event
+        hasWebSocket: wsConnected,
+    };
+
+    switch (event.type) {
+        case 'enrollment_resumed':
+        case 'authentication_success':
+        case 'system_ready': // Assuming this means detection models are loaded and ready
+            newStatus.hasDetection = true;
+            break;
+        case 'enrollment_failed': // Should not happen here as showEnrollmentUI is false
+        case 'authentication_failed':
+            newStatus.hasDetection = false; // Or reflect last known good state?
       toast({
-        title: 'Proctoring Started',
-        description: 'Webcam monitoring is now active',
-        status: 'success',
+                title: `Auth: ${event.type.replace('_', ' ')}`,
+                description: event.message || 'An issue occurred with face authentication.',
+                status: 'warning',
         duration: 3000,
         isClosable: true,
       });
-
-      onStatusChange({ 
-        isActive: true, 
-        hasCamera: true, 
-        hasDetection: detectionReady,
-        hasWebSocket: wsConnected,
-      });
-    } catch (err) {
-      console.error('Error starting monitoring:', err);
+            break;
+        case 'error': // General errors from useFaceAuthentication
+            newStatus.hasDetection = false;
       toast({
-        title: 'Failed to Start Monitoring',
-        description: err.message || 'Could not start proctoring',
+                title: `Face Auth Error: ${event.context || 'General'}`,
+                description: event.message || 'An error occurred.',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
+            break;
+        default:
+            // For other events, we might not change hasDetection status immediately
+            // or we can infer it if needed.
+            // Check if there was a prior success to keep hasDetection true
+            if (onStatusChange.currentStatus && onStatusChange.currentStatus.hasDetection) {
+                 newStatus.hasDetection = true; // Maintain if previously true and event isn't a hard failure
+            }
+            break;
     }
+    onStatusChange(newStatus); // Update overall status in ProctoringPanel
   };
 
-  /**
-   * Stop monitoring process
-   */
-  const stopMonitoring = () => {
-    stopCamera();
-    setIsMonitoring(false);
-    clearEvents();
-    clearAlerts();
-    
-    toast({
-      title: 'Proctoring Stopped',
-      description: 'Webcam monitoring has been disabled',
-      status: 'info',
-      duration: 3000,
-      isClosable: true,
-    });
+  // Initial status update and effect for onStatusChange prop
+  useEffect(() => {
+    const currentOverallStatus = {
+        isActive: isMonitoringActive && isEnabled && cameraIsActive,
+        hasCamera: cameraIsActive,
+        // hasDetection is now primarily driven by FaceAuthenticationManager events
+        // For an initial state, if we have an embedding, we can assume detection will attempt to be active.
+        hasDetection: !!initialEmbedding, 
+        hasWebSocket: wsConnected,
+    };
+    onStatusChange(currentOverallStatus);
+  }, [isMonitoringActive, isEnabled, cameraIsActive, wsConnected, initialEmbedding, onStatusChange]);
 
-    onStatusChange({ 
-      isActive: false, 
-      hasCamera: false, 
-      hasDetection: false,
-      hasWebSocket: false,
-    });
-  };
+  // Start/Stop Monitoring Logic (Camera part)
+  useEffect(() => {
+    console.log(`[WebcamMonitor] Enable/Camera Activation effect triggered. isEnabled: ${isEnabled}, cameraIsActive: ${cameraIsActive}, selectedDeviceId: ${selectedDeviceId}`);
+    if (isEnabled) {
+      if (!cameraIsActive) {
+        console.log("[WebcamMonitor] isEnabled is TRUE and camera is NOT active. Calling startCamera...");
+        startCamera(selectedDeviceId).then(() => {
+            console.log("[WebcamMonitor] call to startCamera() in WebcamMonitor SUCCEEDED.");
+            setIsMonitoringActive(true); 
+        }).catch(err => {
+            console.error("[WebcamMonitor] call to startCamera() in WebcamMonitor FAILED:", err);
+            toast({ title: 'Camera Start Error', description: err.message || 'Failed to start camera.', status: 'error' });
+            setIsMonitoringActive(false);
+        });
+      } else {
+         console.log("[WebcamMonitor] isEnabled is TRUE and camera is ALREADY active. Ensuring isMonitoringActive is true.");
+         setIsMonitoringActive(true);
+      }
+    } else { // isEnabled is false
+      if (cameraIsActive || isMonitoringActive) {
+        console.log("[WebcamMonitor] isEnabled is FALSE. Stopping camera and local monitoring state.");
+        stopCamera();
+        setIsMonitoringActive(false);
+      } else {
+        console.log("[WebcamMonitor] isEnabled is FALSE and camera/monitoring is already inactive.");
+      }
+    }
+  // We remove permissionGranted from this dependency array as startCamera itself will handle it.
+  // cameraIsActive is important to prevent re-calling startCamera if it's already active.
+  }, [isEnabled, cameraIsActive, selectedDeviceId, startCamera, stopCamera, toast]);
 
-  /**
-   * Handle camera device change
-   */
-  const handleDeviceChange = (deviceId) => {
-    switchCamera(deviceId);
-  };
-
-  /**
-   * Get status badge color
-   */
   const getStatusColor = () => {
-    if (error) return 'red';
-    if (isLoading) return 'yellow';
-    if (isMonitoring && cameraActive && detectionReady && wsConnected) return 'green';
-    if (isMonitoring) return 'orange';
-    return 'gray';
+    if (combinedError) return 'red'; // General error (camera, ws)
+    if (isLoading) return 'yellow'; // Camera loading
+    // Status of FaceAuthenticationManager will be handled via its own UI elements / events
+    if (isMonitoringActive && cameraIsActive && wsConnected && initialEmbedding) return 'green'; // Fully active with enrollment
+    if (isMonitoringActive && cameraIsActive) return 'orange'; // Active but maybe no WS or no enrollment yet
+    return 'gray'; // Inactive
   };
 
-  /**
-   * Get status text
-   */
   const getStatusText = () => {
-    if (error) return 'Error';
-    if (isLoading) return 'Loading';
-    if (isMonitoring && cameraActive && detectionReady && wsConnected) return 'Active';
-    if (isMonitoring) return 'Starting';
+    if (combinedError) return `Error: ${combinedError.split('.')[0]}`;
+    if (isLoading) return 'Camera Loading...';
+    if (isMonitoringActive && cameraIsActive && wsConnected && initialEmbedding) return 'Monitoring Active';
+    if (isMonitoringActive && cameraIsActive && !initialEmbedding) return 'Enrollment Pending';
+    if (isMonitoringActive && cameraIsActive) return 'Camera Active';
     return 'Inactive';
   };
 
-  // Send detection events to backend
-  useEffect(() => {
-    if (detectionEvents.length > 0 && wsConnected) {
-      const latestEvent = detectionEvents[detectionEvents.length - 1];
-      const sent = sendEvent(latestEvent);
-      
-      if (sent) {
-        onEventGenerated(latestEvent);
-      }
-    }
-  }, [detectionEvents, wsConnected, sendEvent, onEventGenerated]);
-
-  // Handle enabled/disabled state
-  useEffect(() => {
-    if (isEnabled && !isMonitoring) {
-      // Auto-start monitoring when enabled
-      startMonitoring();
-    } else if (!isEnabled && isMonitoring) {
-      // Auto-stop monitoring when disabled
-      stopMonitoring();
-    }
-  }, [isEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Check browser support
-  if (!cameraSupported || !detectionSupported) {
+  if (!cameraSupported) {
     return (
       <Alert status="error">
         <AlertIcon />
         <AlertTitle>Browser Not Supported</AlertTitle>
         <AlertDescription>
-          Your browser doesn't support webcam access or face detection.
+          Your browser doesn't support webcam access.
           Please use a modern browser like Chrome, Firefox, or Edge.
         </AlertDescription>
       </Alert>
@@ -214,9 +227,9 @@ const WebcamMonitor = ({
         {/* Header */}
         <HStack justify="space-between">
           <HStack spacing={2}>
-            <FaEye color={isMonitoring ? 'green' : 'gray'} />
+            <FaEye color={isMonitoringActive && isEnabled ? 'green' : 'gray'} />
             <Text fontSize="lg" fontWeight="bold">
-              Proctoring Monitor
+              Webcam Monitor
             </Text>
             <Badge colorScheme={getStatusColor()}>
               {getStatusText()}
@@ -235,108 +248,119 @@ const WebcamMonitor = ({
             
             <Button
               size="sm"
-              colorScheme={isMonitoring ? 'red' : 'green'}
-              leftIcon={isMonitoring ? <FaVideoSlash /> : <FaVideo />}
-              onClick={isMonitoring ? stopMonitoring : startMonitoring}
-              isLoading={isLoading}
-              loadingText={isMonitoring ? 'Stopping...' : 'Starting...'}
+              colorScheme={isMonitoringActive && isEnabled ? 'red' : 'green'}
+              leftIcon={isMonitoringActive && isEnabled ? <FaVideoSlash /> : <FaVideo />}
+              onClick={() => {
+                  // This button should reflect the parent `isEnabled` state or be removed if Interview.js controls this.
+                  // For now, let's assume it toggles the local desire to monitor, which then respects `isEnabled`.
+                  if (isMonitoringActive) {
+                      stopCamera(); // This will also trigger useEffect to set isMonitoringActive to false
+                      setIsMonitoringActive(false);
+                  } else if (isEnabled) {
+                      startCamera(selectedDeviceId).then(() => setIsMonitoringActive(true)).catch(e => toast({title: 'Error', description: e.message, status: 'error'}));
+                  } else {
+                      toast({title: 'Info', description: 'Proctoring is currently disabled for the interview.', status: 'info'});
+                  }
+              }}
+              isDisabled={isLoading || !permissionGranted} // Disable if loading or no permission
+              loadingText={isLoading ? (isMonitoringActive ? 'Stopping...' : 'Starting...') : undefined}
             >
-              {isMonitoring ? 'Stop' : 'Start'}
+              {isMonitoringActive && isEnabled ? 'Stop Monitor' : 'Start Monitor'}
             </Button>
           </HStack>
         </HStack>
 
         {/* Error Display */}
-        {error && (
+        {combinedError && (
           <Alert status="error">
             <AlertIcon />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{combinedError}</AlertDescription>
           </Alert>
         )}
 
-        {/* Video Display */}
-        {(cameraActive || isLoading) && (
-          <Box position="relative" bg="black" borderRadius="md" overflow="hidden">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{
-                width: '100%',
-                height: '240px',
-                objectFit: 'cover',
-              }}
-            />
-            
-            {/* Face Detection Overlay */}
-            {detectionResults.length > 0 && (
-              <Box
-                position="absolute"
-                top={0}
-                left={0}
-                width="100%"
-                height="100%"
-                pointerEvents="none"
-              >
-                {detectionResults.map((face, index) => (
-                  <Box
-                    key={index}
-                    position="absolute"
-                    border="2px solid"
-                    borderColor={face.score > 0.8 ? 'green.400' : 'yellow.400'}
-                    borderRadius="md"
-                    style={{
-                      left: `${(face.box.xMin / videoRef.current?.videoWidth) * 100}%`,
-                      top: `${(face.box.yMin / videoRef.current?.videoHeight) * 100}%`,
-                      width: `${(face.box.width / videoRef.current?.videoWidth) * 100}%`,
-                      height: `${(face.box.height / videoRef.current?.videoHeight) * 100}%`,
-                    }}
-                  />
-                ))}
-              </Box>
-            )}
-            
-            {/* Loading Overlay */}
-            {isLoading && (
-              <Box
-                position="absolute"
-                top={0}
-                left={0}
-                width="100%"
-                height="100%"
-                bg="blackAlpha.600"
-                display="flex"
-                alignItems="center"
-                justifyContent="center"
-                color="white"
-              >
-                <VStack spacing={2}>
-                  <Progress size="sm" isIndeterminate width="200px" />
-                  <Text fontSize="sm">
-                    {cameraLoading ? 'Starting camera...' : 'Loading face detection...'}
-                  </Text>
-                </VStack>
-              </Box>
-            )}
-          </Box>
-        )}
+        {/* Video Display - THIS ENTIRE BLOCK WILL BE REMOVED */}
+        {/* {isEnabled && (
+          <>
+            <Box 
+              id="webcam-monitor-video-container"
+              width="100%"
+              bg="black" 
+              borderRadius="md" 
+              position="relative"
+              minHeight="240px" 
+              sx={{ '& video': { width: '100% !important', height: 'auto !important', borderRadius: 'md' } }}
+            >
+              {cameraIsActive ? 
+                (<Text position="absolute" top="2" left="2" color="white" fontSize="xs" bg="blackAlpha.600" p="1" borderRadius="sm">Camera Feed</Text>) : 
+                (<Text textAlign="center" p="4">Camera not active or not started.</Text>)
+              }
+            </Box>
 
-        {/* Detection Stats */}
-        {isMonitoring && detectionReady && (
-          <HStack spacing={4} fontSize="sm" color="gray.600">
-            <Text>
-              Faces: <strong>{detectionStats.faceCount}</strong>
-            </Text>
-            <Text>
-              Confidence: <strong>{(detectionStats.confidence * 100).toFixed(1)}%</strong>
-            </Text>
-            <Text>
-              WebSocket: <strong className={wsConnected ? 'text-green-600' : 'text-red-600'}>
-                {connectionStatus}
-              </strong>
-            </Text>
-          </HStack>
+            {cameraError && (
+              <Alert status="error" mt={2}>
+                <AlertIcon />
+                <AlertTitle>Camera Error</AlertTitle>
+                <AlertDescription>{cameraError}</AlertDescription>
+              </Alert>
+            )}
+            
+            {isMonitoringActive && initialEmbedding && cameraIsActive && isEnabled && (
+              <FaceAuthenticationManager
+                videoRef={externalVideoRef} 
+                isActive={isMonitoringActive && isEnabled} 
+                onAuthenticationEvent={handleFaceAuthEvent}
+                showEnrollmentUI={false} 
+                initialEmbedding={initialEmbedding} 
+                initialSessionId={sessionId}    
+              />
+            )}
+             {!initialEmbedding && isEnabled && isMonitoringActive && (
+                <Alert status="warning" mt={2}>
+                    <AlertIcon />
+                    <AlertTitle>Face Not Enrolled</AlertTitle>
+                    <AlertDescription>
+                        Face enrollment was not completed. Continuous authentication is disabled.
+                    </AlertDescription>
+                </Alert>
+            )}
+          </>
+        )} */}
+        {/* END OF BLOCK TO BE REMOVED */}
+        
+        {/* The FaceAuthenticationManager and related alerts should remain, but not the video box itself */}
+        {isEnabled && (
+          <>
+            {cameraError && (
+              <Alert status="error" mt={2}>
+                <AlertIcon />
+                <AlertTitle>Camera Error</AlertTitle>
+                <AlertDescription>{cameraError}</AlertDescription>
+              </Alert>
+            )}
+            
+            {isMonitoringActive && initialEmbedding && cameraIsActive && isEnabled && (
+              <FaceAuthenticationManager
+                videoRef={externalVideoRef} 
+                isActive={isMonitoringActive && isEnabled} 
+                onAuthenticationEvent={handleFaceAuthEvent}
+                showEnrollmentUI={false} 
+                initialEmbedding={initialEmbedding} 
+                initialSessionId={sessionId}    
+              />
+            )}
+             {!initialEmbedding && isEnabled && isMonitoringActive && !cameraError && ( // Added !cameraError here
+                <Alert status="warning" mt={2}>
+                    <AlertIcon />
+                    <AlertTitle>Face Not Enrolled</AlertTitle>
+                    <AlertDescription>
+                        Face enrollment was not completed. Continuous authentication is disabled.
+                    </AlertDescription>
+                </Alert>
+            )}
+          </>
+        )}
+         {!isEnabled && (
+          <Text color="gray.500" textAlign="center" p={4}>Webcam monitoring is currently disabled by the interview controller.</Text>
         )}
 
         {/* Controls */}
@@ -349,7 +373,7 @@ const WebcamMonitor = ({
                 <Select
                   size="sm"
                   value={selectedDeviceId}
-                  onChange={(e) => handleDeviceChange(e.target.value)}
+                  onChange={(e) => switchCamera(e.target.value)}
                 >
                   {devices.map((device) => (
                     <option key={device.deviceId} value={device.deviceId}>
@@ -367,8 +391,8 @@ const WebcamMonitor = ({
               </FormLabel>
               <Switch
                 id="monitoring-switch"
-                isChecked={isMonitoring}
-                onChange={(e) => e.target.checked ? startMonitoring() : stopMonitoring()}
+                isChecked={isMonitoringActive}
+                onChange={(e) => e.target.checked ? startCamera(selectedDeviceId).then(() => setIsMonitoringActive(true)) : stopCamera()}
                 colorScheme="green"
               />
             </FormControl>

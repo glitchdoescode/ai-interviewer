@@ -7,6 +7,7 @@ import Home from './pages/Home';
 import Interview from './pages/Interview';
 import SessionHistory from './pages/SessionHistory';
 import MicrophoneTest from './pages/MicrophoneTest';
+import FaceAuthTest from './components/FaceAuthTest';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 
@@ -157,6 +158,7 @@ function App() {
               }
             />
             <Route path="/microphone-test" element={<MicrophoneTest />} />
+            <Route path="/face-auth-test" element={<FaceAuthTest />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
           </Routes>

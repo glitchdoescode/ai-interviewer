@@ -25,6 +25,10 @@ class ProctoringEventType(str, Enum):
     FOCUS_GAINED = "focus_gained"
     FACE_AUTH_SUCCESS = "face_auth_success"
     FACE_AUTH_FAILURE = "face_auth_failure"
+    FACE_ENROLLMENT_SUCCESS = "face_enrollment_success"
+    FACE_ENROLLMENT_FAILURE = "face_enrollment_failure"
+    IMPERSONATION_DETECTED = "impersonation_detected"
+    FACE_AUTH_RESET = "face_auth_reset"
     AUDIO_ANOMALY = "audio_anomaly"
     MULTIPLE_VOICES = "multiple_voices"
     SCREEN_CAPTURE = "screen_capture"
@@ -51,6 +55,16 @@ class ProctoringSessionStatus(str, Enum):
     PAUSED = "paused"
     COMPLETED = "completed"
     TERMINATED = "terminated"
+
+
+class FaceAuthenticationStatus(str, Enum):
+    """Status of face authentication."""
+    NOT_ENROLLED = "not_enrolled"
+    ENROLLING = "enrolling"
+    ENROLLED = "enrolled"
+    AUTHENTICATED = "authenticated"
+    FAILED = "failed"
+    PENDING = "pending"
 
 
 class ProctoringEvent(BaseModel):
@@ -106,8 +120,11 @@ class ProctoringConfig(BaseModel):
     
     # Face authentication settings
     face_auth_enabled: bool = Field(default=True, description="Enable periodic face authentication")
-    face_auth_interval: float = Field(default=300.0, description="Face auth interval in seconds")
+    face_auth_interval: float = Field(default=600.0, description="Face auth interval in seconds (10 minutes)")
     face_auth_threshold: float = Field(default=0.7, description="Face recognition confidence threshold")
+    face_auth_impersonation_threshold: float = Field(default=0.5, description="Impersonation detection threshold")
+    face_auth_max_enrollment_attempts: int = Field(default=3, description="Maximum face enrollment attempts")
+    face_auth_min_confidence: float = Field(default=0.8, description="Minimum face detection confidence for enrollment")
     
     # Screen monitoring settings
     screen_monitoring_enabled: bool = Field(default=True, description="Enable screen activity monitoring")
@@ -144,7 +161,7 @@ class ProctoringConfig(BaseModel):
                 "multiple_face_threshold": 1,
                 "gaze_tracking_enabled": True,
                 "face_auth_enabled": True,
-                "face_auth_interval": 300.0,
+                "face_auth_interval": 600.0,
                 "screen_monitoring_enabled": True,
                 "audio_monitoring_enabled": False,
                 "real_time_alerts": True,
@@ -169,8 +186,16 @@ class ProctoringSession(BaseModel):
     # Configuration
     config: ProctoringConfig = Field(default_factory=ProctoringConfig, description="Session configuration")
     
-    # Session state
-    current_face_encoding: Optional[str] = Field(None, description="Base64 encoded face template for authentication")
+    # Face authentication state
+    face_auth_status: FaceAuthenticationStatus = Field(default=FaceAuthenticationStatus.NOT_ENROLLED, description="Face authentication status")
+    face_enrollment_embedding: Optional[str] = Field(None, description="Base64 encoded face embedding for authentication")
+    face_enrollment_timestamp: Optional[datetime] = Field(None, description="When face was enrolled")
+    last_face_authentication: Optional[datetime] = Field(None, description="Last successful face authentication")
+    face_authentication_score: float = Field(default=0.0, description="Latest face authentication similarity score")
+    face_enrollment_attempts: int = Field(default=0, description="Number of face enrollment attempts")
+    
+    # Session state (legacy - maintained for compatibility)
+    current_face_encoding: Optional[str] = Field(None, description="Legacy field - use face_enrollment_embedding instead")
     baseline_established: bool = Field(default=False, description="Whether baseline face has been established")
     
     # Statistics
@@ -192,6 +217,9 @@ class ProctoringSession(BaseModel):
                 "status": "active",
                 "created_at": "2025-01-27T14:00:00Z",
                 "started_at": "2025-01-27T14:05:00Z",
+                "face_auth_status": "enrolled",
+                "last_face_authentication": "2025-01-27T14:05:00Z",
+                "face_authentication_score": 0.85,
                 "total_events": 15,
                 "anomaly_count": 2,
                 "is_candidate_present": True,

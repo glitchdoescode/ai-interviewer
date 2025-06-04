@@ -12,8 +12,10 @@ import {
   SimpleGrid,
   Icon,
   useColorModeValue,
+  HStack,
+  Divider,
 } from '@chakra-ui/react';
-import { FaMicrophone, FaRobot, FaCode, FaChartLine } from 'react-icons/fa';
+import { FaMicrophone, FaRobot, FaCode, FaChartLine, FaUserShield } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import { useInterview } from '../context/InterviewContext';
 import { v4 as uuid } from 'uuid';
@@ -134,6 +136,35 @@ const Home = () => {
           >
             Start Practicing
           </Button>
+        </Box>
+
+        {/* Development/Testing Section */}
+        <Box mt={16}>
+          <Divider mb={6} />
+          <Heading as="h3" size="md" textAlign="center" mb={6} color="gray.600">
+            Development & Testing
+          </Heading>
+          
+          <HStack spacing={4} justify="center" wrap="wrap">
+            <Button
+              variant="outline"
+              leftIcon={<FaMicrophone />}
+              onClick={() => navigate('/microphone-test')}
+              size="sm"
+            >
+              Microphone Test
+            </Button>
+            
+            <Button
+              variant="outline"
+              leftIcon={<FaUserShield />}
+              onClick={() => navigate('/face-auth-test')}
+              size="sm"
+              colorScheme="blue"
+            >
+              Face Authentication Test
+            </Button>
+          </HStack>
         </Box>
       </Container>
     </Box>

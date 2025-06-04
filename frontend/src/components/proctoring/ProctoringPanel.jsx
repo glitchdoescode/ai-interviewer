@@ -22,6 +22,8 @@ const ProctoringPanel = ({
   userId, 
   isEnabled = false,
   onStatusChange = () => {},
+  temporaryEmbedding,
+  videoRef,
 }) => {
   const { isOpen, onToggle } = useDisclosure({ defaultIsOpen: true });
   const [proctoringStatus, setProctoringStatus] = useState({
@@ -153,6 +155,8 @@ const ProctoringPanel = ({
                   isEnabled={isEnabled}
                   onStatusChange={handleWebcamStatusChange}
                   onEventGenerated={handleEventGenerated}
+                  initialEmbedding={temporaryEmbedding}
+                  videoRef={videoRef}
                 />
 
                 {/* Screen Activity Monitoring */}
