@@ -10,6 +10,7 @@ import uuid
 from typing import Dict, List, Any, Optional
 import re
 import asyncio
+import os
 
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -53,7 +54,7 @@ async def generate_coding_challenge_from_jd(
     job_description: str,
     skills_required: List[str],
     difficulty_level: str = "intermediate"
-) -> Dict[str, Any]:
+ ) -> Dict[str, Any]:
     """
     Generate a coding challenge based on a job description and required skills.
     
@@ -68,14 +69,36 @@ async def generate_coding_challenge_from_jd(
     """
     logger.info(f"[generate_coding_challenge_from_jd] Called with difficulty: {difficulty_level}, skills: {skills_required}, job_description: {job_description[:100]}...")
 
+    # Directly use fallback challenge as per user request
+    logger.info("[generate_coding_challenge_from_jd] Using fallback challenge directly as per user request.")
+    fallback_data = generate_fallback_challenge(skills_required, difficulty_level, "Fallback by user request")
+    return {
+        "status": "direct_fallback_user_request",
+        "challenge": fallback_data,
+        "message": fallback_data.get("message", "Using fallback challenge by direct user request.")
+    }
+
     try:
         logger.info(f"Generating coding challenge for skills: {skills_required}")
         logger.info(f"Difficulty level: {difficulty_level}")
         
         llm_config = get_llm_config()
+        
+        # CRITICAL FIX: Get API key directly from environment since get_llm_config() doesn't include it
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        if not google_api_key:
+            logger.error("GOOGLE_API_KEY not found in environment variables")
+            fallback_data = generate_fallback_challenge(skills_required, difficulty_level, "GOOGLE_API_KEY not found in environment")
+            return {
+                "status": "error_no_api_key_fallback",
+                "challenge": fallback_data,
+                "message": fallback_data.get("message")
+            }
+        
         model = ChatGoogleGenerativeAI(
             model=llm_config["model"],
-            temperature=0.2
+            temperature=0.2,
+            google_api_key=google_api_key  # CRITICAL FIX: Explicitly pass the API key
         )
         
         prompt_text = format_problem_generation_prompt(

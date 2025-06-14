@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = '/api/v1/auth'; // Adjusted to match backend auth routes
+const API_BASE_URL = '/api/v1/auth'; // Use relative URL since proxy is configured in package.json
 
 // Create a separate axios instance for auth if needed, or use a global one
 // For simplicity, we'll use a new one here or assume a global one if 'api' from interviewService was exported and configured
@@ -10,6 +10,7 @@ const API_BASE_URL = '/api/v1/auth'; // Adjusted to match backend auth routes
 const authApi = axios.create({
   baseURL: API_BASE_URL,
   timeout: 10000, // 10 seconds timeout for auth requests
+  withCredentials: true, // Important for CORS with credentials
 });
 
 /**
@@ -35,11 +36,23 @@ export const loginUser = async (email, password) => {
   } catch (error) {
     console.error(
       'Login API error:', 
-      error.response ? { status: error.response.status, data: error.response.data } : error.message
+      error.response ? { 
+        status: error.response.status, 
+        data: error.response.data,
+        headers: error.response.headers 
+      } : error.message
     );
     // Throw a more specific error message for the UI
-    const errorDetail = error.response?.data?.detail || 'Login failed. Please check your credentials or network.';
-    throw new Error(errorDetail);
+    if (error.response) {
+      // Server responded with a status code outside of 2xx range
+      throw new Error(error.response.data?.detail || 'Login failed. Please check your credentials.');
+    } else if (error.request) {
+      // Request was made but no response received
+      throw new Error('Unable to reach the server. Please check your network connection.');
+    } else {
+      // Something happened in setting up the request
+      throw new Error('An error occurred while trying to log in. Please try again.');
+    }
   }
 };
 

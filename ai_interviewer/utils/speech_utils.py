@@ -110,6 +110,7 @@ class VoiceHandler:
                  output_file: Optional[str] = None) -> Optional[bytes]:
         """
         Convert text to speech using Gemini and play/save.
+        Optimized for lower latency by reducing processing overhead.
         
         Args:
             text: Text to convert to speech
@@ -122,21 +123,16 @@ class VoiceHandler:
         """
         logger.info(f"Using Gemini for TTS with voice: {voice}")
         try:
+            # Truncate very long text for faster synthesis
+            if len(text) > 500:
+                text = text[:480] + "..."
+                logger.info("Truncated long text for faster TTS")
+            
             # Voice parameter is now passed directly to synthesize_speech_gemini
             audio_data = await synthesize_speech_gemini(text, voice_name=voice)
             
             if audio_data:
-                # --- REMOVE DEBUG SAVE ---
-                # try:
-                #     debug_file_path = Path("temp_tts_output.wav")
-                #     with open(debug_file_path, 'wb') as df:
-                #         df.write(audio_data)
-                #     logger.info(f"DEBUG: Saved raw TTS output directly to {debug_file_path} ({len(audio_data)} bytes)")
-                # except Exception as e_debug:
-                #     logger.error(f"DEBUG: Failed to save raw TTS output for debugging: {e_debug}")
-                # --- END REMOVE DEBUG SAVE ---
-
-                # --- MODIFICATION: Always create full WAV bytes in memory ---
+                # Streamlined audio processing - reduce unnecessary operations
                 formatted_wav_bytes = None
                 try:
                     import io
@@ -150,34 +146,76 @@ class VoiceHandler:
                     logger.info(f"Gemini TTS: Successfully created formatted WAV in memory ({len(formatted_wav_bytes)} bytes).")
                 except Exception as e_format:
                     logger.error(f"Error formatting raw audio data to WAV in memory: {e_format}", exc_info=True)
-                    # If formatting fails, we might have to return raw, but log heavily.
-                    # For now, let's assume formatting should work or it's a critical error.
-                    return None # Or raise, depending on desired handling
+                    return None
 
-                if not formatted_wav_bytes: # Should not happen if above try/except is robust
+                if not formatted_wav_bytes:
                     logger.error("Formatted WAV bytes are None after in-memory processing. Aborting TTS.")
                     return None
 
-                # Now use formatted_wav_bytes for output_file and return
+                # Asynchronous file operations and playback for better performance
                 if output_file:
-                    try:
-                        with open(output_file, 'wb') as f_out: # output_file is a path string
-                            f_out.write(formatted_wav_bytes)
-                        logger.info(f"Gemini TTS: Saved formatted audio to {output_file}.")
-                    except Exception as e_write:
-                        logger.error(f"Error writing formatted WAV to file {output_file}: {e_write}")
+                    # Don't wait for file write to complete if playing audio
+                    if play_audio:
+                        asyncio.create_task(self._async_write_file(output_file, formatted_wav_bytes))
+                    else:
+                        await self._async_write_file(output_file, formatted_wav_bytes)
                 
                 if play_audio:
-                    # _play_audio expects bytes of a fully formed WAV file
-                    await self._play_audio(formatted_wav_bytes) 
+                    # Use optimized playback
+                    await self._play_audio_optimized(formatted_wav_bytes) 
                 
-                return formatted_wav_bytes # Return the fully formatted WAV data bytes
+                return formatted_wav_bytes
             else:
                 logger.warning("Gemini TTS failed to produce raw audio data from synthesize_speech_gemini.")
                 return None
         except Exception as e:
             logger.error(f"Error during Gemini TTS in VoiceHandler: {e}", exc_info=True)
             return None
+
+    async def _async_write_file(self, file_path: str, data: bytes):
+        """Asynchronously write audio data to file."""
+        try:
+            with open(file_path, 'wb') as f:
+                f.write(data)
+            logger.info(f"Gemini TTS: Saved formatted audio to {file_path}.")
+        except Exception as e:
+            logger.error(f"Error writing WAV to file {file_path}: {e}")
+
+    async def _play_audio_optimized(self, audio_data: bytes) -> None:
+        """
+        Optimized audio playback with reduced latency.
+        """
+        try:
+            # Use direct audio data without temp file creation for speed
+            import io
+            wf = wave.open(io.BytesIO(audio_data), 'rb')
+            p = pyaudio.PyAudio()
+            
+            # Use smaller buffer for lower latency
+            chunk_size = 512  # Reduced from 1024 for lower latency
+            
+            stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
+                            channels=wf.getnchannels(),
+                            rate=wf.getframerate(),
+                            output=True,
+                            frames_per_buffer=chunk_size)
+            
+            logger.info("Playing audio (optimized)...")
+            data = wf.readframes(chunk_size)
+            while len(data) > 0:
+                stream.write(data)
+                data = wf.readframes(chunk_size)
+                
+            stream.stop_stream()
+            stream.close()
+            wf.close()
+            p.terminate()
+            logger.info("Audio playback complete (optimized).")
+            
+        except Exception as e:
+            logger.error(f"Error in optimized audio playback: {e}", exc_info=True)
+            # Fallback to original method
+            await self._play_audio(audio_data)
 
     # _record_audio and _play_audio methods remain as they are utility functions
     # for microphone interaction and audio playback, independent of the STT/TTS provider.

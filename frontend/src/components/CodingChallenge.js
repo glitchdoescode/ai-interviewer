@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Button,
@@ -27,11 +27,23 @@ import {
   FormControl,
   FormLabel,
   Icon,
+  useColorModeValue,
+  Grid,
+  GridItem,
+  Avatar,
+  Flex,
+  Input,
+  IconButton,
+  Progress,
 } from '@chakra-ui/react';
-import { FaPlay, FaCheck, FaPauseCircle, FaRedo, FaCommentDots } from 'react-icons/fa';
+import { Global } from '@emotion/react';
+import { FaPlay, FaCheck, FaPauseCircle, FaRedo, FaCommentDots, FaPaperPlane, FaMicrophone, FaMicrophoneSlash, FaTimes } from 'react-icons/fa';
 import CodeEditor from './CodeEditor';
 import { useInterview } from '../context/InterviewContext';
-import { submitCodingChallengeForEvaluation } from '../api/interviewService';
+import { submitCodingChallengeForEvaluation, getChallengeHint, submitChallengeFeedbackToServer } from '../api/interviewService';
+import ChatMessage from './ChatMessage';
+import AudioControls from './video/AudioControls';
+import { ConversationIndicators } from './video/ConversationIndicators';
 
 /**
  * CodingChallenge component for handling coding challenge interactions
@@ -42,15 +54,57 @@ import { submitCodingChallengeForEvaluation } from '../api/interviewService';
  * @param {Function} props.onRequestHint Callback to request a hint
  * @param {string} props.sessionId Session ID
  * @param {string} props.userId User ID
+ * @param {boolean} props.isVideoCall Indicates if the challenge is in video call mode
  */
-const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onRequestHint, sessionId, userId }) => {
-  const [currentChallengeDetails, setCurrentChallengeDetails] = useState(initialChallengeData);
-  const [code, setCode] = useState(initialChallengeData?.starter_code || '');
-  const [language, setLanguage] = useState(initialChallengeData?.language || 'python');
+const CodingChallenge = ({ 
+  jobRoleData, 
+  onSubmit, 
+  onComplete,
+  isVideoCall = false,
+  sessionId = null,
+  userId = null 
+}) => {
+  const [currentChallengeDetails, setCurrentChallengeDetails] = useState(jobRoleData);
+  const [code, setCode] = useState(jobRoleData?.starter_code || '');
+  const [language, setLanguage] = useState(jobRoleData?.language || 'python');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const [isWaitingForUser, setIsWaitingForUser] = useState(true);
   const toast = useToast();
+  
+  // Component state
+  const [results, setResults] = useState(null);
+  const [showOutput, setShowOutput] = useState(false);
+  const [output, setOutput] = useState({ stdout: "", stderr: "", error: "" });
+  const [isRunning, setIsRunning] = useState(false);
+  const [evaluationResult, setEvaluationResult] = useState(null);
+  const [isWaitingForTests, setIsWaitingForTests] = useState(false);
+  const [inputText, setInputText] = useState("");
+  const [theme, setTheme] = useState("vs-dark");
+  const [isAudioActive, setIsAudioActive] = useState(false);
+  const [messages, setMessages] = useState([{
+    role: 'assistant',
+    content: `Hello! I'll be helping you with this coding challenge. Feel free to ask any questions about the problem. Good luck!`,
+    timestamp: new Date().toISOString()
+  }]);
+  const [hintsRequested, setHintsRequested] = useState(0);
+  const [showHintTooltip, setShowHintTooltip] = useState(false);
+  const [audioTranscript, setAudioTranscript] = useState("");
+  const [chatMessage, setChatMessage] = useState('');
+  const [isLoadingResponse, setIsLoadingResponse] = useState(false);
+  
+  // Import and use the InterviewContext
+  const { 
+    setInterviewStage, 
+    jobDetails, 
+    interviewStage,
+    allMessages,
+    setCurrentCodingChallenge
+  } = useInterview();
+  
+  // Refs
+  const editorRef = useRef(null);
+  const chatAreaRef = useRef(null);
   
   // State for Run Code functionality (Sprint 3)
   const [stdin, setStdin] = useState('');
@@ -59,20 +113,78 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   const [isRunningCode, setIsRunningCode] = useState(false);
 
   // New state for Sprint 4: Test Case Evaluation
-  const [evaluationResult, setEvaluationResult] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   
-  // State for CodeMirror theme (Sprint 5 UI/UX)
-  const [editorTheme, setEditorTheme] = useState(() => {
-    const savedTheme = localStorage.getItem('editorTheme');
-    return savedTheme || 'light'; // Default to light if no saved theme
-  });
+  // Theme colors
+  const bgColor = useColorModeValue('white', 'gray.800');
+  const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const userMessageBg = useColorModeValue('brand.100', 'brand.700');
+  const aiMessageBg = useColorModeValue('gray.100', 'gray.700');
+  const messageTextColor = useColorModeValue('gray.800', 'white');
+  const messagesAreaBg = useColorModeValue('gray.50', 'gray.700');
+  const inputBg = useColorModeValue('white', 'gray.700');
   
-  const { 
-    setInterviewStage, 
-    jobDetails, 
-    interviewStage
-  } = useInterview();
+  // Audio/Video state
+  const [audioStream, setAudioStream] = useState(null);
+  const [isAudioStreamActive, setIsAudioStreamActive] = useState(false);
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [candidateAudioLevel, setCandidateAudioLevel] = useState(0);
+  const [aiAudioLevel, setAiAudioLevel] = useState(0);
+  const [isListening, setIsListening] = useState(false);
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false);
+  const [candidateSpeaking, setCandidateSpeaking] = useState(false);
+  const [aiSpeaking, setAiSpeaking] = useState(false);
+  const [speechRecognition, setSpeechRecognition] = useState(null);
+  const [recognitionState, setRecognitionState] = useState('stopped'); // 'stopped', 'starting', 'running', 'stopping'
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [speechDetectionTimeout, setSpeechDetectionTimeout] = useState(null);
+  const [sessionDuration, setSessionDuration] = useState(0);
+  const [availableVoices, setAvailableVoices] = useState([]);
+  
+  // Refs for speech detection
+  const isAudioStreamActiveRef = useRef(false);
+  const recognitionStateRef = useRef('stopped');
+  const speechDetectionTimeoutRef = useRef(null);
+  
+  // State for UI and code editor
+  const [editorTheme, setEditorTheme] = useState('light');
+  const primaryColor = useColorModeValue('primary.600', 'primary.400');
+  
+  // CSS for pulse animation
+  const pulseAnimation = `
+    @keyframes pulse {
+      0% {
+        transform: scale(0.95);
+        opacity: 0.7;
+      }
+      50% {
+        transform: scale(1.1);
+        opacity: 1;
+      }
+      100% {
+        transform: scale(0.95);
+        opacity: 0.7;
+      }
+    }
+  `;
+  
+  // Initialize with existing messages from the interview context
+  useEffect(() => {
+    if (allMessages && allMessages.length > 0) {
+      // Take last 5 messages to provide context
+      const recentMessages = allMessages.slice(-5);
+      setMessages([
+        ...recentMessages,
+        {
+          role: 'assistant',
+          content: `I've prepared a coding challenge for you. Let me know if you need any clarification on the problem.`,
+          timestamp: new Date().toISOString()
+        }
+      ]);
+    }
+  }, [allMessages]);
   
   // Function to fetch a new coding challenge
   const fetchNewChallenge = async () => {
@@ -165,33 +277,33 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
 
   // Fetch challenge when component mounts if no initial challenge is provided
   useEffect(() => {
-    if (!initialChallengeData) {
+    if (!jobRoleData) {
       fetchNewChallenge();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialChallengeData]); // Only re-run if initialChallengeData changes
+  }, [jobRoleData]); // Only re-run if jobRoleData changes
 
-  // Update currentChallengeDetails when initialChallengeData (from context/prop) changes
+  // Update currentChallengeDetails when jobRoleData (from context/prop) changes
   useEffect(() => {
-    if (initialChallengeData && initialChallengeData.challenge_id) { // Ensure challenge_id exists
-      console.log("CodingChallenge.js: (useEffect for initialChallengeData) Prop updated:", JSON.stringify(initialChallengeData, null, 2));
-      setCurrentChallengeDetails(initialChallengeData); 
-      // Ensure language and starter_code are also set from initialChallengeData if they exist
-      if (initialChallengeData.language) {
-        setLanguage(initialChallengeData.language);
+    if (jobRoleData && jobRoleData.challenge_id) { // Ensure challenge_id exists
+      console.log("CodingChallenge.js: (useEffect for jobRoleData) Prop updated:", JSON.stringify(jobRoleData, null, 2));
+      setCurrentChallengeDetails(jobRoleData); 
+      // Ensure language and starter_code are also set from jobRoleData if they exist
+      if (jobRoleData.language) {
+        setLanguage(jobRoleData.language);
       }
-      if (initialChallengeData.starter_code) {
-        const newStarterCode = initialChallengeData.starter_code;
-        console.log("CodingChallenge.js: (useEffect for initialChallengeData) Preparing to setCode with:", newStarterCode);
+      if (jobRoleData.starter_code) {
+        const newStarterCode = jobRoleData.starter_code;
+        console.log("CodingChallenge.js: (useEffect for jobRoleData) Preparing to setCode with:", newStarterCode);
         setCode(newStarterCode);
       }
       setEvaluationResult(null); // Clear previous evaluation results
-    } else if (!initialChallengeData && currentChallengeDetails) {
-      // If initialChallengeData becomes null (e.g. interview reset), clear local state if needed
+    } else if (!jobRoleData && currentChallengeDetails) {
+      // If jobRoleData becomes null (e.g. interview reset), clear local state if needed
       // setCurrentChallengeDetails(null); // Or handle as appropriate
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialChallengeData]); // React to changes in initialChallengeData from context
+  }, [jobRoleData]); // React to changes in jobRoleData from context
 
   // Set the interview stage to coding challenge waiting
   useEffect(() => {
@@ -404,6 +516,13 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
     }
   };
   
+  const handleSendMessage = async () => {
+    if (!chatMessage.trim()) return;
+    
+    // We now use the enhanced version with audio support
+    handleSendMessageWithAudio();
+  };
+  
   // Toggle between AI and user mode
   const toggleWaitingState = () => {
     setIsWaitingForUser(!isWaitingForUser);
@@ -422,93 +541,769 @@ const CodingChallenge = ({ challenge: initialChallengeData, onComplete, onReques
   const handleReturnToInterviewer = async () => {
     if (!evaluationResult) {
       toast({
-        title: 'No Evaluation Data',
-        description: 'Please submit your code for evaluation first.',
+        title: 'No submission results',
+        description: 'Please submit your solution first to receive feedback.',
         status: 'warning',
         duration: 3000,
         isClosable: true,
       });
       return;
     }
-    if (evaluationResult.error) {
-        toast({
-            title: 'Evaluation Error',
-            description: `Cannot return to interviewer. Previous evaluation failed: ${evaluationResult.error}`,
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-        });
-        return;
-    }
 
-    setIsSubmitting(true); // Indicate loading state for this action
-    toast({
-      title: 'Returning to Interviewer...',
-      description: 'Preparing your submission for feedback.',
-      status: 'info',
-      duration: null,
-      isClosable: false,
-    });
-
-    // Construct the detailed message for the AI, including all relevant parts from evaluationResult
-    // This message will be passed to the AIInterviewer's run_interview method
-    // The AI prompt for FEEDBACK stage expects: candidate_code, execution_results, Structured Feedback Analysis
+    setIsSubmitting(true);
     
-    const candidateCode = code; // The current code in the editor
-    const executionResultsSummary = evaluationResult.overall_summary || {}; // From /api/coding/submit
-    // The detailed structured feedback should be in evaluationResult.feedback or evaluationResult.evaluation
-    const structuredFeedbackAnalysis = evaluationResult.feedback || evaluationResult.evaluation || {}; 
-
-    let detailedMessageToAI = `System: The candidate has completed the coding challenge and is ready for feedback.
-Challenge ID: ${currentChallengeDetails?.challenge_id || 'N/A'}
-Language: ${language}
-
-Candidate Code (language: ${language}):
-\`\`\`${language}
-${candidateCode}
-\`\`\`
-
-Execution Results:
-Status: ${executionResultsSummary.status_text || 'N/A'}
-Passed: ${executionResultsSummary.pass_count !== undefined ? executionResultsSummary.pass_count : 'N/A'} / ${executionResultsSummary.total_tests !== undefined ? executionResultsSummary.total_tests : 'N/A'}
-All Tests Passed: ${executionResultsSummary.all_tests_passed !== undefined ? executionResultsSummary.all_tests_passed : 'N/A'}
-Error Message (if any): ${executionResultsSummary.error_message || 'None'}
-
-Structured Feedback Analysis (from automated tools):
-${JSON.stringify(structuredFeedbackAnalysis, null, 2)}
-
-Interviewer, please provide comprehensive feedback to the candidate based on all the information above.
-Focus on their approach, code quality, correctness, and the automated analysis.
-`;
-
     try {
-      // onComplete is handleCodingFeedbackSubmitted from Interview.js
-      // It expects (detailedMessageToAI, evaluationSummary)
-      // We pass overall_summary as the evaluationSummary for the ChallengeCompleteRequest model
-      await onComplete(detailedMessageToAI, executionResultsSummary); 
+      console.log('Sending detailed results to AI for feedback');
       
-      toast.closeAll(); // Close the "Returning..." toast
-      // Success toast will be shown by Interview.js's handleCodingFeedbackSubmitted
-      
-      // Optionally, you might want to disable further actions on the coding challenge here,
-      // or change the UI to indicate feedback is being/has been given.
-      // This might involve setting a new local state or relying on interviewStage changes from context.
+      // Create a clear message with submission details
+      const detailedMessageToAI = `I've completed the coding challenge. Here's my solution in ${language}:\n\n\`\`\`${language}\n${code}\n\`\`\`\n\nThe test results show ${evaluationResult.overall_summary.pass_count}/${evaluationResult.overall_summary.total_tests} tests passed.`;
 
-    } catch (error) {
-      toast.closeAll();
-      console.error('Error returning to interviewer for feedback:', error);
-      setIsSubmitting(false);
+      // Get the evaluation summary to include with the request
+      const evaluationSummary = evaluationResult?.overall_summary || null;
+      
+      // Add submission code to the evaluation summary for better context
+      if (evaluationSummary) {
+        evaluationSummary.code = code;
+        evaluationSummary.language = language;
+      }
+      
+      // Show a transition toast to inform the user we're processing
       toast({
-        title: 'Error Returning to Interviewer',
-        description: error.message || 'Could not process your request for feedback.',
+        title: 'Analyzing your code',
+        description: 'Sending your solution for expert feedback...',
+        status: 'info',
+        duration: 3000,
+        isClosable: true,
+      });
+      
+      // Submit the feedback request with the special context
+      const response = await submitChallengeFeedbackToServer(
+        sessionId, 
+        userId, 
+        detailedMessageToAI,
+        evaluationSummary,
+        true,
+        "coding_feedback"
+      );
+      
+      console.log('Feedback response received:', response);
+
+      // Only change stage if the server confirms feedback stage
+      if (response && response.interview_stage === 'feedback') {
+        // Set interview stage to feedback
+        setInterviewStage('feedback');
+        
+        // Remove the challenge UI to show the feedback interface
+        setCurrentCodingChallenge(null);
+        
+        toast({
+          title: 'Feedback Ready',
+          description: 'The interviewer is now reviewing your solution.',
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+      } else {
+        console.warn('Server did not confirm feedback stage:', response?.interview_stage);
+        toast({
+          title: 'Stage Sync Error',
+          description: 'There was an issue transitioning to feedback. Please try again.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      }
+      
+      onComplete();
+    } catch (error) {
+      console.error('Error sending feedback request:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to send feedback request. Please try again.',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
     } finally {
-      // setIsSubmitting(false); // setLoading(false) is handled by Interview.js's handler
+      setIsSubmitting(false);
     }
   };
+  
+  // Session duration timer
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSessionDuration(prev => prev + 1);
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, []);
+
+  // Initialize audio streaming functionality
+  useEffect(() => {
+    let mediaStream = null;
+    let audioContext = null;
+    let analyser = null;
+    let processor = null;
+    let recognition = null;
+
+    const initializeAudioStreaming = async () => {
+      try {
+        // Request microphone access
+        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000
+          } 
+        });
+        
+        setAudioStream(mediaStream);
+        console.log('[CodingChallenge] Microphone access granted');
+
+        // Set up audio context for voice activity detection
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(mediaStream);
+        analyser = audioContext.createAnalyser();
+        
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        source.connect(analyser);
+
+        // Set up continuous speech recognition
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          recognition = new SpeechRecognition();
+          
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+          recognition.maxAlternatives = 1;
+          
+          let finalTranscript = '';
+          let lastSpeechTime = Date.now();
+          let lastRequestTime = null;
+          
+          recognition.onstart = () => {
+            console.log('[CodingChallenge] Speech recognition started');
+            setRecognitionState('running');
+            setIsListening(true);
+          };
+          
+          recognition.onresult = (event) => {
+            let interim = '';
+            let final = '';
+            
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              if (event.results[i].isFinal) {
+                final += event.results[i][0].transcript;
+                finalTranscript += event.results[i][0].transcript;
+              } else {
+                interim += event.results[i][0].transcript;
+              }
+            }
+            
+            // Debug logging
+            if (final) {
+              console.log('[CodingChallenge] Final transcript:', final);
+              setCandidateSpeaking(true);
+              setIsUserSpeaking(true);
+              lastSpeechTime = Date.now();
+              
+              // If not currently engaged in a request, and substantial content is detected,
+              // send it to the interview API
+              const fullTranscript = finalTranscript.trim();
+              if (fullTranscript.length > 5 && 
+                  (!lastRequestTime || Date.now() - lastRequestTime > 3000)) {
+                
+                // Set the chat message to the transcribed text and send it
+                setChatMessage(fullTranscript);
+                // Use setTimeout to ensure state is updated before calling
+                setTimeout(() => {
+                  handleSendMessageWithAudio(fullTranscript);
+                  lastRequestTime = Date.now();
+                  finalTranscript = ''; // Reset after sending
+                }, 0);
+              }
+            }
+            
+            if (interim) {
+              setInterimTranscript(interim);
+              setCandidateSpeaking(true);
+              setIsUserSpeaking(true);
+            }
+            
+            // Set a timeout to reset the speaking state if no new speech
+            if (speechDetectionTimeoutRef.current) {
+              clearTimeout(speechDetectionTimeoutRef.current);
+            }
+            
+            const timeout = setTimeout(() => {
+              if (Date.now() - lastSpeechTime > 1500) {
+                setCandidateSpeaking(false);
+                setIsUserSpeaking(false);
+                setInterimTranscript('');
+              }
+            }, 1500);
+            
+            speechDetectionTimeoutRef.current = timeout;
+            setSpeechDetectionTimeout(timeout);
+          };
+          
+          recognition.onerror = (event) => {
+            console.error('[CodingChallenge] Recognition error:', event.error);
+            
+            if (event.error === 'no-speech') {
+              console.log('[CodingChallenge] No speech detected, restarting...');
+              if (recognitionStateRef.current === 'running') {
+                try {
+                  recognition.stop();
+                  setTimeout(() => {
+                    if (isAudioStreamActiveRef.current) {
+                      recognition.start();
+                    }
+                  }, 100);
+                } catch (error) {
+                  console.error('[CodingChallenge] Error restarting recognition:', error);
+                }
+              }
+            } else if (event.error === 'network') {
+    toast({
+                title: 'Network Error',
+                description: 'Speech recognition network error. Please check your connection.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+              });
+            }
+          };
+          
+          recognition.onend = () => {
+            console.log('[CodingChallenge] Recognition ended, state:', recognitionStateRef.current);
+            
+            // Only restart if it was running and stopped unexpectedly
+            // AND we're still active AND we haven't explicitly stopped it
+            if (recognitionStateRef.current === 'running' && 
+                isAudioStreamActiveRef.current &&
+                recognitionStateRef.current !== 'stopping') {
+              
+              console.log('[CodingChallenge] Restarting recognition after unexpected end');
+              
+              // Set stopping temporarily to prevent multiple restarts
+              setRecognitionState('stopping');
+              recognitionStateRef.current = 'stopping';
+              
+              try {
+                setTimeout(() => {
+                  // Double-check we still want recognition before restarting
+                  if (isAudioStreamActiveRef.current && micEnabled) {
+                    console.log('[CodingChallenge] Conditions still valid, restarting recognition');
+                    setRecognitionState('stopped');  // Reset to stopped
+                    recognitionStateRef.current = 'stopped';
+                    
+                    // Small additional delay to ensure clean state
+                    setTimeout(() => {
+                      try {
+                        startRecognitionSafely(recognition);
+                      } catch (error) {
+                        console.error('[CodingChallenge] Error restarting recognition in onend:', error);
+                        setRecognitionState('stopped');
+                        recognitionStateRef.current = 'stopped';
+                        setIsListening(false);
+                      }
+                    }, 100);
+                  } else {
+                    console.log('[CodingChallenge] Conditions changed, not restarting recognition');
+                    setRecognitionState('stopped');
+                    recognitionStateRef.current = 'stopped';
+                    setIsListening(false);
+                  }
+                }, 300);
+              } catch (error) {
+                console.error('[CodingChallenge] Error restarting recognition:', error);
+                setRecognitionState('stopped');
+                recognitionStateRef.current = 'stopped';
+                setIsListening(false);
+              }
+            } else {
+              console.log('[CodingChallenge] Recognition ended normally, not restarting');
+              setRecognitionState('stopped');
+              recognitionStateRef.current = 'stopped';
+              setIsListening(false);
+            }
+          };
+
+          // Start continuous recognition
+          startRecognitionSafely(recognition);
+          setSpeechRecognition(recognition);
+          setSpeechSupported(true);
+        }
+
+        // Start voice activity detection
+        const detectVoiceActivity = () => {
+          if (!analyser || !isAudioStreamActiveRef.current) return;
+
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+          analyser.getByteFrequencyData(dataArray);
+
+          // Calculate average volume
+          const average = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength;
+          
+          // Update audio level state for visual indicator
+          setCandidateAudioLevel(average / 255); // Normalize to 0-1
+          
+          // Voice activity threshold (adjust as needed)
+          const voiceThreshold = 20;
+          
+          // Debug logging every 100 frames
+          if (Math.random() < 0.01) { // 1% of frames
+            console.log('[CodingChallenge] Audio level:', average, 'threshold:', voiceThreshold);
+          }
+          
+          if (average > voiceThreshold && !isUserSpeaking) {
+            console.log('[CodingChallenge] Voice activity detected, level:', average);
+            setIsListening(true);
+          } else if (average <= voiceThreshold && isListening) {
+            // Don't immediately stop - let speech recognition handle timing
+          }
+
+          requestAnimationFrame(detectVoiceActivity);
+        };
+
+        setIsAudioStreamActive(true);
+        isAudioStreamActiveRef.current = true;
+        detectVoiceActivity();
+        
+        console.log('[CodingChallenge] Continuous audio streaming initialized');
+        
+      } catch (error) {
+        console.error('[CodingChallenge] Failed to initialize audio streaming:', error);
+        setSpeechSupported(false);
+        toast({
+          title: 'Microphone Error',
+          description: 'Failed to access microphone. Please grant permission and refresh.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      }
+    };
+
+    // Auto-start audio streaming when session is ready
+    if ((isVideoCall || window.location.hash.includes('voice=true')) && sessionId && userId) {
+      initializeAudioStreaming();
+    }
+
+    // Cleanup function
+    return () => {
+      isAudioStreamActiveRef.current = false;
+      setIsAudioStreamActive(false);
+      setRecognitionState('stopping');
+      recognitionStateRef.current = 'stopping';
+      
+      if (speechDetectionTimeoutRef.current) {
+        clearTimeout(speechDetectionTimeoutRef.current);
+        setSpeechDetectionTimeout(null);
+      }
+      
+      if (recognition) {
+        try {
+          recognition.stop();
+          recognition.onstart = null;
+          recognition.onresult = null;
+          recognition.onerror = null;
+          recognition.onend = null;
+        } catch (error) {
+          console.log('[CodingChallenge] Recognition already stopped');
+        }
+      }
+      
+      if (processor) {
+        processor.disconnect();
+      }
+      
+      if (analyser) {
+        analyser.disconnect();
+      }
+      
+      if (audioContext) {
+        audioContext.close();
+      }
+      
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+      }
+      
+      setRecognitionState('stopped');
+      setIsListening(false);
+      setIsUserSpeaking(false);
+      
+      console.log('[CodingChallenge] Audio streaming cleaned up');
+    };
+  }, [isVideoCall, sessionId, userId, toast]);
+
+  // Keep recognitionStateRef in sync with recognitionState
+  useEffect(() => {
+    console.log('[CodingChallenge] Recognition state changed:', recognitionState);
+    recognitionStateRef.current = recognitionState;
+  }, [recognitionState]);
+  
+  // Keep isAudioStreamActiveRef in sync with isAudioStreamActive
+  useEffect(() => {
+    console.log('[CodingChallenge] Audio stream active state changed:', isAudioStreamActive);
+    isAudioStreamActiveRef.current = isAudioStreamActive;
+  }, [isAudioStreamActive]);
+
+  // Speech synthesis for AI responses
+  const speakAIResponse = useCallback((text, voices = availableVoices) => {
+    if (!('speechSynthesis' in window) || !speechSynthesis || !voices.length) {
+      console.warn('[CodingChallenge] Speech synthesis not available');
+      return;
+    }
+    
+    // Cancel any current speech
+    speechSynthesis.cancel();
+    
+    // Create utterance
+    const utterance = new SpeechSynthesisUtterance(text);
+    
+    // Find a good voice
+    const preferredVoice = voices.find(voice => 
+      voice.name.includes('Daniel') || // High quality voice
+      voice.name.includes('Google') ||
+      voice.name.includes('Male')
+    ) || voices[0];
+    
+    utterance.voice = preferredVoice;
+    utterance.pitch = 1;
+    utterance.rate = 1;
+    utterance.volume = 1;
+    
+    // Events
+    utterance.onstart = () => {
+      console.log('[CodingChallenge] Speech started');
+      setAiSpeaking(true);
+      setAiAudioLevel(0.7); // Simulate audio level
+    };
+    
+    utterance.onend = () => {
+      console.log('[CodingChallenge] Speech ended');
+      setAiSpeaking(false);
+      setAiAudioLevel(0);
+    };
+    
+    utterance.onerror = (event) => {
+      console.error('[CodingChallenge] Speech error:', event);
+      setAiSpeaking(false);
+      setAiAudioLevel(0);
+    };
+    
+    // Speak
+    speechSynthesis.speak(utterance);
+  }, [availableVoices]);
+
+  // Manual toggle for audio streaming
+  const toggleMicrophone = useCallback(() => {
+    console.log('[CodingChallenge] Toggling microphone, current state:', micEnabled, 'recognition state:', recognitionState);
+    
+    // If turning off, stop any active speech recognition
+    if (micEnabled) {
+      // We're turning the mic off
+      if (speechRecognition) {
+        try {
+          console.log('[CodingChallenge] Stopping speech recognition due to mic toggle off');
+          setRecognitionState('stopping');
+          recognitionStateRef.current = 'stopping';
+          speechRecognition.stop();
+          
+          // Ensure state is completely reset after a short delay
+          setTimeout(() => {
+            setRecognitionState('stopped');
+            recognitionStateRef.current = 'stopped';
+            setIsListening(false);
+          }, 100);
+    } catch (error) {
+          console.error('[CodingChallenge] Error stopping speech recognition during toggle:', error);
+          // Reset state even if error occurs
+          setRecognitionState('stopped');
+          recognitionStateRef.current = 'stopped';
+        }
+      }
+      
+      // Also mute audio tracks if stream exists
+      if (audioStream) {
+        audioStream.getAudioTracks().forEach(track => {
+          console.log('[CodingChallenge] Disabling audio track');
+          track.enabled = false;
+        });
+      }
+    } else {
+      // We're turning the mic on
+      
+      // First, ensure all audio tracks are enabled
+      if (audioStream) {
+        audioStream.getAudioTracks().forEach(track => {
+          console.log('[CodingChallenge] Enabling audio track');
+          track.enabled = true;
+        });
+      }
+      
+      // Then restart speech recognition if needed
+      if (isAudioStreamActive) {
+        if (speechRecognition && 
+            (recognitionState === 'stopped' && recognitionStateRef.current === 'stopped')) {
+          try {
+            console.log('[CodingChallenge] Starting speech recognition due to mic toggle on');
+            // Use a small delay to ensure clean state
+            setTimeout(() => {
+              startRecognitionSafely(speechRecognition);
+            }, 100);
+          } catch (error) {
+            console.error('[CodingChallenge] Error starting speech recognition during toggle:', error);
+          }
+        }
+      }
+    }
+    
+    // Finally update the mic enabled state
+    setMicEnabled(prev => !prev);
+  }, [micEnabled, speechRecognition, isAudioStreamActive, recognitionState, audioStream]);
+
+  // Toggle camera (placeholder for future video implementation)
+  const toggleCamera = useCallback(() => {
+    setCameraEnabled(prev => !prev);
+  }, []);
+
+  // Load available voices for speech synthesis
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      // Force voice loading with better timing
+      const loadVoices = () => {
+        const voices = window.speechSynthesis.getVoices();
+        console.log('[CodingChallenge] Voice loading check - Count:', voices.length);
+        setAvailableVoices(voices);
+        
+        if (voices.length > 0) {
+          console.log('[CodingChallenge] Available voices:', voices.map(v => ({
+            name: v.name,
+            lang: v.lang,
+            localService: v.localService,
+            default: v.default,
+            quality: v.localService ? 'Local (Better)' : 'Network (Variable)'
+          })));
+        } else {
+          console.warn('[CodingChallenge] No voices loaded yet, will retry...');
+        }
+      };
+
+      // Check voices immediately
+      loadVoices();
+      
+      // Also listen for voiceschanged event
+      const handleVoicesChanged = () => {
+        console.log('[CodingChallenge] Voices changed event triggered');
+        loadVoices();
+      };
+      
+      window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+      
+      // Force voice loading with a silent utterance if needed
+      const forceVoiceLoad = () => {
+        if (window.speechSynthesis.getVoices().length === 0) {
+          console.log('[CodingChallenge] Forcing voice loading with silent utterance...');
+          const silentUtterance = new SpeechSynthesisUtterance(' ');
+          silentUtterance.volume = 0;
+          silentUtterance.onend = () => {
+            console.log('[CodingChallenge] Silent utterance completed, reloading voices...');
+            setTimeout(loadVoices, 100);
+          };
+          silentUtterance.onerror = (error) => {
+            console.error('[CodingChallenge] Silent utterance error:', error);
+          };
+          window.speechSynthesis.speak(silentUtterance);
+        }
+      };
+      
+      // Try loading after a short delay if voices aren't immediately available
+      setTimeout(forceVoiceLoad, 500);
+      
+      return () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+      };
+    } else {
+      console.error('[CodingChallenge] Speech synthesis not supported in this browser');
+    }
+  }, []);
+
+  // Handle sending messages with audio
+  const handleSendMessageWithAudio = async (transcribedText = null) => {
+    // Ensure transcribedText is a string or null
+    let messageToSend;
+    
+    if (transcribedText !== null) {
+      // Convert non-string transcribed text to string if needed
+      if (typeof transcribedText !== 'string') {
+        console.error('handleSendMessageWithAudio received non-string transcribedText:', transcribedText);
+        messageToSend = String(transcribedText);
+      } else {
+        messageToSend = transcribedText;
+      }
+    } else {
+      // Use chat message from input field
+      messageToSend = chatMessage || '';
+    }
+    
+    // Early return if message is empty
+    if (!messageToSend || !messageToSend.trim()) {
+      console.log('Empty message, not sending:', messageToSend);
+      return;
+    }
+    
+    // Add user message to chat
+    const userMessage = {
+      role: 'user',
+      content: messageToSend,
+      timestamp: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, userMessage]);
+    
+    // Clear input field if not using transcribed text
+    if (!transcribedText) {
+      setChatMessage('');
+    }
+    
+    // Show loading state
+    setIsLoadingResponse(true);
+    
+    try {
+      // Request hint if message contains question or hint request
+      if (messageToSend.toLowerCase().includes('hint') || 
+          messageToSend.toLowerCase().includes('help') ||
+          messageToSend.toLowerCase().includes('?')) {
+        
+        console.log("Requesting hint with parameters:", {
+          challengeId: currentChallengeDetails.challenge_id || "unknown",
+          code,
+          sessionId,
+          userId
+        });
+        
+        const hintResponse = await getChallengeHint(
+          currentChallengeDetails.challenge_id || "unknown",
+          code,
+          "",
+          sessionId,
+          userId
+        );
+        
+        console.log("Hint response:", hintResponse);
+        
+        if (hintResponse && hintResponse.hints && hintResponse.hints.length > 0) {
+          const aiResponse = {
+            role: 'assistant',
+            content: hintResponse.hints.join('\n\n'),
+            timestamp: new Date().toISOString()
+          };
+          
+          setMessages(prev => [...prev, aiResponse]);
+          
+          // Speak the response if audio is enabled
+          if (isVideoCall && speechSynthesis) {
+            speakAIResponse(aiResponse.content);
+          }
+        } else {
+          // Fallback response if no hints are available
+          const aiResponse = {
+            role: 'assistant',
+            content: "I'm sorry, I don't have any specific hints for this particular issue. Try breaking down the problem into smaller steps and check your logic carefully.",
+            timestamp: new Date().toISOString()
+          };
+          
+          setMessages(prev => [...prev, aiResponse]);
+          
+          // Speak the response if audio is enabled
+          if (isVideoCall && speechSynthesis) {
+            speakAIResponse(aiResponse.content);
+          }
+        }
+      } else {
+        // General response for non-hint messages
+        const aiResponse = {
+          role: 'assistant',
+          content: `I see you're working on the coding challenge. Let me know if you need any hints or have questions about the problem statement.`,
+          timestamp: new Date().toISOString()
+        };
+        
+        setMessages(prev => [...prev, aiResponse]);
+        
+        // Speak the response if audio is enabled
+        if (isVideoCall && speechSynthesis) {
+          speakAIResponse(aiResponse.content);
+        }
+      }
+    } catch (error) {
+      console.error("Error getting response:", error);
+      
+      // Show error response
+      const errorResponse = {
+        role: 'assistant',
+        content: `I'm sorry, I encountered an error while processing your request. Please try again or rephrase your question.`,
+        timestamp: new Date().toISOString()
+      };
+      
+      setMessages(prev => [...prev, errorResponse]);
+      
+      // Speak the error response if audio is enabled
+      if (isVideoCall && speechSynthesis) {
+        speakAIResponse(errorResponse.content);
+      }
+      
+      toast({
+        title: 'Error',
+        description: `Failed to get a response: ${error.message}`,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsLoadingResponse(false);
+    }
+  };
+
+  // Helper function to safely start speech recognition
+  const startRecognitionSafely = useCallback((recognitionInstance) => {
+    // Check both state ref and actual state to prevent "already started" errors
+    if (recognitionStateRef.current === 'stopped' && recognitionState === 'stopped') {
+      try {
+        console.log('[CodingChallenge] Starting speech recognition safely');
+        setRecognitionState('starting');
+        recognitionStateRef.current = 'starting'; // Update ref immediately
+        
+        // Small delay to ensure state updates propagate
+        setTimeout(() => {
+          try {
+            recognitionInstance.start();
+            console.log('[CodingChallenge] Speech recognition started successfully');
+          } catch (error) {
+            console.error('[CodingChallenge] Failed to start recognition in timeout:', error);
+            setRecognitionState('stopped');
+            recognitionStateRef.current = 'stopped';
+            setIsListening(false);
+          }
+        }, 50);
+      } catch (error) {
+        console.error('[CodingChallenge] Failed to start recognition:', error);
+        setRecognitionState('stopped');
+        recognitionStateRef.current = 'stopped';
+        setIsListening(false);
+      }
+    } else {
+      console.log('[CodingChallenge] Speech recognition already active:', recognitionStateRef.current);
+    }
+  }, [recognitionState]);
+
+  console.log("CodingChallenge.js: Rendering with 'code' state:", code, "and currentChallengeDetails?.id:", currentChallengeDetails?.id);
   
   // If no challenge is provided, show a placeholder and a button to fetch one
   if (!currentChallengeDetails) {
@@ -528,14 +1323,27 @@ Focus on their approach, code quality, correctness, and the automated analysis.
   }
   
   console.log("CodingChallenge.js: Rendering with 'code' state:", code, "and currentChallengeDetails?.id:", currentChallengeDetails?.id);
+
   return (
-    <Box 
-      borderWidth="1px" 
-      borderRadius="lg" 
-      overflow="hidden" 
-      bg="white"
-      boxShadow="md"
+    <Box
+      w="100%"
+      h="100%"
+      minH="70vh"
+      bg={bgColor}
+      borderColor={borderColor}
     >
+      <Global styles={pulseAnimation} />
+      {isVideoCall ? (
+        // Split view with coding challenge on left and video UI on right
+        <Grid templateColumns="1fr 1fr" gap={0} h="100%">
+          {/* Left side: Code editor */}
+          <Box
+            bg={bgColor}
+            borderRight="1px"
+            borderColor={borderColor}
+            overflowY="auto"
+            h="100%"
+          >
       {/* Challenge Header */}
       <Box bg="brand.50" p={4} borderBottomWidth="1px">
         <HStack justifyContent="space-between" mb={2}>
@@ -551,43 +1359,22 @@ Focus on their approach, code quality, correctness, and the automated analysis.
             <Badge colorScheme="purple">{currentChallengeDetails.time_limit_mins || 'N/A'} min</Badge>
           </HStack>
         </HStack>
-        
-        {/* Waiting Status */}
-        <Alert status={isWaitingForUser ? 'success' : 'warning'} mb={2} size="sm">
-          <AlertIcon />
-          {isWaitingForUser 
-            ? 'The AI is waiting for you to solve this challenge.' 
-            : 'The AI is currently engaged. Click "Pause for Coding" to take your time.'}
-        </Alert>
-        
-        {/* Toggle Button */}
-        <Button
-          size="sm"
-          colorScheme={isWaitingForUser ? 'blue' : 'orange'}
-          leftIcon={isWaitingForUser ? <FaPlay /> : <FaPauseCircle />}
-          onClick={toggleWaitingState}
-          mb={2}
-        >
-          {isWaitingForUser ? 'Resume Interview' : 'Pause for Coding'}
-        </Button>
       </Box>
       
-      {/* Challenge Content */}
-      <Tabs isFitted variant="enclosed">
+            {/* Challenge Tabs */}
+            <Tabs variant="enclosed">
         <TabList>
-          <Tab>Challenge</Tab>
-          <Tab>Code Editor</Tab>
-          {/* For Sprint 1, evaluationResult might just be a simple message object */}
+                <Tab>Problem</Tab>
+                <Tab>Code</Tab>
           {evaluationResult && <Tab>Results</Tab>}
         </TabList>
         
         <TabPanels>
-          {/* Challenge Description Tab */}
+                {/* Problem Description Tab */}
           <TabPanel>
             <VStack align="stretch" spacing={4}>
               <Box>
                 <Heading size="sm" mb={2}>Problem Statement</Heading>
-                {/* Using Text component with whiteSpace to preserve formatting like newlines */}
                 <Text whiteSpace="pre-wrap">{currentChallengeDetails.description || currentChallengeDetails.problem_statement}</Text>
               </Box>
               <Divider />
@@ -609,307 +1396,688 @@ Focus on their approach, code quality, correctness, and the automated analysis.
                   <Text whiteSpace="pre-wrap">{currentChallengeDetails.constraints}</Text>
                 </Box>
               )}
-              {/* Display evaluation criteria if available from the new structure */}
-              {currentChallengeDetails.evaluation_criteria && (
+                    {/* Example Test Cases Section */}
+                    {currentChallengeDetails.test_cases && currentChallengeDetails.test_cases.length > 0 && (
                 <Box>
-                  <Heading size="xs" mb={1}>Evaluation Criteria</Heading>
-                  <VStack align="start">
-                    {Object.entries(currentChallengeDetails.evaluation_criteria).map(([key, value]) => (
-                      <Text key={key}><strong>{key.charAt(0).toUpperCase() + key.slice(1)}:</strong> {value}</Text>
-                    ))}
-                  </VStack>
+                        <Heading size="sm" mb={2}>Example Test Cases</Heading>
+                        <Accordion allowMultiple defaultIndex={[0]}>
+                          {currentChallengeDetails.test_cases.map((testCase, index) => (
+                            <AccordionItem key={index}>
+                              <AccordionButton>
+                                <Box flex="1" textAlign="left">
+                                  <Text fontWeight="bold">Example {index + 1}</Text>
+                                </Box>
+                                <AccordionIcon />
+                              </AccordionButton>
+                              <AccordionPanel pb={4}>
+                                <Text fontWeight="bold" mb={1}>Input:</Text>
+                                <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                  <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.input}</Text>
+                                </Box>
+                                <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                                <Box bg="gray.50" p={2} borderRadius="md">
+                                  <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.output}</Text>
+                                </Box>
+                                {testCase.explanation && (
+                                  <>
+                                    <Text fontWeight="bold" mt={3} mb={1}>Explanation:</Text>
+                                    <Text>{testCase.explanation}</Text>
+                                  </>
+                                )}
+                              </AccordionPanel>
+                            </AccordionItem>
+                          ))}
+                        </Accordion>
                 </Box>
               )}
-              <Divider />
-              <Heading size="sm" mb={2}>Visible Test Cases</Heading>
+                    {/* Legacy example_test_cases support */}
+                    {currentChallengeDetails.example_test_cases && currentChallengeDetails.example_test_cases.length > 0 && (
+                      <Box>
+                        <Heading size="sm" mb={2}>Example Test Cases</Heading>
               <Accordion allowMultiple defaultIndex={[0]}>
-                {(currentChallengeDetails.visible_test_cases || currentChallengeDetails.test_cases || []).map((tc, index) => (
+                          {currentChallengeDetails.example_test_cases.map((testCase, index) => (
                   <AccordionItem key={index}>
-                    <h2>
                       <AccordionButton>
                         <Box flex="1" textAlign="left">
-                          Test Case {index + 1} {tc.is_hidden ? "(Hidden)" : ""}
+                                  <Text fontWeight="bold">Example {index + 1}</Text>
                         </Box>
                         <AccordionIcon />
                       </AccordionButton>
-                    </h2>
                     <AccordionPanel pb={4}>
-                      <VStack align="stretch" spacing={2}>
-                        <Box>
-                          <Text fontWeight="bold">Input:</Text>
-                          <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
-                            {typeof tc.input === 'object' ? JSON.stringify(tc.input, null, 2) : String(tc.input)}
-                          </Text>
+                                <Text fontWeight="bold" mb={1}>Input:</Text>
+                                <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                  <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.input}</Text>
                         </Box>
-                        <Box>
-                          <Text fontWeight="bold">Expected Output:</Text>
-                          <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
-                            {typeof tc.expected_output === 'object' ? JSON.stringify(tc.expected_output, null, 2) : String(tc.expected_output)}
-                          </Text>
+                                <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                                <Box bg="gray.50" p={2} borderRadius="md">
+                                  <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.output}</Text>
                         </Box>
-                        {tc.explanation && (
-                           <Box>
-                             <Text fontWeight="bold">Explanation:</Text>
-                             <Text whiteSpace="pre-wrap">{tc.explanation}</Text>
-                           </Box>
+                                {testCase.explanation && (
+                                  <>
+                                    <Text fontWeight="bold" mt={3} mb={1}>Explanation:</Text>
+                                    <Text>{testCase.explanation}</Text>
+                                  </>
                         )}
-                      </VStack>
                     </AccordionPanel>
                   </AccordionItem>
                 ))}
               </Accordion>
+                      </Box>
+                    )}
             </VStack>
           </TabPanel>
 
           {/* Code Editor Tab */}
           <TabPanel>
             <VStack spacing={4} align="stretch">
+                    {/* Theme Toggle */}
               <FormControl display="flex" alignItems="center" justifyContent="flex-end">
-                <FormLabel htmlFor="theme-switcher" mb="0">
+                      <FormLabel htmlFor="theme-toggle" mb="0" fontSize="sm">
                   Dark Mode
                 </FormLabel>
                 <Switch 
-                  id="theme-switcher" 
-                  isChecked={editorTheme === 'dark'} 
+                        id="theme-toggle" 
+                        isChecked={editorTheme === 'dark' || editorTheme === 'materialDark'} 
                   onChange={handleThemeChange} 
+                        colorScheme="brand"
                 />
               </FormControl>
 
-              <HStack>
-                <Text>Language:</Text>
-                <Select 
-                  value={language} 
-                  onChange={(e) => setLanguage(e.target.value)}
-                  size="sm"
-                  maxW="150px"
-                  isDisabled={isEvaluating}
-                >
-                  <option value="python">Python</option>
-                  <option value="javascript">JavaScript</option>
-                  <option value="java">Java</option>
-                  {/* Add more languages as supported by CodeEditor.js */}
-                </Select>
-              </HStack>
-
+                    <Box>
               <CodeEditor
-                key={currentChallengeDetails?.challenge_id || currentChallengeDetails?.id || 'default-editor-key'}
                 code={code}
                 language={language}
-                onChange={(newCode) => setCode(newCode)}
+                        onChange={(value) => setCode(value)}
                 theme={editorTheme === 'dark' ? 'materialDark' : 'light'}
-                height="400px"
-                readOnly={isEvaluating || isRunningCode}
+                        height="350px"
+                      />
+                    </Box>
+                    
+                    <Heading size="sm">Standard Input</Heading>
+                    <Textarea 
+                      value={stdin}
+                      onChange={(e) => setStdin(e.target.value)}
+                      placeholder="Optional: Enter test inputs here..."
+                      size="sm"
+                      rows={2}
               />
-              <HStack justifyContent="flex-end" spacing={4}>
+                    
+                    <HStack>
                 <Button 
-                  colorScheme="blue" 
+                        colorScheme="brand" 
                   onClick={handleRunCode}
                   isLoading={isRunningCode}
                   leftIcon={<FaPlay />}
-                  isDisabled={isEvaluating} // UI Lock: Disable Run Code during evaluation
+                        flexGrow={1}
                 >
                   Run Code
                 </Button>
                 <Button 
                   colorScheme="green" 
                   onClick={handleSubmit}
-                  isLoading={isEvaluating} // Use isEvaluating for submission button
+                        isLoading={isEvaluating}
                   leftIcon={<FaCheck />}
+                        flexGrow={1}
                 >
-                  Submit Solution
+                        Submit
                 </Button>
               </HStack>
               
-              {/* Input/Output for Run Code (Sprint 3) */}
-              <Heading size="sm" mt={4}>Custom Input (for Run Code)</Heading>
-              <Textarea 
-                placeholder="Enter standard input for your code when using 'Run Code'"
-                value={stdin}
-                onChange={(e) => setStdin(e.target.value)}
-                fontFamily="monospace"
-                rows={3}
-              />
-              <HStack spacing={4} align="stretch">
-                <Box flex={1}>
-                  <Heading size="sm">STDOUT</Heading>
-                  <Textarea 
-                    value={stdout} 
-                    isReadOnly 
-                    placeholder="Standard output will appear here..." 
-                    bg="gray.50"
-                    fontFamily="monospace"
-                    rows={5}
-                  />
+                    {/* Output Display */}
+                    {(stdout || stderr) && (
+                      <Box>
+                        <Heading size="sm" mb={2}>Output</Heading>
+                        {stdout && (
+                          <Box bg="gray.50" p={3} borderRadius="md" mb={3} maxH="120px" overflowY="auto">
+                            <Text fontFamily="monospace" whiteSpace="pre-wrap">{stdout}</Text>
                 </Box>
-                <Box flex={1}>
-                  <Heading size="sm">STDERR</Heading>
-                  <Textarea 
-                    value={stderr} 
-                    isReadOnly 
-                    placeholder="Standard error will appear here..." 
-                    bg="gray.50"
-                    color="red.500"
-                    fontFamily="monospace"
-                    rows={5}
-                  />
+                        )}
+                        {stderr && (
+                          <Box bg="red.50" p={3} borderRadius="md" maxH="120px" overflowY="auto">
+                            <Text fontFamily="monospace" color="red.600" whiteSpace="pre-wrap">{stderr}</Text>
                 </Box>
-              </HStack>
+                        )}
+                      </Box>
+                    )}
             </VStack>
           </TabPanel>
           
-          {/* Results Tab (Sprint 4) */}
+                {/* Results Tab */}
           {evaluationResult && (
             <TabPanel>
-              <VStack spacing={4} align="stretch">
-                {/* MODIFICATION START: Display submission error prominently if it exists */}
-                {evaluationResult.status === 'error' && evaluationResult.error_message && (
-                  <Alert status="error" borderRadius="md">
+                    <VStack spacing={6} align="stretch">
+                      {/* Overall Result */}
+                      <Box>
+                        <Alert 
+                          status={(evaluationResult.overall_summary && evaluationResult.overall_summary.all_tests_passed) ? 'success' : 'error'}
+                          borderRadius="md"
+                        >
                     <AlertIcon />
-                    <VStack align="start" spacing={0}>
-                      <Text fontWeight="bold">Submission Error:</Text>
-                      <Text whiteSpace="pre-wrap">{evaluationResult.error_message}</Text>
+                          <VStack align="start" spacing={1}>
+                            <Text fontWeight="bold">
+                              {(evaluationResult.overall_summary && evaluationResult.overall_summary.all_tests_passed) 
+                                ? 'All test cases passed!' 
+                                : 'Some test cases failed.'}
+                            </Text>
+                            {evaluationResult.overall_summary && (
+                              <Text fontSize="sm">
+                                {evaluationResult.overall_summary.pass_count || 0} of {evaluationResult.overall_summary.total_tests || 0} tests passed
+                              </Text>
+                            )}
                     </VStack>
                   </Alert>
-                )}
-                {/* MODIFICATION END */}
-
-                <Heading size="md">Evaluation Results</Heading>
-                
-                {/* Overall Summary - using overall_summary from the API response */}
-                {evaluationResult.overall_summary && (
-                   <Box p={4} borderWidth="1px" borderRadius="md" bg={evaluationResult.overall_summary.all_tests_passed ? "green.50" : "red.50"}>
-                    <Heading size="sm" mb={2}>Overall Summary</Heading>
-                    <HStack justifyContent="space-around">
-                      <Text>Status: <Badge colorScheme={evaluationResult.overall_summary.all_tests_passed ? "green" : "red"}>
-                        {evaluationResult.overall_summary.all_tests_passed ? "All Tests Passed" : "Some Tests Failed"}
-                      </Badge></Text>
-                      <Text>Passed: {evaluationResult.overall_summary.pass_count || 0}</Text>
-                      <Text>Failed: {evaluationResult.overall_summary.fail_count || ((evaluationResult.overall_summary.total_tests || 0) - (evaluationResult.overall_summary.pass_count || 0))}</Text>
-                      <Text>Total: {evaluationResult.overall_summary.total_tests || 0}</Text>
-                    </HStack>
                   </Box>
-                )}
 
-                {/* Detailed Test Case Results */}
-                {evaluationResult.execution_results && evaluationResult.execution_results.detailed_results && Array.isArray(evaluationResult.execution_results.detailed_results.test_results) && evaluationResult.execution_results.detailed_results.test_results.length > 0 && (
-                  <>
-                    <Heading size="sm" mt={4}>Detailed Test Cases</Heading>
-                    {/* Open failing tests by default */}
-                    <Accordion allowMultiple defaultIndex={evaluationResult.execution_results.detailed_results.test_results.reduce((acc, tc, index) => tc.passed === false ? [...acc, index] : acc, [])}>
-                      {evaluationResult.execution_results.detailed_results.test_results.map((tc_result, index) => (
+                      {/* Detailed Test Cases */}
+                      {evaluationResult.execution_results && evaluationResult.execution_results.detailed_results && (
+                        <Box>
+                          <Heading size="sm" mb={3}>Test Case Details</Heading>
+                    <Accordion allowMultiple>
+                      {evaluationResult.execution_results.detailed_results.test_results && evaluationResult.execution_results.detailed_results.test_results.map((result, index) => (
                         <AccordionItem key={index}>
-                          <h2>
                             <AccordionButton>
-                              <HStack flex="1" justifyContent="space-between">
-                                <Text>Test Case {tc_result.test_case_id || index + 1}</Text>
-                                <Badge colorScheme={tc_result.passed ? "green" : "red"}>
-                                  {tc_result.passed ? "Passed" : "Failed"}
+                                  <Box flex="1" textAlign="left">
+                                    <HStack>
+                                      <Badge colorScheme={result.passed ? 'green' : 'red'}>
+                                        {result.passed ? 'PASS' : 'FAIL'}
                                 </Badge>
+                                      <Text>Test Case {index + 1}</Text>
                               </HStack>
+                                  </Box>
                               <AccordionIcon />
                             </AccordionButton>
-                          </h2>
                           <AccordionPanel pb={4}>
-                            <VStack align="stretch" spacing={2}>
-                              <Box>
-                                <Text fontWeight="bold">Input:</Text>
-                                <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
-                                  {typeof tc_result.input === 'object' ? JSON.stringify(tc_result.input, null, 2) : String(tc_result.input)}
-                                </Text>
-                              </Box>
-                              <Box>
-                                <Text fontWeight="bold">Expected Output:</Text>
-                                <Text as="pre" p={2} bg="gray.50" borderRadius="md" whiteSpace="pre-wrap">
-                                  {typeof tc_result.expected_output === 'object' ? JSON.stringify(tc_result.expected_output, null, 2) : String(tc_result.expected_output)}
-                                </Text>
-                              </Box>
-                              <Box>
-                                <Text fontWeight="bold">Actual Output:</Text>
-                                <Text as="pre" p={2} bg={tc_result.passed ? "green.50" : "red.50"} borderRadius="md" whiteSpace="pre-wrap">
-                                  {typeof tc_result.output === 'object' ? JSON.stringify(tc_result.output, null, 2) : String(tc_result.output)}
-                                </Text>
-                              </Box>
-                              {tc_result.error && (
-                                <Alert status="error" mt={2}>
-                                  <AlertIcon />
-                                  <VStack align="start" spacing={0}>
-                                    <Text fontWeight="bold">Error:</Text>
-                                    <Text whiteSpace="pre-wrap">{tc_result.error}</Text>
-                                  </VStack>
-                                </Alert>
-                              )}
-                              {/* Display stdout/stderr from test case if present */}
-                              {tc_result.stdout && (
-                                <Box>
-                                  <Text fontWeight="bold">STDOUT:</Text>
-                                  <Text as="pre" p={2} bg="gray.100" borderRadius="md" whiteSpace="pre-wrap" maxHeight="100px" overflowY="auto">
-                                    {tc_result.stdout}
-                                  </Text>
-                                </Box>
-                              )}
-                              {tc_result.stderr && (
-                                <Box>
-                                  <Text fontWeight="bold">STDERR:</Text>
-                                  <Text as="pre" p={2} bg="red.50" color="red.700" borderRadius="md" whiteSpace="pre-wrap" maxHeight="100px" overflowY="auto">
-                                    {tc_result.stderr}
-                                  </Text>
-                                </Box>
-                              )}
-                            </VStack>
-                          </AccordionPanel>
-                        </AccordionItem>
-                      ))}
-                    </Accordion>
-                  </>
+                                  <Text fontWeight="bold" mb={1}>Input:</Text>
+                                  <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                    <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.input}</Text>
+                                  </Box>
+                                  <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                                  <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                    <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.expected}</Text>
+                                  </Box>
+                                  <Text fontWeight="bold" mb={1}>Your Output:</Text>
+                                  <Box bg={result.passed ? 'green.50' : 'red.50'} p={2} borderRadius="md">
+                                    <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.actual}</Text>
+                                  </Box>
+                                  {!result.passed && result.error && (
+                                    <>
+                                      <Text fontWeight="bold" mt={3} mb={1} color="red.500">Error:</Text>
+                                      <Text color="red.500">{result.error}</Text>
+                                    </>
+                                  )}
+                                </AccordionPanel>
+                              </AccordionItem>
+                            ))}
+                          </Accordion>
+                        </Box>
+                      )}
+                      
+                      {/* Button to return to interviewer */} 
+                      <Button 
+                        mt={6}
+                        colorScheme="blue"
+                        leftIcon={<Icon as={FaCommentDots} />}
+                        onClick={handleReturnToInterviewer}
+                        isLoading={isSubmitting}
+                        isDisabled={isSubmitting || !currentChallengeDetails}
+                      >
+                        Return to Interviewer for Feedback
+                      </Button>
+                    </VStack>
+                  </TabPanel>
                 )}
+              </TabPanels>
+            </Tabs>
+          </Box>
+          
+          {/* Right side: Video call UI */}
+          <Box
+            bg={bgColor}
+            overflowY="auto"
+            h="100%"
+            display="flex"
+            flexDirection="column"
+          >
+            {/* Video display */}
+            <Box 
+              bg="gray.900" 
+              height="60%" 
+              p={4}
+              position="relative"
+              borderBottom="1px"
+              borderColor={borderColor}
+            >
+              {/* AI avatar/video placeholder */}
+              <Box
+                bg="gray.800"
+                borderRadius="md"
+                h="100%"
+                w="100%"
+                display="flex"
+                justifyContent="center"
+                alignItems="center"
+                position="relative"
+                overflow="hidden"
+              >
+                {/* AI avatar image */}
+                <Box
+                  width="100%"
+                  height="100%"
+                  display="flex"
+                  alignItems="center"
+                  justifyContent="center"
+                >
+                  <Avatar
+                    size="xl"
+                    name="AI Interviewer"
+                    src="/assets/ai-avatar.png"
+                    bg="brand.500"
+                  />
+                </Box>
                 
-                {/* Feedback Section */}
-                {evaluationResult.feedback && Object.keys(evaluationResult.feedback).length > 0 && (
-                  <Box mt={4} p={4} borderWidth="1px" borderRadius="md" bg="blue.50">
-                    <Heading size="sm" mb={2}>Feedback</Heading>
-                    {typeof evaluationResult.feedback === 'string' ? (
-                      <Text whiteSpace="pre-wrap">{evaluationResult.feedback}</Text>
-                    ) : (
-                      <VStack align="start">
-                        {Object.entries(evaluationResult.feedback).map(([key, value]) => (
-                          <Text key={key}><strong>{key.charAt(0).toUpperCase() + key.slice(1)}:</strong> {String(value)}</Text>
-                        ))}
-                      </VStack>
-                    )}
-                  </Box>
-                )}
-
-                {/* Detailed Test Case Results */}
-                {evaluationResult.test_cases_results && evaluationResult.test_cases_results.length > 0 && (
-                  <Box>
-                    <Heading size="sm" mb={2} mt={4}>Detailed Test Results</Heading>
-                    <Accordion allowMultiple>
-                      {evaluationResult.test_cases_results.map((result, index) => (
-                        <AccordionItem key={index}>
-                          <h2>
+                {/* Speaking indicator */}
+                <Box
+                  position="absolute"
+                  bottom="4"
+                  left="0"
+                  right="0"
+                  display="flex"
+                  justifyContent="center"
+                >
+                  <Badge 
+                    colorScheme="green" 
+                    variant="solid" 
+                    px={2} 
+                    py={1} 
+                    borderRadius="full"
+                    fontSize="xs"
+                  >
+                    AI Interviewer
+                  </Badge>
+                </Box>
+              </Box>
+            </Box>
+            
+            {/* Messages area */}
+            <Box 
+              w="100%" 
+              flexGrow={1} 
+              bg={messagesAreaBg}
+              borderRadius="md"
+              p={3}
+              overflowY="auto"
+              mb={4}
+            >
+              {messages.length === 0 ? (
+                <Text color="gray.500" textAlign="center" py={10}>
+                  Your conversation with the AI interviewer about the coding challenge will appear here.
+                </Text>
+              ) : (
+                <VStack spacing={4} align="stretch">
+                  {messages.map((msg, idx) => (
+                    <Box 
+                      key={idx}
+                      bg={msg.role === 'user' ? userMessageBg : aiMessageBg}
+                      color={messageTextColor}
+                      p={3}
+                      borderRadius="lg"
+                      maxW="80%"
+                      alignSelf={msg.role === 'user' ? 'flex-end' : 'flex-start'}
+                      boxShadow="sm"
+                    >
+                      <Text>{msg.content}</Text>
+                      <Text fontSize="xs" color="gray.500" textAlign="right" mt={1}>
+                        {new Date(msg.timestamp).toLocaleTimeString()}
+                                </Text>
+                              </Box>
+                  ))}
+                </VStack>
+              )}
+            </Box>
+            
+            {/* Chat input */}
+            <VStack spacing={2} p={3} borderTop="1px" borderColor={borderColor}>
+              <HStack w="100%">
+                <Input
+                  placeholder="Ask for help or clarification..."
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSendMessageWithAudio()}
+                  bg={inputBg}
+                  flex="1"
+                />
+                <IconButton
+                  colorScheme={micEnabled ? "brand" : "gray"}
+                  aria-label={micEnabled ? "Disable microphone" : "Enable microphone"}
+                  icon={micEnabled ? <Icon as={FaMicrophone} /> : <Icon as={FaMicrophoneSlash} />}
+                  onClick={toggleMicrophone}
+                  mr={2}
+                  isDisabled={!isVideoCall}
+                  title={isVideoCall ? (micEnabled ? "Disable microphone" : "Enable microphone") : "Voice mode disabled"}
+                />
+                <IconButton
+                  colorScheme="brand"
+                  aria-label="Send message"
+                  icon={<FaPaperPlane />}
+                  onClick={handleSendMessageWithAudio}
+                  isLoading={isLoadingResponse}
+                />
+              </HStack>
+              
+              {isListening && (
+                <HStack w="100%" spacing={2} alignItems="center">
+                  <Box bg="red.400" h="8px" w="8px" borderRadius="full" 
+                       animation="pulse 1.5s infinite" />
+                  <Text fontSize="xs" color="gray.500">
+                    {interimTranscript ? 'Listening: ' + interimTranscript : 'Listening...'}
+                                </Text>
+                </HStack>
+              )}
+              
+              {/* Return to interviewer button */}
+              {evaluationResult && evaluationResult.status === 'success' && (
+                <Button
+                  colorScheme="green"
+                  onClick={handleReturnToInterviewer}
+                  isLoading={isSubmitting}
+                  leftIcon={<FaCheck />}
+                  w="100%"
+                >
+                  Submit Solution & Return to Interview
+                </Button>
+              )}
+            </VStack>
+                              </Box>
+        </Grid>
+      ) : (
+        // Original single-column layout
+        <Box
+          w="100%"
+          bg={bgColor}
+          borderColor="gray.200"
+          overflowY="auto"
+          h="100%"
+        >
+          {/* Challenge Header */}
+          <Box bg="brand.50" p={4} borderBottomWidth="1px">
+            <HStack justifyContent="space-between" mb={2}>
+              <Heading size="md">{currentChallengeDetails.title}</Heading>
+              <HStack>
+                <Button size="sm" onClick={fetchNewChallenge} leftIcon={<FaRedo />} colorScheme="gray" variant="outline" mr={2}>
+                  New Challenge
+                </Button>
+                <Badge colorScheme={currentChallengeDetails.difficulty_level === 'easy' ? 'green' : currentChallengeDetails.difficulty_level === 'medium' ? 'orange' : 'red'}>
+                  {currentChallengeDetails.difficulty_level?.toUpperCase() || currentChallengeDetails.difficulty?.toUpperCase() || 'N/A'}
+                </Badge>
+                <Badge colorScheme="blue">{currentChallengeDetails.language?.toUpperCase() || 'N/A'}</Badge>
+                <Badge colorScheme="purple">{currentChallengeDetails.time_limit_mins || 'N/A'} min</Badge>
+              </HStack>
+            </HStack>
+          </Box>
+          
+          {/* Challenge Tabs */}
+          <Tabs variant="enclosed">
+            <TabList>
+              <Tab>Problem</Tab>
+              <Tab>Code</Tab>
+              {evaluationResult && <Tab>Results</Tab>}
+              <Tab>Chat</Tab>
+            </TabList>
+            
+            <TabPanels>
+              {/* Problem Description Tab */}
+              <TabPanel>
+                <VStack align="stretch" spacing={4}>
+                              <Box>
+                    <Heading size="sm" mb={2}>Problem Statement</Heading>
+                    <Text whiteSpace="pre-wrap">{currentChallengeDetails.description || currentChallengeDetails.problem_statement}</Text>
+                              </Box>
+                  <Divider />
+                  {currentChallengeDetails.input_format && (
+                              <Box>
+                      <Heading size="xs" mb={1}>Input Format</Heading>
+                      <Text whiteSpace="pre-wrap">{currentChallengeDetails.input_format}</Text>
+                              </Box>
+                              )}
+                  {currentChallengeDetails.output_format && (
+                                <Box>
+                      <Heading size="xs" mb={1}>Output Format</Heading>
+                      <Text whiteSpace="pre-wrap">{currentChallengeDetails.output_format}</Text>
+                                </Box>
+                              )}
+                  {currentChallengeDetails.constraints && (
+                                <Box>
+                      <Heading size="xs" mb={1}>Constraints</Heading>
+                      <Text whiteSpace="pre-wrap">{currentChallengeDetails.constraints}</Text>
+                                </Box>
+                              )}
+                  {/* Example Test Cases Section */}
+                  {currentChallengeDetails.test_cases && currentChallengeDetails.test_cases.length > 0 && (
+                    <Box>
+                      <Heading size="sm" mb={2}>Example Test Cases</Heading>
+                      <Accordion allowMultiple defaultIndex={[0]}>
+                        {currentChallengeDetails.test_cases.map((testCase, index) => (
+                          <AccordionItem key={index}>
                             <AccordionButton>
                               <Box flex="1" textAlign="left">
-                                Test Case {index + 1}: <Badge colorScheme={result.passed ? 'green' : 'red'}>{result.passed ? 'Passed' : 'Failed'}</Badge>
+                                <Text fontWeight="bold">Example {index + 1}</Text>
                               </Box>
                               <AccordionIcon />
                             </AccordionButton>
-                          </h2>
-                          <AccordionPanel pb={4}>
-                            <VStack align="stretch" spacing={2}>
-                              <Text><strong>Input:</strong> <pre>{JSON.stringify(result.input, null, 2)}</pre></Text>
-                              <Text><strong>Expected Output:</strong> <pre>{JSON.stringify(result.expected_output, null, 2)}</pre></Text>
-                              <Text><strong>Actual Output:</strong> <pre>{result.actual_output !== undefined ? JSON.stringify(result.actual_output, null, 2) : (result.stdout || '(No output)')}</pre></Text>
-                              {result.error && <Text><strong>Error:</strong> <pre>{result.error}</pre></Text>}
-                              {result.stdout && <Text><strong>Stdout:</strong> <pre>{result.stdout}</pre></Text>}
-                              {result.stderr && <Text><strong>Stderr:</strong> <pre>{result.stderr}</pre></Text>}
-                              {result.reason && !result.passed && <Text><strong>Reason:</strong> {result.reason}</Text>}
-                            </VStack>
+                            <AccordionPanel pb={4}>
+                              <Text fontWeight="bold" mb={1}>Input:</Text>
+                              <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.input}</Text>
+                              </Box>
+                              <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                              <Box bg="gray.50" p={2} borderRadius="md">
+                                <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.output}</Text>
+                              </Box>
+                              {testCase.explanation && (
+                                <>
+                                  <Text fontWeight="bold" mt={3} mb={1}>Explanation:</Text>
+                                  <Text>{testCase.explanation}</Text>
+                                </>
+                              )}
                           </AccordionPanel>
                         </AccordionItem>
                       ))}
                     </Accordion>
+                    </Box>
+                  )}
+                  {/* Legacy example_test_cases support */}
+                  {currentChallengeDetails.example_test_cases && currentChallengeDetails.example_test_cases.length > 0 && (
+                    <Box>
+                      <Heading size="sm" mb={2}>Example Test Cases</Heading>
+                      <Accordion allowMultiple defaultIndex={[0]}>
+                        {currentChallengeDetails.example_test_cases.map((testCase, index) => (
+                          <AccordionItem key={index}>
+                            <AccordionButton>
+                              <Box flex="1" textAlign="left">
+                                <Text fontWeight="bold">Example {index + 1}</Text>
+                              </Box>
+                              <AccordionIcon />
+                            </AccordionButton>
+                            <AccordionPanel pb={4}>
+                              <Text fontWeight="bold" mb={1}>Input:</Text>
+                              <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.input}</Text>
+                              </Box>
+                              <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                              <Box bg="gray.50" p={2} borderRadius="md">
+                                <Text fontFamily="monospace" whiteSpace="pre-wrap">{testCase.output}</Text>
+                              </Box>
+                              {testCase.explanation && (
+                                <>
+                                  <Text fontWeight="bold" mt={3} mb={1}>Explanation:</Text>
+                                  <Text>{testCase.explanation}</Text>
+                  </>
+                )}
+                            </AccordionPanel>
+                          </AccordionItem>
+                        ))}
+                      </Accordion>
+                    </Box>
+                  )}
+                      </VStack>
+              </TabPanel>
+              
+              {/* Code Editor Tab */}
+              <TabPanel>
+                <VStack spacing={4} align="stretch">
+                  {/* Theme Toggle */}
+                  <FormControl display="flex" alignItems="center" justifyContent="flex-end">
+                    <FormLabel htmlFor="theme-toggle" mb="0" fontSize="sm">
+                      Dark Mode
+                    </FormLabel>
+                    <Switch 
+                      id="theme-toggle" 
+                      isChecked={editorTheme === 'dark' || editorTheme === 'materialDark'} 
+                      onChange={handleThemeChange} 
+                      colorScheme="brand"
+                    />
+                  </FormControl>
+                  
+                  <Box>
+                    <CodeEditor
+                      code={code}
+                      language={language}
+                      onChange={(value) => setCode(value)}
+                      theme={editorTheme === 'dark' ? 'materialDark' : 'light'}
+                      height="400px"
+                    />
+                  </Box>
+                  
+                  <Heading size="sm">Standard Input</Heading>
+                  <Textarea 
+                    value={stdin}
+                    onChange={(e) => setStdin(e.target.value)}
+                    placeholder="Optional: Enter test inputs here..."
+                    size="sm"
+                    rows={3}
+                  />
+                  
+                  <HStack>
+                    <Button 
+                      colorScheme="brand" 
+                      onClick={handleRunCode} 
+                      isLoading={isRunningCode}
+                      leftIcon={<FaPlay />}
+                      flexGrow={1}
+                    >
+                      Run Code
+                    </Button>
+                    <Button 
+                      colorScheme="green" 
+                      onClick={handleSubmit} 
+                      isLoading={isEvaluating}
+                      leftIcon={<FaCheck />}
+                      flexGrow={1}
+                    >
+                      Submit
+                    </Button>
+                  </HStack>
+                  
+                  {/* Output Display */}
+                  {(stdout || stderr) && (
+                    <Box>
+                      <Heading size="sm" mb={2}>Output</Heading>
+                      {stdout && (
+                        <Box bg="gray.50" p={3} borderRadius="md" mb={3} maxH="200px" overflowY="auto">
+                          <Text fontFamily="monospace" whiteSpace="pre-wrap">{stdout}</Text>
+                        </Box>
+                      )}
+                      {stderr && (
+                        <Box bg="red.50" p={3} borderRadius="md" maxH="200px" overflowY="auto">
+                          <Text fontFamily="monospace" color="red.600" whiteSpace="pre-wrap">{stderr}</Text>
                   </Box>
                 )}
+                    </Box>
+                  )}
+                </VStack>
+              </TabPanel>
+
+              {/* Results Tab */}
+              {evaluationResult && (
+                <TabPanel>
+                  <VStack spacing={6} align="stretch">
+                    {/* Overall Result */}
+                  <Box>
+                      <Alert 
+                        status={(evaluationResult.overall_summary && evaluationResult.overall_summary.all_tests_passed) ? 'success' : 'error'}
+                        borderRadius="md"
+                      >
+                        <AlertIcon />
+                        <VStack align="start" spacing={1}>
+                          <Text fontWeight="bold">
+                            {(evaluationResult.overall_summary && evaluationResult.overall_summary.all_tests_passed) 
+                              ? 'All test cases passed!' 
+                              : 'Some test cases failed.'}
+                          </Text>
+                          {evaluationResult.overall_summary && (
+                            <Text fontSize="sm">
+                              {evaluationResult.overall_summary.pass_count || 0} of {evaluationResult.overall_summary.total_tests || 0} tests passed
+                            </Text>
+                          )}
+                        </VStack>
+                      </Alert>
+                    </Box>
+                    
+                    {/* Detailed Test Cases */}
+                    {evaluationResult.execution_results && evaluationResult.execution_results.detailed_results && (
+                      <Box>
+                        <Heading size="sm" mb={3}>Test Case Details</Heading>
+                        {evaluationResult.execution_results.detailed_results.test_results && 
+                         evaluationResult.execution_results.detailed_results.test_results.length > 0 ? (
+                    <Accordion allowMultiple>
+                            {evaluationResult.execution_results.detailed_results.test_results.map((result, index) => (
+                        <AccordionItem key={index}>
+                            <AccordionButton>
+                              <Box flex="1" textAlign="left">
+                                        <HStack>
+                                          <Badge colorScheme={result.passed ? 'green' : 'red'}>
+                                            {result.passed ? 'PASS' : 'FAIL'}
+                                    </Badge>
+                                          <Text>Test Case {index + 1}</Text>
+                                  </HStack>
+                              </Box>
+                              <AccordionIcon />
+                            </AccordionButton>
+                          <AccordionPanel pb={4}>
+                                      <Text fontWeight="bold" mb={1}>Input:</Text>
+                                      <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                        <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.input}</Text>
+                                      </Box>
+                                      <Text fontWeight="bold" mb={1}>Expected Output:</Text>
+                                      <Box bg="gray.50" p={2} borderRadius="md" mb={3}>
+                                        <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.expected}</Text>
+                                      </Box>
+                                      <Text fontWeight="bold" mb={1}>Your Output:</Text>
+                                      <Box bg={result.passed ? 'green.50' : 'red.50'} p={2} borderRadius="md">
+                                        <Text fontFamily="monospace" whiteSpace="pre-wrap">{result.actual}</Text>
+                                      </Box>
+                                      {!result.passed && result.error && (
+                                        <>
+                                          <Text fontWeight="bold" mt={3} mb={1} color="red.500">Error:</Text>
+                                          <Text color="red.500">{result.error}</Text>
+                                        </>
+                                      )}
+                          </AccordionPanel>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                            ) : (
+                              <Box p={4} bg="gray.50" borderRadius="md">
+                                <Text>
+                                  {evaluationResult.execution_results.error || 
+                                   evaluationResult.execution_results.detailed_results.error_message ||
+                                   "No detailed test results available."}
+                                </Text>
+                  </Box>
+                )}
+                        </Box>
+                      )}
+                      
                 {/* Button to return to interviewer */} 
                 <Button 
                   mt={6}
@@ -924,8 +2092,92 @@ Focus on their approach, code quality, correctness, and the automated analysis.
               </VStack>
             </TabPanel>
           )}
+                
+                {/* Chat Tab */}
+                <TabPanel>
+                  <VStack spacing={4} align="stretch" h="500px">
+                    {/* Messages area */}
+                    <Box 
+                      w="100%" 
+                      flexGrow={1} 
+                      bg={messagesAreaBg}
+                      borderRadius="md"
+                      p={3}
+                      overflowY="auto"
+                      mb={4}
+                      h="400px"
+                    >
+                      {messages.length === 0 ? (
+                        <Text color="gray.500" textAlign="center" py={10}>
+                          Your conversation with the AI interviewer about the coding challenge will appear here.
+                        </Text>
+                      ) : (
+                        <VStack spacing={4} align="stretch">
+                          {messages.map((msg, idx) => (
+                            <Box 
+                              key={idx}
+                              bg={msg.role === 'user' ? userMessageBg : aiMessageBg}
+                              color={messageTextColor}
+                              p={3}
+                              borderRadius="lg"
+                              maxW="80%"
+                              alignSelf={msg.role === 'user' ? 'flex-end' : 'flex-start'}
+                              boxShadow="sm"
+                            >
+                              <Text>{msg.content}</Text>
+                              <Text fontSize="xs" color="gray.500" textAlign="right" mt={1}>
+                                {new Date(msg.timestamp).toLocaleTimeString()}
+                              </Text>
+                            </Box>
+                          ))}
+                        </VStack>
+                      )}
+                    </Box>
+                    
+                    {/* Chat input */}
+                    <VStack spacing={2} p={3} borderTop="1px" borderColor={borderColor}>
+                      <HStack w="100%">
+                        <Input
+                          placeholder="Ask for help or clarification..."
+                          value={chatMessage}
+                          onChange={(e) => setChatMessage(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleSendMessageWithAudio()}
+                          bg={inputBg}
+                          flex="1"
+                        />
+                        <IconButton
+                          colorScheme={micEnabled ? "brand" : "gray"}
+                          aria-label={micEnabled ? "Disable microphone" : "Enable microphone"}
+                          icon={micEnabled ? <Icon as={FaMicrophone} /> : <Icon as={FaMicrophoneSlash} />}
+                          onClick={toggleMicrophone}
+                          mr={2}
+                          title={micEnabled ? "Disable microphone" : "Enable microphone"}
+                        />
+                        <IconButton
+                          colorScheme="brand"
+                          aria-label="Send message"
+                          icon={<FaPaperPlane />}
+                          onClick={handleSendMessageWithAudio}
+                          isLoading={isLoadingResponse}
+                        />
+                      </HStack>
+                      
+                      {isListening && (
+                        <HStack w="100%" spacing={2} alignItems="center">
+                          <Box bg="red.400" h="8px" w="8px" borderRadius="full" 
+                               animation="pulse 1.5s infinite" />
+                          <Text fontSize="xs" color="gray.500">
+                            {interimTranscript ? 'Listening: ' + interimTranscript : 'Listening...'}
+                          </Text>
+                        </HStack>
+                      )}
+                    </VStack>
+                  </VStack>
+                </TabPanel>
         </TabPanels>
       </Tabs>
+          </Box>
+        )}
     </Box>
   );
 };

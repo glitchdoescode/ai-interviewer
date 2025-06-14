@@ -297,7 +297,7 @@ This document outlines the tasks to build the AI Interviewer Platform, following
 *   **Task P2.6.3: `GenerateDetailedReportTool`**
     *   [ ] Output structured data (JSON or PDF) including scores per dimension, AI rationale, trust score (conceptual for now), transcripts, coding logs.
 *   **Task P2.6.4: "Trust Score" Logic (Initial)**
-    *   [ ] Develop a simple heuristic or LLM-based assessment for an overall "trust score" based on consistency, clarity, and problem-solving.
+    *   [ ] Develop a simple heuristic or LLM-based assessment for an overall "trust score" based on consistency, and problem-solving.
 
 ### Iteration 7: Supervisor Agent (Quality Control - Optional, based on `gizomobot.py`)
 *   **Task P2.7.1: Design Supervisor Agent Logic**

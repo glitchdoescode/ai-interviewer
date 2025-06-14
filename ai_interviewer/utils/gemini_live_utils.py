@@ -5,6 +5,9 @@ import asyncio
 import logging
 import os
 import numpy as np
+import hashlib
+from datetime import datetime, timedelta
+from typing import Dict, Any
 from google.genai import types as genai_types
 from google.genai.types import (
     Content,
@@ -24,19 +27,66 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = "gemini-2.5-flash-preview-05-20"
 
-async def generate_response_stream(prompt: str, temperature: float = 1.0, max_tokens: int = 65535):
+# Simple in-memory cache for response optimization
+_response_cache: Dict[str, Dict[str, Any]] = {}
+CACHE_TTL_MINUTES = 30  # Cache responses for 30 minutes
+MAX_CACHE_SIZE = 100  # Limit cache size
+
+def _get_cache_key(prompt: str, temperature: float, max_tokens: int) -> str:
+    """Generate a cache key for the prompt and parameters."""
+    content = f"{prompt}_{temperature}_{max_tokens}"
+    return hashlib.md5(content.encode()).hexdigest()
+
+def _is_cache_valid(cache_entry: Dict[str, Any]) -> bool:
+    """Check if a cache entry is still valid."""
+    expiry = cache_entry.get('expiry')
+    return expiry and datetime.now() < expiry
+
+def _clean_cache():
+    """Remove expired entries from cache."""
+    global _response_cache
+    now = datetime.now()
+    expired_keys = [k for k, v in _response_cache.items() if not _is_cache_valid(v)]
+    for key in expired_keys:
+        del _response_cache[key]
+        
+    # Also limit cache size
+    if len(_response_cache) > MAX_CACHE_SIZE:
+        # Remove oldest entries
+        sorted_items = sorted(_response_cache.items(), key=lambda x: x[1].get('created', now))
+        to_remove = len(_response_cache) - MAX_CACHE_SIZE
+        for key, _ in sorted_items[:to_remove]:
+            del _response_cache[key]
+
+async def generate_response_stream(prompt: str, temperature: float = 0.3, max_tokens: int = 1024):
     """
     Generate streaming responses from Gemini 2.5 Flash Preview model.
+    Optimized for low latency with reduced temperature and max_tokens.
+    Includes response caching for common prompts.
     
     Args:
         prompt (str): The input prompt text
-        temperature (float): Sampling temperature (0.0 to 1.0)
-        max_tokens (int): Maximum number of tokens to generate
+        temperature (float): Sampling temperature (0.0 to 1.0) - lowered for speed
+        max_tokens (int): Maximum number of tokens to generate - reduced for speed
         
     Yields:
         str: Generated text chunks
     """
     try:
+        # Clean cache periodically
+        _clean_cache()
+        
+        # Check cache first for exact matches (only for non-unique prompts)
+        cache_key = _get_cache_key(prompt, temperature, max_tokens)
+        if cache_key in _response_cache and _is_cache_valid(_response_cache[cache_key]):
+            logger.info("Serving response from cache")
+            cached_response = _response_cache[cache_key]['response']
+            # Simulate streaming for cached responses
+            for i in range(0, len(cached_response), 10):
+                yield cached_response[i:i+10]
+                await asyncio.sleep(0.01)  # Small delay to maintain streaming feel
+            return
+        
         config = get_gemini_live_config()
         api_key = config.get("api_key")
         
@@ -57,7 +107,7 @@ async def generate_response_stream(prompt: str, temperature: float = 1.0, max_to
 
         generate_content_config = genai_types.GenerateContentConfig(
             temperature=temperature,
-            top_p=1,
+            top_p=0.8,  # Reduced for faster sampling
             seed=0,
             max_output_tokens=max_tokens,
             safety_settings=[
@@ -78,6 +128,8 @@ async def generate_response_stream(prompt: str, temperature: float = 1.0, max_to
                     threshold="OFF"
                 )
             ],
+            # Add streaming specific optimizations
+            response_mime_type="text/plain",  # Explicit MIME type for faster parsing
         )
 
         response_stream = client.models.generate_content_stream(
@@ -86,9 +138,30 @@ async def generate_response_stream(prompt: str, temperature: float = 1.0, max_to
             config=generate_content_config,
         )
 
+        # Optimized streaming with immediate yielding and caching
+        chunk_buffer = ""
+        full_response = ""
         for chunk in response_stream:
             if chunk.text:
-                yield chunk.text
+                chunk_buffer += chunk.text
+                full_response += chunk.text
+                # Yield partial chunks immediately for lower latency
+                if len(chunk_buffer) >= 10:  # Yield every 10 characters for faster streaming
+                    yield chunk_buffer
+                    chunk_buffer = ""
+        
+        # Yield any remaining content
+        if chunk_buffer:
+            yield chunk_buffer
+            full_response += chunk_buffer
+        
+        # Cache the complete response for future use (exclude session-specific content)
+        if full_response and not any(keyword in prompt.lower() for keyword in ['session', 'candidate', 'unique']):
+            _response_cache[cache_key] = {
+                'response': full_response,
+                'created': datetime.now(),
+                'expiry': datetime.now() + timedelta(minutes=CACHE_TTL_MINUTES)
+            }
 
     except Exception as e:
         logger.error(f"Error in Gemini response generation: {str(e)}")

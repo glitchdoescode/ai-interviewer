@@ -1,0 +1,297 @@
+/* Interview Page Styles */
+.interview-container {
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* Container Adjustments */
+.interview-container .chakra-container {
+  max-width: 100% !important;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+/* Sidebar Styles */
+.sidebar-container {
+  position: relative;
+}
+
+.sidebar {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(66, 153, 225, 0.1);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.sidebar.collapsed {
+  width: 80px !important;
+  min-width: 80px;
+}
+
+.sidebar.expanded {
+  width: 350px !important;
+  min-width: 350px;
+}
+
+.sidebar-toggle {
+  transition: all 0.2s ease-in-out;
+}
+
+.sidebar:hover .sidebar-toggle {
+  opacity: 1 !important;
+}
+
+/* Professional Content Styling */
+.sidebar .chakra-heading {
+  color: #2c5aa0;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+}
+
+.sidebar .chakra-text {
+  line-height: 1.6;
+}
+
+.sidebar .chakra-badge {
+  font-weight: 500;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+}
+
+/* Section Styling */
+.sidebar-section {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.sidebar-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+/* Professional Button Styling */
+.sidebar .chakra-button {
+  transition: all 0.2s ease-in-out;
+  font-weight: 500;
+}
+
+.sidebar .chakra-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(66, 153, 225, 0.2);
+}
+
+/* Proctoring Panel Styling */
+.proctoring-panel {
+  background: #f7fafc;
+  border-radius: 8px;
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+}
+
+.proctoring-panel video {
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Main Content Area */
+.interview-main-content {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(66, 153, 225, 0.1);
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+/* Interview Layout Grid */
+.interview-layout {
+  height: 100%;
+  width: 100%;
+}
+
+/* Interview Content Area */
+.interview-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Interview Header */
+.interview-header {
+  flex-shrink: 0;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+/* Video Call Interface Enhancements */
+.video-call-container {
+  background: #000000;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+}
+
+/* Enhanced Video Layout */
+.video-grid-container {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 1rem;
+  height: 100%;
+  width: 100%;
+}
+
+.sidebar-top {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(66, 153, 225, 0.1);
+  padding: 1rem;
+  width: 100%;
+}
+
+.candidate-video-area {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+
+.ai-video-area {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1a1a1a;
+  max-width: 350px;
+  justify-self: end;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+/* Controls Area Styling */
+.interview-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+}
+
+.controls-center {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.audio-interface-center {
+  width: 80%;
+  max-width: 700px;
+  background: #f0f9ff;
+  border: 2px solid #22c55e;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.1);
+}
+
+/* Chat Interface Enhancements */
+.chat-interface {
+  background: #ffffff;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.chat-messages {
+  padding: 1rem;
+}
+
+.chat-input-area {
+  background: #f7fafc;
+  border-top: 1px solid #e2e8f0;
+  padding: 1rem;
+}
+
+/* Professional Status Indicators */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  background: #f7fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.status-indicator.active {
+  background: #c6f6d5;
+  border-color: #9ae6b4;
+  color: #22543d;
+}
+
+.status-indicator.inactive {
+  background: #fed7d7;
+  border-color: #feb2b2;
+  color: #742a2a;
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .sidebar-container {
+    display: none !important;
+  }
+  
+  .interview-container .chakra-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Smooth Animations */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.sidebar-content {
+  animation: slideIn 0.3s ease-out;
+}
+
+.interview-main-content {
+  animation: fadeIn 0.5s ease-out;
+}
+
+/* Professional Color Scheme */
+:root {
+  --primary-blue: #2c5aa0;
+  --secondary-blue: #4299e1;
+  --accent-blue: #63b3ed;
+  --light-blue: #bee3f8;
+  --very-light-blue: #ebf8ff;
+  --success-green: #48bb78;
+  --warning-orange: #ed8936;
+  --error-red: #f56565;
+  --neutral-gray: #718096;
+  --light-gray: #e2e8f0;
+  --very-light-gray: #f7fafc;
+} 

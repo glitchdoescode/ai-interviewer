@@ -542,15 +542,27 @@ async def initiate_feedback_interaction(
         Conversational feedback menu for the candidate
     """
     try:
-        manager = FeedbackInteractionManager()
-        menu = manager.generate_feedback_menu(rubric_evaluation, explored_areas or [])
+        # Create feedback manager instance
+        feedback_manager = FeedbackInteractionManager()
         
-        logger.info(f"Initiated feedback interaction for session {session_id}")
+        # Generate initial feedback menu
+        menu = feedback_manager.generate_feedback_menu(rubric_evaluation, explored_areas)
+        
+        # Store the interaction
+        memory_manager = create_feedback_memory_manager()
+        memory_manager.store_feedback_interaction(
+            session_id=session_id,
+            interaction_data={
+                "type": "menu",
+                "content": menu,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+        
         return menu
-        
     except Exception as e:
-        logger.error(f"Error initiating feedback interaction: {e}")
-        return "I'm having trouble setting up the feedback session. Let me provide you with some general feedback about your performance."
+        logger.error(f"Error in initiate_feedback_interaction: {e}")
+        return "I apologize, but I encountered an error initiating the feedback session. Let me try a different approach to provide feedback on your code."
 
 
 @tool
@@ -575,26 +587,68 @@ async def provide_feedback_for_area(
         Detailed feedback for the specified area
     """
     try:
-        manager = FeedbackInteractionManager()
+        # First check if we have stored feedback for this area
+        if session_id:
+            memory_manager = create_feedback_memory_manager()
+            feedback_history = memory_manager.get_feedback_summary(session_id)
+            
+            # Check if this area was already explored
+            if feedback_history and "explored_areas" in feedback_history:
+                for interaction in feedback_history.get("feedback_interactions", []):
+                    if (interaction.get("type") == "area_explored" and 
+                        interaction.get("area") == area_name and 
+                        interaction.get("feedback_provided")):
+                        
+                        # Format the stored feedback for TTS
+                        stored_feedback = interaction["feedback_provided"]
+                        formatted_feedback = f"""Let me share the feedback about your {area_name.replace('_', ' ')}.
+
+{stored_feedback}
+
+Would you like me to elaborate on any specific aspect of this feedback?"""
+                        
+                        return formatted_feedback
         
-        # Convert area name to enum
-        area = None
-        for feedback_area in FeedbackArea:
-            if feedback_area.value == area_name or feedback_area.name.lower() == area_name.lower():
-                area = feedback_area
-                break
+        # If no stored feedback found, generate new feedback
+        feedback_manager = FeedbackInteractionManager()
         
-        if not area:
-            return f"I don't recognize the feedback area '{area_name}'. Please choose from available options."
+        # Get feedback for the specific area
+        feedback = feedback_manager.provide_area_feedback(
+            area=FeedbackArea[area_name.upper()],
+            rubric_evaluation=rubric_evaluation,
+            code=code,
+            problem_statement=problem_statement
+        )
         
-        feedback = manager.provide_area_feedback(area, rubric_evaluation, code, problem_statement)
+        # Format the new feedback for TTS
+        formatted_feedback = f"""I've analyzed your {area_name.replace('_', ' ')}. Here's what I found:
+
+{feedback}
+
+Would you like me to explain any part in more detail?"""
         
-        logger.info(f"Provided {area_name} feedback for session {session_id}")
-        return feedback
+        # Store the interaction if session_id provided
+        if session_id:
+            memory_manager = create_feedback_memory_manager()
+            memory_manager.store_feedback_interaction(
+                session_id=session_id,
+                interaction_data={
+                    "type": "area_feedback",
+                    "area": area_name,
+                    "content": formatted_feedback,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+            memory_manager.record_area_exploration(
+                session_id=session_id,
+                area=area_name,
+                feedback_provided=formatted_feedback
+            )
         
+        return formatted_feedback
     except Exception as e:
-        logger.error(f"Error providing feedback for area {area_name}: {e}")
-        return "I encountered an issue providing that specific feedback. Let me know what other areas you'd like to explore."
+        logger.error(f"Error in provide_feedback_for_area: {e}")
+        return f"I apologize, but I encountered an error providing feedback for {area_name}. Let me try a different approach to analyze this aspect of your code."
 
 
 @tool
@@ -617,23 +671,41 @@ async def suggest_next_feedback_area(
         Suggestion for next feedback area
     """
     try:
-        manager = FeedbackInteractionManager()
+        # Get stored feedback data if available
+        stored_explored_areas = []
+        if session_id:
+            memory_manager = create_feedback_memory_manager()
+            feedback_history = memory_manager.get_feedback_summary(session_id)
+            if feedback_history:
+                stored_explored_areas = feedback_history.get("explored_areas", [])
         
-        # Convert current area to enum
-        current_area_enum = None
-        for feedback_area in FeedbackArea:
-            if feedback_area.value == current_area:
-                current_area_enum = feedback_area
-                break
+        # Combine stored and current explored areas
+        all_explored_areas = list(set(explored_areas + stored_explored_areas))
         
-        if not current_area_enum:
-            return manager.generate_feedback_menu(rubric_evaluation, explored_areas)
+        # Create feedback manager instance
+        feedback_manager = FeedbackInteractionManager()
         
-        suggestion = manager.suggest_next_area(current_area_enum, rubric_evaluation, explored_areas)
+        # Get suggestion for next area
+        suggestion = feedback_manager.suggest_next_area(
+            current_area=FeedbackArea[current_area.upper()],
+            rubric_evaluation=rubric_evaluation,
+            explored_areas=all_explored_areas
+        )
         
-        logger.info(f"Suggested next feedback area after {current_area} for session {session_id}")
+        # Store the interaction if session_id provided
+        if session_id:
+            memory_manager = create_feedback_memory_manager()
+            memory_manager.store_feedback_interaction(
+                session_id=session_id,
+                interaction_data={
+                    "type": "area_suggestion",
+                    "current_area": current_area,
+                    "suggestion": suggestion,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+        
         return suggestion
-        
     except Exception as e:
-        logger.error(f"Error suggesting next feedback area: {e}")
-        return "What would you like to explore next? I have several more feedback areas we could discuss." 
+        logger.error(f"Error in suggest_next_feedback_area: {e}")
+        return "I apologize, but I encountered an error suggesting the next feedback area. Let's continue with your code review." 

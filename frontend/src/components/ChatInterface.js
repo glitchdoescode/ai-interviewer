@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Box,
   Flex,
@@ -28,6 +28,7 @@ import useAudioRecorder from '../hooks/useAudioRecorder';
 import { 
   startInterview, 
   continueInterview, 
+  continueInterviewStream,
   transcribeAndRespond,
   getChallengeHint
 } from '../api/interviewService';
@@ -140,6 +141,24 @@ const ChatInterface = ({ jobRoleData }) => {
     }
   }, [audioError, toast]);
 
+  // Extract session ID from URL if available
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSessionId = urlParams.get('sessionId');
+
+  // Defensive wrapper for setInterviewStage to ensure only strings are set
+  const safeSetInterviewStage = useCallback((stage) => {
+    console.log('[ChatInterface] safeSetInterviewStage called with:', stage, 'type:', typeof stage);
+    
+    if (typeof stage === 'string') {
+      setInterviewStage(stage);
+    } else if (stage !== null && stage !== undefined) {
+      console.warn('[ChatInterface] Non-string value passed to setInterviewStage:', stage, 'Converting to string');
+      setInterviewStage(String(stage));
+    } else {
+      console.warn('[ChatInterface] null/undefined value passed to setInterviewStage, ignoring');
+    }
+  }, [setInterviewStage]);
+
   // Function to handle sending a new message
   const handleSendMessage = async () => {
     // Don't send empty messages
@@ -160,61 +179,128 @@ const ChatInterface = ({ jobRoleData }) => {
       
       let response;
       
-      // If we have a session ID, continue the interview, otherwise start a new one
+      // If we have a session ID, continue the interview with streaming, otherwise start a new one
       if (sessionId) {
-        response = await continueInterview(messageInput, sessionId, userId, contextJobRoleData);
+        // Use streaming for real-time stage updates
+        let accumulatedText = '';
+        let latestMetadata = {};
+        
+        response = await continueInterviewStream(
+          messageInput, 
+          sessionId, 
+          userId, 
+          // onChunk callback - called for each chunk of response
+          (textChunk, fullText, metadata) => {
+            console.log('[ChatInterface] Streaming chunk received:', { textChunk, fullText: fullText?.length, metadata });
+            
+            accumulatedText = fullText;
+            if (metadata) {
+              latestMetadata = { ...latestMetadata, ...metadata };
+              
+              // Update stage immediately when received
+              if (metadata.stage && metadata.stage !== interviewStage) {
+                console.log('[ChatInterface] Updating interview stage from stream:', metadata.stage);
+                safeSetInterviewStage(metadata.stage);
+              }
+              
+              // Update session ID if received
+              if (metadata.sessionId && metadata.sessionId !== sessionId) {
+                console.log('[ChatInterface] Updating session ID from stream:', metadata.sessionId);
+                setSessionId(metadata.sessionId);
+              }
+              
+              // Update coding challenge if received
+              if (metadata.codingChallengeDetail) {
+                console.log('[ChatInterface] Updating coding challenge from stream:', metadata.codingChallengeDetail);
+                setCurrentCodingChallenge(metadata.codingChallengeDetail);
+              }
+            }
+          },
+          // onComplete callback - called when streaming is finished
+          (finalText, finalMetadata) => {
+            console.log('[ChatInterface] Streaming completed:', { finalText: finalText?.length, finalMetadata });
+            
+            // Add the final AI response to chat
+            addMessage({
+              role: 'assistant',
+              content: finalText,
+              audioUrl: finalMetadata?.audioUrl
+            });
+            
+            // Apply any final metadata updates
+            if (finalMetadata) {
+              if (finalMetadata.stage && finalMetadata.stage !== interviewStage) {
+                console.log('[ChatInterface] Final stage update:', finalMetadata.stage);
+                safeSetInterviewStage(finalMetadata.stage);
+              }
+              
+              if (finalMetadata.sessionId && finalMetadata.sessionId !== sessionId) {
+                console.log('[ChatInterface] Final session ID update:', finalMetadata.sessionId);
+                setSessionId(finalMetadata.sessionId);
+              }
+              
+              if (finalMetadata.codingChallengeDetail) {
+                console.log('[ChatInterface] Final coding challenge update:', finalMetadata.codingChallengeDetail);
+                setCurrentCodingChallenge(finalMetadata.codingChallengeDetail);
+              }
+            }
+            
+            setLoading(false);
+          },
+          // onError callback
+          (error) => {
+            console.error('[ChatInterface] Streaming error:', error);
+            setError(error.message || 'Failed to get response');
+            setLoading(false);
+          }
+        );
       } else {
+        // For new sessions, still use the regular API
         response = await startInterview(messageInput, userId, contextJobRoleData);
         
         // Set the session ID from the response
         if (response && response.session_id) {
           setSessionId(response.session_id);
         }
-      }
-      
-      // Add AI response to chat
-      if (response && response.response) {
-        addMessage({
-          role: 'assistant',
-          content: response.response,
-          tool_calls: response.tool_calls,
-          audioUrl: response.audio_response_url
-        });
-      }
-      
-      // Update interview stage and coding challenge if provided in the response
-      if (response && response.interview_stage) {
-        console.log('ChatInterface.js: API response received. Full response:', JSON.stringify(response, null, 2));
-        console.log('ChatInterface.js: Updating interview stage to:', response.interview_stage);
-        setInterviewStage(response.interview_stage);
         
-        // Log the details before the conditional check
-        console.log('ChatInterface.js: Raw API response.codingChallengeDetail from service:', JSON.stringify(response.codingChallengeDetail, null, 2));
-        console.log('ChatInterface.js: API response.interview_stage for challenge check:', response.interview_stage);
-
-        // Check for coding challenge data if stage is coding_challenge or coding_challenge_waiting
-        if ((response.interview_stage === 'coding_challenge' || response.interview_stage === 'coding_challenge_waiting') && response.codingChallengeDetail) {
-          console.log(`ChatInterface.js: Stage is '${response.interview_stage}' AND response.codingChallengeDetail is TRUTHY.`);
-          console.log("ChatInterface.js: Inspecting response.codingChallengeDetail before calling setCurrentCodingChallenge:", JSON.stringify(response.codingChallengeDetail, null, 2));
+        // Add AI response to chat
+        if (response && response.response) {
+          addMessage({
+            role: 'assistant',
+            content: response.response,
+            tool_calls: response.tool_calls,
+            audioUrl: response.audio_response_url
+          });
+        }
+        
+        // Update interview stage and coding challenge if provided in the response
+        if (response && response.interview_stage) {
+          console.log('ChatInterface.js: API response received. Full response:', JSON.stringify(response, null, 2));
+          console.log('ChatInterface.js: Updating interview stage to:', response.interview_stage);
+          safeSetInterviewStage(response.interview_stage);
           
-          setCurrentCodingChallenge(response.codingChallengeDetail);
-          console.log("ChatInterface.js: setCurrentCodingChallenge CALLED with:", JSON.stringify(response.codingChallengeDetail, null, 2));
-        } else {
-          console.log(`ChatInterface.js: Stage is '${response.interview_stage}' OR response.codingChallengeDetail is FALSY.`);
-          if (response.interview_stage === 'coding_challenge' || response.interview_stage === 'coding_challenge_waiting') {
-            console.warn(`ChatInterface.js: Stage IS '${response.interview_stage}', but response.codingChallengeDetail is FALSY. Value:`, response.codingChallengeDetail);
-            // If stage indicates challenge but no details, might clear existing if any, or rely on Interview.js to show loading
-            // setCurrentCodingChallenge(null); // Optionally clear if stage is challenge but no details given
+          // Log the details before the conditional check
+          console.log('ChatInterface.js: Raw API response.codingChallengeDetail from service:', JSON.stringify(response.codingChallengeDetail, null, 2));
+          console.log('ChatInterface.js: API response.interview_stage for challenge check:', response.interview_stage);
+
+          // Check for coding challenge data if stage is coding_challenge or coding_challenge_waiting
+          if ((response.interview_stage === 'coding_challenge' || response.interview_stage === 'coding_challenge_waiting') && response.codingChallengeDetail) {
+            console.log(`ChatInterface.js: Stage is '${response.interview_stage}' AND response.codingChallengeDetail is TRUTHY.`);
+            console.log("ChatInterface.js: Inspecting response.codingChallengeDetail before calling setCurrentCodingChallenge:", JSON.stringify(response.codingChallengeDetail, null, 2));
+            
+            setCurrentCodingChallenge(response.codingChallengeDetail);
+          } else if (response.interview_stage !== 'coding_challenge' && response.interview_stage !== 'coding_challenge_waiting') {
+            console.log(`ChatInterface.js: Stage is '${response.interview_stage}' which is NOT a coding stage. Clearing currentCodingChallenge.`);
+            setCurrentCodingChallenge(null);
           }
         }
+        
+        setLoading(false);
       }
       
-      // Clear any errors
-      setError(null);
-    } catch (err) {
-      console.error('Error sending message:', err);
-      setError('Failed to send message. Please try again.');
-    } finally {
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setError(error.message || 'Failed to send message');
       setLoading(false);
     }
   };
@@ -279,7 +365,7 @@ const ChatInterface = ({ jobRoleData }) => {
         // Update interview stage if provided in the response
         if (response.interview_stage) {
           console.log('Updating interview stage (voice) to:', response.interview_stage);
-          setInterviewStage(response.interview_stage);
+          safeSetInterviewStage(response.interview_stage);
 
           // Check for coding challenge data if stage is coding_challenge
           if (response.interview_stage === 'coding_challenge' && response.coding_challenge_detail) {
@@ -419,7 +505,8 @@ const ChatInterface = ({ jobRoleData }) => {
               audioUrl={msg.audioUrl || ''} 
               isHint={msg.isHint || false} 
               isLoading={msg.loading || false} 
-              toolCalls={msg.tool_calls || msg.toolCalls} 
+              toolCalls={msg.tool_calls || msg.toolCalls}
+              isFeedback={msg.isFeedback || false}
             />
           ))}
           

@@ -40,17 +40,30 @@ class SessionManager:
         self.database_name = database_name
         self.collection_name = collection_name
         
-        # Initialize MongoDB connection
-        self.client = MongoClient(connection_uri)
+        # Initialize MongoDB connection with optimized settings for low latency
+        self.client = MongoClient(
+            connection_uri,
+            maxPoolSize=50,  # Increased connection pool size
+            minPoolSize=5,   # Minimum connections to maintain
+            maxIdleTimeMS=30000,  # Close idle connections after 30s
+            serverSelectionTimeoutMS=5000,  # Faster server selection
+            connectTimeoutMS=10000,  # Faster connection timeout
+            socketTimeoutMS=20000,  # Faster socket timeout
+            w=1,  # Write concern for faster writes
+            journal=False  # Disable journal sync for faster writes
+        )
         self.db = self.client[database_name]
         self.collection = self.db[collection_name]
         
-        # Create indexes
-        self.collection.create_index([("session_id", pymongo.ASCENDING)], unique=True)
-        self.collection.create_index([("user_id", pymongo.ASCENDING)])
-        self.collection.create_index([("last_active", pymongo.DESCENDING)])
+        # Create indexes with background option for non-blocking creation
+        try:
+            self.collection.create_index([("session_id", pymongo.ASCENDING)], unique=True, background=True)
+            self.collection.create_index([("user_id", pymongo.ASCENDING)], background=True)
+            self.collection.create_index([("last_active", pymongo.DESCENDING)], background=True)
+        except Exception as e:
+            logger.warning(f"Index creation warning (may already exist): {e}")
         
-        logger.info(f"Session manager initialized with {connection_uri}")
+        logger.info(f"Session manager initialized with optimized connection pool {connection_uri}")
     
     def create_session(self, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -168,9 +181,18 @@ class SessionManager:
             True if successful, False otherwise
         """
         try:
+            # Use unset operations to remove null values and reduce document size
+            update_doc = {
+                "$set": {
+                    "metadata": metadata, 
+                    "last_active": datetime.now()
+                }
+            }
+            
             result = self.collection.update_one(
                 {"session_id": session_id},
-                {"$set": {"metadata": metadata, "last_active": datetime.now()}}
+                update_doc,
+                upsert=False
             )
             
             if result.modified_count > 0 or result.matched_count > 0:
@@ -181,6 +203,77 @@ class SessionManager:
                 return False
         except Exception as e:
             logger.error(f"Error updating session metadata: {e}")
+            return False
+    
+    def batch_update_sessions(self, updates: List[Dict[str, Any]]) -> bool:
+        """
+        Batch update multiple sessions for improved performance.
+        
+        Args:
+            updates: List of update operations, each containing session_id and metadata
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not updates:
+                return True
+                
+            operations = []
+            current_time = datetime.now()
+            
+            for update in updates:
+                operations.append(
+                    pymongo.UpdateOne(
+                        {"session_id": update["session_id"]},
+                        {
+                            "$set": {
+                                "metadata": update["metadata"],
+                                "last_active": current_time
+                            }
+                        },
+                        upsert=False
+                    )
+                )
+            
+            result = self.collection.bulk_write(operations, ordered=False)
+            logger.info(f"Batch updated {result.modified_count} sessions")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in batch update: {e}")
+            return False
+    
+    def update_session_messages(self, session_id: str, message_count: int) -> bool:
+        """
+        Lightweight update for just message count - avoids full metadata update.
+        
+        Args:
+            session_id: Session identifier
+            message_count: New message count
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            result = self.collection.update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "metadata.message_count": message_count,
+                        "last_active": datetime.now()
+                    }
+                }
+            )
+            
+            if result.modified_count > 0 or result.matched_count > 0:
+                logger.info(f"Updated messages for session {session_id}, count: {message_count}")
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for message update")
+                return False
+        except Exception as e:
+            logger.error(f"Error updating session messages: {e}")
             return False
     
     def complete_session(self, session_id: str) -> bool:
@@ -335,52 +428,6 @@ class SessionManager:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with proper cleanup."""
         self.close()
-    
-    def update_session_messages(self, session_id: str, messages: List[Any]) -> bool:
-        """
-        Update the messages for a session.
-        
-        Args:
-            session_id: Session identifier
-            messages: List of message objects to save
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Convert messages to a serializable format if needed
-            serializable_messages = []
-            for msg in messages:
-                if hasattr(msg, 'dict') and callable(getattr(msg, 'dict')):
-                    # Handle Pydantic models or objects with dict method
-                    serializable_messages.append(msg.dict())
-                elif hasattr(msg, '__dict__'):
-                    # Handle custom objects with __dict__
-                    serializable_messages.append(msg.__dict__)
-                else:
-                    # Try direct serialization
-                    serializable_messages.append(msg)
-            
-            # Update the messages in the collection
-            result = self.collection.update_one(
-                {"session_id": session_id},
-                {
-                    "$set": {
-                        "messages": serializable_messages,
-                        "last_active": datetime.now()
-                    }
-                }
-            )
-            
-            if result.modified_count > 0 or result.matched_count > 0:
-                logger.info(f"Updated messages for session {session_id}, count: {len(serializable_messages)}")
-                return True
-            else:
-                logger.warning(f"Session {session_id} not found for messages update")
-                return False
-        except Exception as e:
-            logger.error(f"Error updating session messages: {e}")
-            return False
     
     def update_conversation_summary(self, session_id: str, summary: str) -> bool:
         """

@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import docker
 from docker.errors import DockerException, ImageNotFound, ContainerError
 import asyncio
+from docker.types import Mount  # Import here to avoid global dependency if docker is unavailable at import time
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -113,38 +114,67 @@ class DockerSandbox:
         """
         # Create a temporary directory for the execution files
         temp_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="ai_interviewer_")
+        container = None
         
         try:
             # Create the runner script
             code_py_path = os.path.join(temp_dir, "code.py")
             await asyncio.to_thread(self._write_file, code_py_path, code)
+            logger.debug(f"Created code.py at {code_py_path}")
                 
             # Create the test runner script
             runner_code = self._generate_python_test_runner(test_cases, function_name)
             runner_py_path = os.path.join(temp_dir, "runner.py")
             await asyncio.to_thread(self._write_file, runner_py_path, runner_code)
+            logger.debug(f"Created runner.py at {runner_py_path}")
                 
             # Create test cases file
             test_cases_json_path = os.path.join(temp_dir, "test_cases.json")
             await asyncio.to_thread(self._write_json_file, test_cases_json_path, test_cases)
+            logger.debug(f"Created test_cases.json at {test_cases_json_path}")
+            
+            # Verify files exist and are readable
+            for file_path in [code_py_path, runner_py_path, test_cases_json_path]:
+                if not os.path.exists(file_path):
+                    logger.error(f"File {file_path} does not exist after creation")
+                    return {
+                        "status": "error",
+                        "message": f"Failed to create required file: {file_path}",
+                        "error": True
+                    }
+                try:
+                    with open(file_path, 'r') as f:
+                        f.read()
+                    logger.debug(f"Successfully verified file {file_path} is readable")
+                except Exception as e:
+                    logger.error(f"File {file_path} exists but is not readable: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"File {file_path} exists but is not readable: {e}",
+                        "error": True
+                    }
                 
             # Run the container
             container_name = f"ai-interviewer-python-{uuid.uuid4().hex[:8]}"
-            container = None
             
             try:
                 # Prepare container settings
                 container_settings = {
                     "image": "python:3.10-slim",
-                    "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
+                    "mounts": [
+                        Mount(target="/app", source=temp_dir, type="bind", read_only=False)
+                    ],
                     "working_dir": "/app",
-                    "command": ["sh", "-c", "pip install --no-cache-dir pandas numpy matplotlib scikit-learn scipy && python runner.py"],
+                    "command": ["sh", "-c", "ls -la /app && python /app/runner.py"],
                     "mem_limit": memory_limit,
-                    "cpu_quota": int(cpu_limit * 100000),  # Docker CPU quota in microseconds
+                    "cpu_quota": int(cpu_limit * 100000),
                     "network_disabled": False,
                     "name": container_name,
                     "detach": True,
+                    "user": "root",  # Run as root to ensure we have access to all files
                 }
+                
+                logger.debug(f"Starting container {container_name} with settings: {container_settings}")
                 
                 # Run the container
                 container = await asyncio.to_thread(
@@ -172,30 +202,36 @@ class DockerSandbox:
                 try:
                     logs_bytes = await asyncio.to_thread(container.logs)
                     logs = logs_bytes.decode("utf-8")
+                    logger.debug(f"Container {container_name} logs: {logs}")
                     
                     # Parse the JSON output from the runner
-                    try:
-                        # Find JSON output in logs
-                        json_start = logs.find("__RESULTS_JSON_START__")
-                        json_end = logs.find("__RESULTS_JSON_END__")
-                        
-                        if json_start >= 0 and json_end > json_start:
-                            json_data = logs[json_start + len("__RESULTS_JSON_START__"):json_end].strip()
+                    json_start = logs.find("__RESULTS_JSON_START__")
+                    json_end = logs.find("__RESULTS_JSON_END__")
+                    
+                    if json_start >= 0 and json_end > json_start:
+                        json_data = logs[json_start + len("__RESULTS_JSON_START__"):json_end].strip()
+                        try:
                             results = json.loads(json_data)
-                            results["logs"] = logs
-                            return results
-                        else:
-                            # No JSON results found, return error
-                            return {
-                                "status": "error",
-                                "message": "Failed to parse execution results from logs",
-                                "logs": logs,
-                                "error": True
-                            }
-                    except json.JSONDecodeError:
+                        except json.JSONDecodeError as primary_err:
+                            # Fallback: attempt to extract first '{' and last '}' pair to handle stray chars
+                            brace_start = json_data.find("{")
+                            brace_end = json_data.rfind("}")
+                            if brace_start != -1 and brace_end > brace_start:
+                                try:
+                                    cleaned_json = json_data[brace_start:brace_end + 1]
+                                    results = json.loads(cleaned_json)
+                                except Exception as secondary_err:
+                                    logger.error(f"Secondary JSON parse failure: {secondary_err}. Data snippet: {cleaned_json[:100]}...")
+                                    raise primary_err
+                            else:
+                                raise primary_err
+                        results["logs"] = logs
+                        return results
+                    else:
+                        # No JSON results found, return error
                         return {
                             "status": "error",
-                            "message": "Failed to parse execution results JSON from logs",
+                            "message": "Failed to parse execution results from logs",
                             "logs": logs,
                             "error": True
                         }
@@ -240,9 +276,13 @@ class DockerSandbox:
                         logger.warning(f"Error during explicit container cleanup for {container_name}: {e}")
                         
         finally:
-            # Clean up temporary directory
+            # Clean up temporary directory only after container has finished
             if os.path.exists(temp_dir):
-                 await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+                try:
+                    await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+                    logger.debug(f"Successfully cleaned up temporary directory {temp_dir}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning up temporary directory {temp_dir}: {e}")
     
     async def _execute_javascript(
         self,
@@ -332,26 +372,32 @@ class DockerSandbox:
                     logs = logs_bytes.decode("utf-8")
 
                     # Parse the JSON output from the runner
-                    try:
-                        json_start = logs.find("__RESULTS_JSON_START__")
-                        json_end = logs.find("__RESULTS_JSON_END__")
+                    json_start = logs.find("__RESULTS_JSON_START__")
+                    json_end = logs.find("__RESULTS_JSON_END__")
 
-                        if json_start >= 0 and json_end > json_start:
-                            json_data = logs[json_start + len("__RESULTS_JSON_START__"):json_end].strip()
+                    if json_start >= 0 and json_end > json_start:
+                        json_data = logs[json_start + len("__RESULTS_JSON_START__"):json_end].strip()
+                        try:
                             results = json.loads(json_data)
-                            results["logs"] = logs
-                            return results
-                        else:
-                            return {
-                                "status": "error",
-                                "message": "Failed to parse execution results from logs",
-                                "logs": logs,
-                                "error": True
-                            }
-                    except json.JSONDecodeError:
+                        except json.JSONDecodeError as primary_err:
+                            # Fallback: attempt to extract first '{' and last '}' pair to handle stray chars
+                            brace_start = json_data.find("{")
+                            brace_end = json_data.rfind("}")
+                            if brace_start != -1 and brace_end > brace_start:
+                                try:
+                                    cleaned_json = json_data[brace_start:brace_end + 1]
+                                    results = json.loads(cleaned_json)
+                                except Exception as secondary_err:
+                                    logger.error(f"Secondary JSON parse failure: {secondary_err}. Data snippet: {cleaned_json[:100]}...")
+                                    raise primary_err
+                            else:
+                                raise primary_err
+                        results["logs"] = logs
+                        return results
+                    else:
                         return {
                             "status": "error",
-                            "message": "Failed to parse execution results JSON from logs",
+                            "message": "Failed to parse execution results from logs",
                             "logs": logs,
                             "error": True
                         }
@@ -882,7 +928,7 @@ console.log("__RESULTS_JSON_END__");
                 "image": "python:3.10-slim",
                 "volumes": {temp_dir: {"bind": "/app", "mode": "rw"}},
                 "working_dir": "/app",
-                "command": ["sh", "-c", "pip install --no-cache-dir pandas numpy matplotlib scikit-learn scipy && python runner.py"],
+                "command": ["python", "runner.py"],  # Remove unnecessary package installation
                 "mem_limit": memory_limit,
                 "cpu_quota": int(cpu_limit * 100000),
                 "network_disabled": False,

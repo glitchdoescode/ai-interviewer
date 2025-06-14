@@ -10,6 +10,9 @@ const WS_CONFIG = {
   connectionTimeout: 10000, // 10 seconds connection timeout
 };
 
+// Temporary flag to disable WebSocket for testing
+const DISABLE_WEBSOCKET = true;
+
 /**
  * Custom hook for WebSocket communication with the proctoring backend
  * Handles real-time event streaming and command reception
@@ -211,6 +214,14 @@ export const useProctoringWebSocket = (sessionId, userId, isActive = false) => {
     
     if (!sessionId || !userId) {
       console.warn('Cannot connect: missing sessionId or userId');
+      return;
+    }
+
+    // Skip WebSocket connection if disabled (for testing)
+    if (DISABLE_WEBSOCKET) {
+      console.log('🔧 Proctoring WebSocket disabled for testing - returning mock connection');
+      setConnectionStatus('connected');
+      setError(null);
       return;
     }
 

@@ -1,35 +1,18 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Box,
-  Container,
-  Heading,
-  Text,
-  Button,
-  VStack,
-  Image,
-  Flex,
-  SimpleGrid,
-  Icon,
-  useColorModeValue,
-  HStack,
-  Divider,
-} from '@chakra-ui/react';
-import { FaMicrophone, FaRobot, FaCode, FaChartLine, FaUserShield } from 'react-icons/fa';
+import { FaMicrophone, FaRobot, FaCode, FaChartLine, FaUserShield, FaPlay, FaArrowRight } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import { useInterview } from '../context/InterviewContext';
 import { v4 as uuid } from 'uuid';
+import { Button, FeatureCard } from '../components/ui';
+import './Home.css';
 
 /**
- * Home page component
+ * Professional Home page component with modern UI
  */
 const Home = () => {
   const { userId, setUserId } = useInterview();
   const navigate = useNavigate();
-  const bgGradient = useColorModeValue(
-    'linear(to-b, brand.50, brand.100)',
-    'linear(to-b, brand.900, brand.800)'
-  );
 
   // Generate a user ID if not already set
   useEffect(() => {
@@ -44,169 +27,225 @@ const Home = () => {
   };
 
   return (
-    <Box minH="100vh" bgGradient={bgGradient}>
+    <div className="home-page">
       <Navbar />
       
-      <Container maxW="container.xl" py={10}>
-        {/* Hero Section */}
-        <Flex
-          direction={{ base: 'column', md: 'row' }}
-          align="center"
-          justify="space-between"
-          mb={16}
-          py={10}
-        >
-          <Box maxW={{ base: 'full', md: '50%' }} mb={{ base: 8, md: 0 }}>
-            <Heading as="h1" size="2xl" fontWeight="bold" mb={4} color="primary.500">
-              Practice Technical Interviews with AI
-            </Heading>
+      {/* Hero Section */}
+      <section className="hero-section">
+        <div className="hero-container">
+          <div className="hero-content">
+            <div className="hero-text">
+              <h1 className="hero-title">
+                Master Technical Interviews 
+                <span className="hero-title-accent"> with AI</span>
+              </h1>
+              
+              <p className="hero-description">
+                Prepare for your dream software engineering role with our AI-powered interview platform. 
+                Get personalized feedback, practice real scenarios, and build confidence for success.
+              </p>
+              
+              <div className="hero-actions">
+                <Button
+                  size="xl"
+                  icon={<FaPlay />}
+                  onClick={handleStartInterview}
+                  className="hero-primary-btn"
+                >
+                  Start Interview Practice
+                </Button>
+                
+                <Button
+                  variant="ghost"
+                  size="lg"
+                  icon={<FaArrowRight />}
+                  iconPosition="right"
+                  className="hero-secondary-btn"
+                >
+                  Learn More
+                </Button>
+              </div>
+            </div>
             
-            <Text fontSize="xl" mb={6} color="brand.700">
-              Prepare for your next software engineering interview with our AI-powered
-              interview platform. Get real-time feedback and improve your skills.
-            </Text>
-            
-            <Button
-              size="lg"
-              colorScheme="primary"
-              rightIcon={<FaMicrophone />}
-              onClick={handleStartInterview}
-            >
-              Start Interview
-            </Button>
-          </Box>
+            <div className="hero-visual">
+              <div className="hero-image-container">
+                <img
+                  src="https://images.unsplash.com/photo-1573164574572-cb89e39749b4?auto=format&fit=crop&q=80&w=800&h=600"
+                  alt="Professional conducting technical interview"
+                  className="hero-image"
+                />
+                <div className="hero-image-overlay">
+                  <div className="floating-element element-1">
+                    <FaRobot />
+                    <span>AI-Powered</span>
+                  </div>
+                  <div className="floating-element element-2">
+                    <FaCode />
+                    <span>Live Coding</span>
+                  </div>
+                  <div className="floating-element element-3">
+                    <FaChartLine />
+                    <span>Real-time Feedback</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      
+      {/* Features Section */}
+      <section className="features-section">
+        <div className="features-container">
+          <div className="features-header">
+            <h2 className="features-title">
+              Everything You Need to Succeed
+            </h2>
+            <p className="features-subtitle">
+              Comprehensive interview preparation powered by advanced AI technology
+            </p>
+          </div>
           
-          <Box maxW={{ base: 'full', md: '45%' }}>
-            <Image
-              src="https://images.unsplash.com/photo-1573164574572-cb89e39749b4?auto=format&fit=crop&q=80&w=600&h=400"
-              alt="Technical Interview Illustration"
-              borderRadius="lg"
-              shadow="xl"
-            />
-          </Box>
-        </Flex>
-        
-        {/* Features Section */}
-        <Box mb={16}>
-          <Heading as="h2" size="xl" textAlign="center" mb={10} color="primary.500">
-            Features
-          </Heading>
-          
-          <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} spacing={10}>
+          <div className="features-grid">
             <FeatureCard
-              icon={FaMicrophone}
-              title="Voice Interface"
-              description="Natural conversation with voice recognition and text-to-speech capabilities."
+              icon={<FaMicrophone />}
+              title="Natural Voice Interface"
+              description="Engage in natural conversations with advanced voice recognition and crystal-clear text-to-speech technology."
+              variant="elevated"
             />
             
             <FeatureCard
-              icon={FaRobot}
-              title="AI Interviewer"
-              description="Advanced AI that adapts to your responses and provides personalized feedback."
+              icon={<FaRobot />}
+              title="Intelligent AI Interviewer"
+              description="Experience adaptive questioning that evolves based on your responses and provides personalized coaching."
+              variant="elevated"
             />
             
             <FeatureCard
-              icon={FaCode}
-              title="Coding Challenges"
-              description="Practice real coding problems with instant evaluation and suggestions."
+              icon={<FaCode />}
+              title="Live Coding Challenges"
+              description="Solve real-world coding problems with instant feedback and optimization suggestions from our AI."
+              variant="elevated"
             />
             
             <FeatureCard
-              icon={FaChartLine}
-              title="Progress Tracking"
-              description="Track your improvement over time with detailed interview history."
+              icon={<FaChartLine />}
+              title="Progress Analytics"
+              description="Track your improvement journey with detailed performance metrics and skill development insights."
+              variant="elevated"
             />
-          </SimpleGrid>
-        </Box>
-        
-        {/* Call to Action */}
-        <Box textAlign="center" bg="primary.100" p={10} borderRadius="lg" shadow="md">
-          <Heading as="h3" size="lg" mb={4} color="primary.700">
-            Ready to ace your next interview?
-          </Heading>
-          
-          <Text fontSize="lg" mb={6} color="brand.800">
-            Start practicing now and build confidence for your technical interviews.
-          </Text>
-          
-          <Button
-            size="lg"
-            colorScheme="secondary"
-            onClick={handleStartInterview}
-          >
-            Start Practicing
-          </Button>
-        </Box>
+          </div>
+        </div>
+      </section>
 
-        {/* Development/Testing Section */}
-        <Box mt={16}>
-          <Divider mb={6} />
-          <Heading as="h3" size="md" textAlign="center" mb={6} color="gray.600">
-            Development & Testing
-          </Heading>
+      {/* How It Works Section */}
+      <section className="how-it-works-section">
+        <div className="how-it-works-container">
+          <div className="how-it-works-header">
+            <h2 className="how-it-works-title">
+              How It Works
+            </h2>
+            <p className="how-it-works-subtitle">
+              Get started in just a few simple steps
+            </p>
+          </div>
           
-          <HStack spacing={4} justify="center" wrap="wrap">
+          <div className="steps-grid">
+            <div className="step-card">
+              <div className="step-number">1</div>
+              <h3 className="step-title">Choose Your Role</h3>
+              <p className="step-description">Select your target position and experience level</p>
+            </div>
+            
+            <div className="step-card">
+              <div className="step-number">2</div>
+              <h3 className="step-title">Practice Interview</h3>
+              <p className="step-description">Engage with our AI interviewer in realistic scenarios</p>
+            </div>
+            
+            <div className="step-card">
+              <div className="step-number">3</div>
+              <h3 className="step-title">Get Feedback</h3>
+              <p className="step-description">Receive detailed analysis and improvement suggestions</p>
+            </div>
+            
+            <div className="step-card">
+              <div className="step-number">4</div>
+              <h3 className="step-title">Improve & Repeat</h3>
+              <p className="step-description">Apply feedback and continue practicing until confident</p>
+            </div>
+          </div>
+        </div>
+      </section>
+      
+      {/* Call to Action Section */}
+      <section className="cta-section">
+        <div className="cta-container">
+          <div className="cta-content">
+            <h2 className="cta-title">
+              Ready to Ace Your Next Interview?
+            </h2>
+            
+            <p className="cta-description">
+              Join thousands of developers who have improved their interview skills and landed their dream jobs.
+            </p>
+            
+            <div className="cta-actions">
+              <Button
+                size="xl"
+                onClick={handleStartInterview}
+                className="cta-primary-btn"
+              >
+                Start Practicing Now
+              </Button>
+            </div>
+            
+            <div className="cta-stats">
+              <div className="stat-item">
+                <span className="stat-number">10,000+</span>
+                <span className="stat-label">Interviews Conducted</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-number">95%</span>
+                <span className="stat-label">Success Rate</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-number">500+</span>
+                <span className="stat-label">Companies</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Development/Testing Section */}
+      <section className="dev-section">
+        <div className="dev-container">
+          <div className="dev-divider"></div>
+          <h3 className="dev-title">Development & Testing</h3>
+          
+          <div className="dev-actions">
             <Button
               variant="outline"
-              leftIcon={<FaMicrophone />}
-              onClick={() => navigate('/microphone-test')}
               size="sm"
+              icon={<FaMicrophone />}
+              onClick={() => navigate('/microphone-test')}
             >
               Microphone Test
             </Button>
             
             <Button
               variant="outline"
-              leftIcon={<FaUserShield />}
-              onClick={() => navigate('/face-auth-test')}
               size="sm"
-              colorScheme="blue"
+              icon={<FaUserShield />}
+              onClick={() => navigate('/face-auth-test')}
             >
               Face Authentication Test
             </Button>
-          </HStack>
-        </Box>
-      </Container>
-    </Box>
-  );
-};
-
-/**
- * Feature card component
- */
-const FeatureCard = ({ icon, title, description }) => {
-  return (
-    <VStack
-      p={6}
-      bg={useColorModeValue('white', 'brand.700')}
-      borderRadius="lg"
-      boxShadow="lg"
-      align="start"
-      spacing={4}
-      transition="all 0.3s ease-in-out"
-      _hover={{ transform: 'translateY(-5px)', boxShadow: 'xl' }}
-    >
-      <Flex
-        w={16}
-        h={16}
-        bg="secondary.500"
-        borderRadius="full"
-        align="center"
-        justify="center"
-        color="white"
-        mb={2}
-      >
-        <Icon as={icon} boxSize={8} />
-      </Flex>
-      
-      <Heading as="h3" size="md" color={useColorModeValue('primary.600', 'primary.200')}>
-        {title}
-      </Heading>
-      
-      <Text color={useColorModeValue('brand.700', 'brand.200')}>
-        {description}
-      </Text>
-    </VStack>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 };
 

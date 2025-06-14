@@ -40,9 +40,11 @@ const reducer = (state, action) => {
     case ACTIONS.SET_SESSION_ID:
       return { ...state, sessionId: action.payload };
     case ACTIONS.SET_MESSAGES:
-      return { ...state, messages: action.payload };
+      const messagesPayload = Array.isArray(action.payload) ? action.payload : [];
+      return { ...state, messages: messagesPayload };
     case ACTIONS.ADD_MESSAGE:
-      return { ...state, messages: [...state.messages, action.payload] };
+      const currentMessages = Array.isArray(state.messages) ? state.messages : [];
+      return { ...state, messages: [...currentMessages, action.payload] };
     case ACTIONS.SET_LOADING:
       return { ...state, loading: action.payload };
     case ACTIONS.SET_ERROR:
@@ -58,9 +60,9 @@ const reducer = (state, action) => {
     case ACTIONS.RESET:
       return {
         ...initialState,
-        userId: `user-${uuidv4()}`, // Generate fresh user ID
-        messages: [], // Reset messages
-        currentCodingChallenge: null, // Reset coding challenge on full reset
+        userId: `user-${uuidv4()}`,
+        messages: [],
+        currentCodingChallenge: null,
       };
     default:
       return state;

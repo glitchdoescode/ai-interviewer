@@ -4,6 +4,7 @@ Core AI Interviewer implementation using LangGraph.
 import logging
 import uuid
 import re # Added for stage transition logic
+import threading  # Added for thread name logging
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Union, Any, Tuple, Literal
@@ -32,7 +33,6 @@ from langgraph.graph import StateGraph, END
 from ai_interviewer.utils.config import get_llm_config
 from ai_interviewer.utils.gemini_live_utils import generate_response_stream, transcribe_audio_gemini
 from ai_interviewer.utils.constants import (
-    INTERVIEW_SYSTEM_PROMPT,
     CANDIDATE_NAME_KEY,
     SESSION_ID_KEY,
     USER_ID_KEY,
@@ -331,7 +331,7 @@ class AIInterviewer:
     def __init__(self, 
                 use_mongodb: bool = True, 
                 connection_uri: Optional[str] = None,
-                job_role: str = "Software Engineering",
+                job_role: str = "Software Engineer",
                 seniority_level: str = "Mid-level",
                 required_skills: List[str] = None,
                 job_description: str = "",
@@ -567,6 +567,9 @@ class AIInterviewer:
                             logger.info(f"[TOOLS_NODE] Processing tool_call: Name: {tc.get('name')}, Args: {tc.get('args')}, ID: {tc.get('id')}")
                     else:
                         logger.info("[TOOLS_NODE] Last AI message has no tool_calls or tool_calls list is empty.")
+                        # Log the actual content of the last AI message to debug tool call detection
+                        if messages and isinstance(messages[-1], AIMessage):
+                            logger.info(f"[TOOLS_NODE] Last AI message content (first 200 chars): {getattr(messages[-1], 'content', 'NO CONTENT')[:200]}")
 
                     # Execute tools using the ToolNode with messages
                     tool_result = await self.tool_node.ainvoke({"messages": messages}) # MODIFIED to await self.tool_node.ainvoke
@@ -1011,100 +1014,53 @@ class AIInterviewer:
         return "end"
     
     async def call_model(self, state: Union[Dict, InterviewState]) -> Union[Dict, InterviewState]:
-        """Call the LLM model to generate a response based on the current state."""
-        logger.info(f"[CORE] call_model invoked. Initial state interview_stage: {state.get('interview_stage')}, candidate_name: {state.get('candidate_name')}") # Added log
-        messages = []  # Initialize messages to an empty list for safety in except block
+        """
+        Call the AI model to generate the interviewer's response.
+        This function handles the core AI generation and tool call detection.
+        """
+        logger.info(f"[CORE] call_model invoked. Thread: {threading.current_thread().name}")
+        logger.info(f"[CORE] call_model: State keys: {list(state.keys())}")
+        
+        messages = state.get("messages", [])
+        audio_data = state.get("audio_data")  # Check if this request came from audio input
+        
+        if not messages:
+            raise ValueError("No messages in state")
+        
         try:
-            # Extract messages and context from state
-            messages = state.get("messages", [])
-            if not messages:
-                raise ValueError(ERROR_NO_MESSAGES)
-
-            # Check if the last message contains audio data
-            last_message = messages[-1] if messages else None
-            audio_data = None
-            if last_message and hasattr(last_message, 'content') and isinstance(last_message.content, dict):
-                audio_data = last_message.content.get('audio_data')
-                if audio_data:
-                    # Transcribe audio using Gemini
-                    transcription = await transcribe_audio_gemini(audio_data)
-                    if transcription:
-                        # Replace audio message with transcription
-                        messages[-1] = HumanMessage(content=transcription)
-                    else:
-                        raise ValueError("Failed to transcribe audio")
-
-            # Extract context information
-            candidate_name = state.get("candidate_name", "")
-            job_role = state.get("job_role", self.job_role)
-            seniority_level = state.get("seniority_level", self.seniority_level)
-            required_skills = state.get("required_skills", self.required_skills)
-            job_description = state.get("job_description", self.job_description)
-            interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
+            candidate_name = state.get("candidate_name", "") or self._extract_candidate_name(messages) 
+            
+            # CRITICAL FIX: Ensure job details are always correct in state
+            # Get session metadata from the session manager to ensure we have current values
             session_id = state.get("session_id", "")
+            if session_id and self.session_manager:
+                try:
+                    current_session_data = self.session_manager.get_session(session_id)
+                    if current_session_data and "metadata" in current_session_data:
+                        session_metadata = current_session_data["metadata"]
+                        # Force update state with current session metadata
+                        state["job_role"] = session_metadata.get("job_role", self.job_role)
+                        state["seniority_level"] = session_metadata.get("seniority_level", self.seniority_level)
+                        state["required_skills"] = session_metadata.get("required_skills", self.required_skills)
+                        state["job_description"] = session_metadata.get("job_description", self.job_description)
+                        state["requires_coding"] = session_metadata.get("requires_coding", True)
+                        logger.info(f"[CORE] call_model: Updated state from session metadata: job_role='{state['job_role']}', seniority_level='{state['seniority_level']}'")
+                except Exception as e:
+                    logger.warning(f"[CORE] call_model: Failed to update state from session metadata: {e}")
+            
+            # Interview context - now should be correct
+            job_role = state.get("job_role") or self.job_role
+            seniority_level = state.get("seniority_level") or self.seniority_level
+            required_skills = state.get("required_skills") or self.required_skills
+            job_description = state.get("job_description") or self.job_description
+            interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
             conversation_summary = state.get("conversation_summary", "")
             requires_coding = state.get("requires_coding", True)
 
             logger.info(f"[CORE] call_model: Formatting system prompt with job_role='{job_role}', seniority_level='{seniority_level}', system_name='{get_llm_config()['system_name']}'")
 
             # Create system prompt with context
-            system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
-                system_name=get_llm_config()["system_name"],
-                candidate_name=candidate_name or "[Not provided yet]",
-                interview_id=session_id,
-                current_stage=interview_stage,
-                job_role=job_role,
-                seniority_level=seniority_level,
-                required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
-                job_description=job_description,
-                requires_coding=requires_coding,
-                conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
-            )
-            
-            # Add extra instructions for specific stages
-            if interview_stage == InterviewStage.CODING_CHALLENGE.value:
-                # Check if the last message is a ToolMessage (output from generate_coding_challenge_from_jd)
-                last_message_is_tool_output = isinstance(messages[-1], BaseMessage) and messages[-1].type == "tool"
-                
-                if last_message_is_tool_output:
-                    system_prompt += "\n\nIMPORTANT: You are in the CODING_CHALLENGE stage. A coding challenge has just been generated for you (it's in the last ToolMessage in the history). Your task is to present this coding challenge to the candidate. Introduce it clearly, explain what is expected, and provide the problem statement and any other relevant details from the tool's output. Do NOT try to generate another challenge or call the tool again."
-                else:
-                    # This case is when AI is deciding to initiate the challenge
-                    system_prompt += "\n\nIMPORTANT: You are now in the CODING_CHALLENGE stage. You MUST use the generate_coding_challenge_from_jd tool to generate a coding challenge for the candidate. Your *entire response* must be the JSON tool call for `generate_coding_challenge_from_jd`. DO NOT create your own coding challenge description or add any conversational text."
-            elif interview_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-                system_prompt += "\n\nIMPORTANT: You are now in the TECHNICAL_QUESTIONS stage. Ask relevant technical questions based on the required skills and job description. Use the generate_interview_question tool if needed."
-            elif interview_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
-                system_prompt += "\n\nIMPORTANT: You are now in the BEHAVIORAL_QUESTIONS stage. Ask behavioral questions to assess soft skills and past experiences relevant to the role."
-            elif interview_stage == InterviewStage.FEEDBACK.value:
-                # Check if the last message implies coding feedback is due
-                last_human_or_system_message_content = ""
-                if messages:
-                    last_msg_for_feedback_check = messages[-1]
-                    if isinstance(last_msg_for_feedback_check, (HumanMessage, SystemMessage)) and hasattr(last_msg_for_feedback_check, 'content'):
-                        last_human_or_system_message_content = str(last_msg_for_feedback_check.content).lower()
-                
-                logger.info(f"[call_model] FEEDBACK stage: last_human_or_system_message_content (first 300 chars): '{last_human_or_system_message_content[:300]}...'")
-
-                feedback_keywords = [
-                    "candidate has submitted their solution", 
-                    "evaluation summary:", 
-                    "execution results:",
-                    "provide feedback to the candidate on their solution",
-                    "return to interviewer for feedback", 
-                    "structured feedback analysis:"
-                ]
-                is_coding_feedback_context = any(kw in last_human_or_system_message_content for kw in feedback_keywords)
-
-                if is_coding_feedback_context:
-                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. The candidate has just submitted a coding challenge solution, or has explicitly requested feedback on it. "
-                                      "The details of their submission (including `candidate_code`, `execution_results`, and especially the `Structured Feedback Analysis` from the evaluation tool) are in the last User/System message. "
-                                      "Your primary task is to review all these details thoroughly. "
-                                      "Provide comprehensive, constructive, and conversational feedback on their approach, the `candidate_code` (correctness, clarity, style, efficiency), and the `execution_results`. "
-                                      "Discuss any errors, strengths, and specific areas for improvement based on the `Structured Feedback Analysis` provided in the message. "
-                                      "After providing detailed feedback on the coding challenge, you can transition to behavioral questions or conclude if appropriate.")
-                else:
-                    system_prompt += ("\n\nIMPORTANT: You are now in the FEEDBACK stage. Provide general feedback on the candidate\'s performance so far, "
-                                      "or if a specific topic was just discussed, provide feedback on that.")
+            system_prompt = self._build_system_prompt(state)
             
             # Build the full prompt with system message and conversation history
             prompt_parts = [f"System: {system_prompt}"]
@@ -1139,29 +1095,33 @@ class AIInterviewer:
 
                 if json_block_match:
                     text_to_parse = json_block_match.group(1).strip()
-                    logger.debug(f"Extracted JSON block from markdown fences: '{text_to_parse[:100]}...'")
+                    logger.info(f"Extracted JSON block from markdown fences: '{text_to_parse[:100]}...'")
                 else:
                     # If no ```json ... ```, try to see if the entire response is just ``` ... ```
                     # This is less specific but a fallback.
                     generic_block_match = re.search(r"```\s*(.*?)\s*```", response_text, re.DOTALL)
                     if generic_block_match:
                         text_to_parse = generic_block_match.group(1).strip()
-                        logger.debug(f"Extracted content from generic markdown fences: '{text_to_parse[:100]}...'")
+                        logger.info(f"Extracted content from generic markdown fences: '{text_to_parse[:100]}...'")
                     else:
                         # If no fences found, assume the entire response_text might be raw JSON
                         text_to_parse = response_text.strip()
-                        logger.debug(f"No markdown fences found, attempting to parse entire response_text: '{text_to_parse[:100]}...'")
+                        logger.info(f"No markdown fences found, attempting to parse entire response_text: '{text_to_parse[:100]}...'")
                 
                 if text_to_parse: # Proceed only if we have something to parse
                     parsed_tool_call_data = json.loads(text_to_parse)
+                    logger.info(f"Successfully parsed JSON tool call data: {parsed_tool_call_data}")
                 else:
-                    logger.debug("After attempting to strip fences, no text remains to parse.")
+                    logger.info("After attempting to strip fences, no text remains to parse.")
 
                 if parsed_tool_call_data:
                     if isinstance(parsed_tool_call_data, dict) and \
                        "name" in parsed_tool_call_data and \
-                       "args" in parsed_tool_call_data and \
-                       "id" in parsed_tool_call_data:
+                       "args" in parsed_tool_call_data:
+                        # Auto-generate ID if missing
+                        if "id" not in parsed_tool_call_data:
+                            parsed_tool_call_data["id"] = f"tool_{uuid.uuid4().hex[:8]}"
+                            logger.info(f"Auto-generated ID for tool call: {parsed_tool_call_data['id']}")
                         logger.info(f"Detected single tool call JSON: {parsed_tool_call_data.get('name')}")
                         ai_message.tool_calls = [parsed_tool_call_data]
                     elif isinstance(parsed_tool_call_data, list):
@@ -1170,8 +1130,11 @@ class AIInterviewer:
                         for item in parsed_tool_call_data:
                             if isinstance(item, dict) and \
                                "name" in item and \
-                               "args" in item and \
-                               "id" in item:
+                               "args" in item:
+                                # Auto-generate ID if missing
+                                if "id" not in item:
+                                    item["id"] = f"tool_{uuid.uuid4().hex[:8]}"
+                                    logger.info(f"Auto-generated ID for tool call: {item['id']}")
                                 processed_tool_calls.append(item)
                             else:
                                 all_are_valid_tool_calls = False
@@ -1180,11 +1143,51 @@ class AIInterviewer:
                             logger.info(f"Detected list of tool call JSONs. Count: {len(processed_tool_calls)}")
                             ai_message.tool_calls = processed_tool_calls
                         else:
-                            logger.debug(f"Parsed JSON list did not conform to tool call structure. Data: {parsed_tool_call_data}")
+                            logger.info(f"Parsed JSON list did not conform to tool call structure. Data: {parsed_tool_call_data}")
                     else:
-                        logger.debug(f"Parsed JSON did not conform to expected tool call structure. Data: {parsed_tool_call_data}")
+                        logger.info(f"Parsed JSON did not conform to expected tool call structure. Data: {parsed_tool_call_data}")
             except (json.JSONDecodeError, TypeError) as e:
-                logger.debug(f"AI message content not a direct JSON tool call (or parsing error: {e}). Content: '{response_text[:100]}...'")
+                logger.info(f"AI message content not a direct JSON tool call (or parsing error: {e}). Content: '{response_text[:100]}...'")
+                
+                # Try to handle potentially incomplete JSON tool calls
+                if "generate_coding_challenge_from_jd" in response_text and "{" in response_text:
+                    logger.info("Attempting to handle potentially incomplete tool call JSON")
+                    try:
+                        # Try to extract a partial tool call and complete it
+                        if '"name": "generate_coding_challenge_from_jd"' in response_text:
+                            # Extract the job description and other args that might be present
+                            job_desc_match = re.search(r'"job_description":\s*"([^"]*)"', response_text)
+                            
+                            if job_desc_match:
+                                job_desc = job_desc_match.group(1)
+                                
+                                # Get current state info for missing args
+                                current_skills = state.get("required_skills", self.required_skills)
+                                current_seniority = state.get("seniority_level", self.seniority_level)
+                                
+                                difficulty = "intermediate"
+                                if current_seniority and current_seniority.lower() == "junior":
+                                    difficulty = "beginner"
+                                elif current_seniority and current_seniority.lower() in ["senior", "lead", "principal"]:
+                                    difficulty = "advanced"
+                                
+                                # Create a complete tool call
+                                complete_tool_call = {
+                                    "name": "generate_coding_challenge_from_jd",
+                                    "args": {
+                                        "job_description": job_desc,
+                                        "skills_required": current_skills if isinstance(current_skills, list) else [current_skills] if current_skills else ["Programming"],
+                                        "difficulty_level": difficulty
+                                    },
+                                    "id": f"tool_{uuid.uuid4().hex[:8]}"
+                                }
+                                
+                                ai_message.tool_calls = [complete_tool_call]
+                                logger.info(f"Successfully reconstructed incomplete tool call for generate_coding_challenge_from_jd")
+                            
+                    except Exception as reconstruction_error:
+                        logger.warning(f"Failed to reconstruct incomplete tool call: {reconstruction_error}")
+                
                 # ai_message.tool_calls will remain empty or its default value (None or empty list)
             
             logger.info(f"[call_model] After JSON parsing, ai_message.tool_calls: {ai_message.tool_calls}")
@@ -1367,7 +1370,7 @@ class AIInterviewer:
     async def run_interview(self, user_id: str, user_message: str, session_id: Optional[str] = None, 
                            job_role: Optional[str] = None, seniority_level: Optional[str] = None, 
                            required_skills: Optional[List[str]] = None, job_description: Optional[str] = None,
-                           requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Tuple[str, str]:
+                           requires_coding: Optional[bool] = None, handle_digression: bool = True) -> Dict[str, Any]:
         """
         Run an interview session with the given user message.
         
@@ -1383,7 +1386,7 @@ class AIInterviewer:
             handle_digression: Whether to handle topic digressions
             
         Returns:
-            Tuple of (AI response, session ID)
+            Dictionary containing AI response, session ID, interview stage, and other metadata
         """
         logger.info(f"[CORE] run_interview called. user_id: {user_id}, session_id: {session_id}")
         logger.info(f"[CORE] run_interview initial params: job_role='{job_role}', seniority_level='{seniority_level}', requires_coding='{requires_coding}'")
@@ -2167,6 +2170,7 @@ class AIInterviewer:
     def _is_introduction_complete(self, human_messages: List[BaseMessage]) -> bool:
         """
         Determine if the introduction phase is complete based on message content.
+        More natural approach - responds to candidate's readiness and conversation flow.
         
         Args:
             human_messages: List of human messages in the conversation
@@ -2175,29 +2179,42 @@ class AIInterviewer:
             Boolean indicating if introduction is complete
         """
         logger.info(f"[_is_introduction_complete] Checking. Number of human messages: {len(human_messages)}")
-        # If we have less than 2 exchanges, introduction is not complete
+        
+        # Require at least 2 meaningful exchanges (not 4)
         if len(human_messages) < 2:
-            logger.info("[_is_introduction_complete] Returning False (less than 2 human messages)")
+            logger.info(f"[_is_introduction_complete] Returning False (less than 2 human messages)")
             return False
         
-        # Check if candidate has shared their name, background, or experience
-        introduction_markers = [
-            "experience with", "background in", "worked with", "my name is",
-            "years of experience", "worked as", "skills in", "specialized in",
-            "i am a", "i'm a", "i am", "i'm", "currently working", "previously worked",
-            "my background is", "i focus on", "my expertise is", "i have experience",
-            "role at", "position as", "studied at", "degree in", "graduated with"
+        # Combine all human message content to analyze conversation flow
+        combined_content = ' '.join([msg.content.lower() for msg in human_messages if hasattr(msg, 'content')])
+        logger.info(f"[_is_introduction_complete] Combined human content: '{combined_content[:200]}...'")
+        
+        # Check for explicit readiness signals (user explicitly asks to move forward)
+        explicit_signals = [
+            "ready for technical", "move to technical", "start technical", 
+            "begin technical", "technical questions", "technical round",
+            "let's begin", "let's start", "ready to start", "ready to begin",
+            "can we start", "can we begin", "proceed", "continue", "next stage"
         ]
+        has_explicit_signals = any(signal in combined_content for signal in explicit_signals)
+        logger.info(f"[_is_introduction_complete] Has explicit readiness signals: {has_explicit_signals}")
         
-        # Combine all human messages and check for introduction markers
-        all_content = " ".join([m.content.lower() for m in human_messages if hasattr(m, 'content')])
-        logger.info(f"[_is_introduction_complete] Combined human content: '{all_content[:200]}...'") # Log first 200 chars
+        # Check for natural introduction completion (name + basic background)
+        has_name = any(phrase in combined_content for phrase in ["my name is", "i'm ", "i am ", "call me"])
+        has_background = any(phrase in combined_content for phrase in [
+            "experience", "background", "work", "worked", "developer", "engineer", 
+            "scientist", "analyst", "years", "role", "position", "company", "project"
+        ])
         
-        has_introduction_info = any(marker in all_content for marker in introduction_markers)
-        logger.info(f"[_is_introduction_complete] Has introduction markers: {has_introduction_info}")
+        # More natural completion criteria
+        natural_completion = (
+            len(human_messages) >= 3 and  # At least 3 exchanges
+            has_name and has_background    # Basic intro elements present
+        )
         
-        logger.info(f"[_is_introduction_complete] Returning: {has_introduction_info}")
-        return has_introduction_info
+        logger.info(f"[_is_introduction_complete] Returning: {explicit_signals or natural_completion} (explicit: {has_explicit_signals}, natural: {natural_completion})")
+        
+        return has_explicit_signals or natural_completion
     
     def _count_substantive_exchanges(self, messages: List[BaseMessage]) -> int:
         """
@@ -2416,7 +2433,8 @@ class AIInterviewer:
                 return InterviewStage.TECHNICAL_QUESTIONS.value
         
         elif current_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
-            # Check if we should transition to coding challenge based on AI suggestion
+            # CONSERVATIVE: Only transition to coding challenge if AI uses the tool to generate one
+            # Remove automatic transitions based on keywords or message count
             if has_coding_trigger:
                 # Get state information to check if job role requires coding
                 job_role_from_state = None
@@ -2454,19 +2472,16 @@ class AIInterviewer:
                     job_role_requires_coding = any(role in job_role_lower for role in coding_required_roles)
                 
                 if job_role_requires_coding:
-                    logger.info(f"Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage for job role: {job_role_from_state if job_role_from_state else '[Undetermined]'}")
+                    logger.info(f"AI initiated coding challenge. Transitioning from TECHNICAL_QUESTIONS to CODING_CHALLENGE stage for job role: {job_role_from_state if job_role_from_state else '[Undetermined]'}")
                     return InterviewStage.CODING_CHALLENGE.value
                 else:
                     logger.info(f"Skipping coding challenge for job role: {job_role_from_state if job_role_from_state else '[Undetermined]'} (coding not required)")
             
-            # If we've had enough substantive technical exchanges, move to behavioral questions
-            # Use a combination of count and content analysis
-            if human_message_count >= 5 and not has_coding_trigger:
-                # Check if we've asked enough substantive technical questions
-                substantive_qa = self._count_substantive_exchanges(messages)
-                if substantive_qa >= 3: # Restored to >= 3
-                    logger.info("Transitioning from TECHNICAL_QUESTIONS to BEHAVIORAL_QUESTIONS stage after substantive technical discussion")
-                    return InterviewStage.BEHAVIORAL_QUESTIONS.value
+            # REMOVED: Automatic transition to behavioral questions based on message count
+            # Let the AI naturally guide the conversation through its system prompt
+            # The AI should ask the user if they're ready to move to the next section
+            logger.info(f"Staying in TECHNICAL_QUESTIONS stage. AI should guide conversation naturally.")
+            return current_stage
         
         elif current_stage == InterviewStage.CODING_CHALLENGE.value:
             # If the AI's current message is *not* a tool call (i.e., it's presenting the challenge),
@@ -2658,3 +2673,132 @@ class AIInterviewer:
             # Ensure each tool call has an ID
             if "id" not in tool_call:
                 tool_call["id"] = f"tool_{uuid.uuid4().hex[:8]}"
+
+    def _build_system_prompt(self, state: Union[Dict, InterviewState]) -> str:
+        """
+        Build the system prompt for the AI model based on the current interview state.
+        
+        Args:
+            state: The current interview state containing context information
+            
+        Returns:
+            str: The formatted system prompt with all necessary context
+        """
+        # Extract context from state - prioritize state values over instance defaults
+        candidate_name = state.get("candidate_name", "") or self._extract_candidate_name(state.get("messages", []))
+        
+        # CRITICAL FIX: Always use state values first, with safe fallbacks
+        job_role = state.get("job_role") or self.job_role
+        seniority_level = state.get("seniority_level") or self.seniority_level
+        required_skills = state.get("required_skills") or self.required_skills
+        job_description = state.get("job_description") or self.job_description
+        
+        interview_stage = state.get("interview_stage", InterviewStage.INTRODUCTION.value)
+        session_id = state.get("session_id", "")
+        conversation_summary = state.get("conversation_summary", "")
+        requires_coding = state.get("requires_coding", True)
+        messages = state.get("messages", [])
+
+        # Create base system prompt
+        system_prompt = INTERVIEW_SYSTEM_PROMPT.format(
+            system_name=get_llm_config()["system_name"],
+            candidate_name=candidate_name or "[Not provided yet]",
+            interview_id=session_id,
+            current_stage=interview_stage,
+            job_role=job_role,
+            seniority_level=seniority_level,
+            required_skills=", ".join(required_skills) if isinstance(required_skills, list) else str(required_skills),
+            job_description=job_description,
+            requires_coding=requires_coding,
+            conversation_summary=conversation_summary if conversation_summary else "No summary available yet."
+        )
+        
+        # Add stage-specific instructions
+        if interview_stage == InterviewStage.CODING_CHALLENGE.value:
+            # Check if the last message is a ToolMessage (output from generate_coding_challenge_from_jd)
+            last_message_is_tool_output = isinstance(messages[-1], BaseMessage) and messages[-1].type == "tool"
+            
+            if last_message_is_tool_output:
+                system_prompt += "\n\nIMPORTANT: You are in the CODING_CHALLENGE stage. A coding challenge has just been generated for you. Present this coding challenge to the candidate naturally. Introduce it clearly, explain what is expected, and provide the problem statement and relevant details. Speak conversationally - do NOT mention any tool names or technical implementation details."
+            else:
+                # This case is when AI is deciding to initiate the challenge
+                system_prompt += f"\n\nCRITICAL INSTRUCTION: You are now in the CODING_CHALLENGE stage. You MUST immediately call the generate_coding_challenge_from_jd tool to create a coding challenge. Your response should be ONLY a JSON object in this exact format:\n{{\n  \"name\": \"generate_coding_challenge_from_jd\",\n  \"args\": {{\n    \"job_description\": \"{job_description}\",\n    \"skills_required\": {required_skills if isinstance(required_skills, list) else [required_skills] if required_skills else ['Programming']},\n    \"difficulty_level\": \"{'advanced' if seniority_level and seniority_level.lower() in ['senior', 'lead', 'principal'] else 'beginner' if seniority_level and seniority_level.lower() == 'junior' else 'intermediate'}\"\n  }},\n  \"id\": \"challenge_gen_001\"\n}}\nProvide ONLY this JSON - no other text, explanation, or formatting."
+        
+        # CRITICAL FIX: Detect coding challenge requests in user message regardless of current stage
+        user_requesting_coding_challenge = False
+        if messages:
+            last_human_message = None
+            for msg in reversed(messages):
+                if isinstance(msg, HumanMessage):
+                    last_human_message = msg.content.lower()
+                    break
+            
+            if last_human_message:
+                coding_challenge_keywords = [
+                    "coding challenge", "coding ground", "code challenge", "programming challenge",
+                    "move to coding", "let's code", "coding section", "coding part",
+                    "start coding", "coding task", "programming task", "code problem"
+                ]
+                user_requesting_coding_challenge = any(keyword in last_human_message for keyword in coding_challenge_keywords)
+        
+        if user_requesting_coding_challenge and interview_stage != InterviewStage.CODING_CHALLENGE.value:
+            # User is requesting coding challenge but we're not in that stage yet
+            system_prompt += f"\n\nURGENT: The user has requested a coding challenge! You MUST immediately call the generate_coding_challenge_from_jd tool. Respond with ONLY this JSON object:\n{{\n  \"name\": \"generate_coding_challenge_from_jd\",\n  \"args\": {{\n    \"job_description\": \"{job_description}\",\n    \"skills_required\": {required_skills if isinstance(required_skills, list) else [required_skills] if required_skills else ['Programming']},\n    \"difficulty_level\": \"{'advanced' if seniority_level and seniority_level.lower() in ['senior', 'lead', 'principal'] else 'beginner' if seniority_level and seniority_level.lower() == 'junior' else 'intermediate'}\"\n  }},\n  \"id\": \"coding_challenge_request_001\"\n}}\nDo NOT provide any other text, conversation, or explanation. ONLY the JSON."
+        
+        elif interview_stage == InterviewStage.TECHNICAL_QUESTIONS.value:
+            system_prompt += "\n\nIMPORTANT: You are now in the TECHNICAL_QUESTIONS stage. Ask relevant technical questions based on the required skills and job description. Use tools if needed to enhance your questions, but speak naturally and conversationally. Do NOT mention any tool names or technical details to the candidate."
+        elif interview_stage == InterviewStage.BEHAVIORAL_QUESTIONS.value:
+            system_prompt += "\n\nIMPORTANT: You are now in the BEHAVIORAL_QUESTIONS stage. Ask behavioral questions to assess soft skills and past experiences relevant to the role. Focus on natural conversation flow."
+        elif interview_stage == InterviewStage.FEEDBACK.value:
+            # Check if we have stored feedback data
+            session_id = state.get("session_id") if isinstance(state, dict) else state.session_id
+            from ai_interviewer.utils.feedback_memory import create_feedback_memory_manager
+            feedback_memory = create_feedback_memory_manager()
+            
+            # Get stored feedback data
+            rubric_evaluation = feedback_memory.get_rubric_evaluation(session_id)
+            feedback_summary = feedback_memory.get_feedback_summary(session_id)
+            explored_areas = feedback_memory.get_explored_areas(session_id)
+            
+            # If we have stored feedback, create a structured prompt
+            if rubric_evaluation or feedback_summary:
+                feedback_prompt = "Based on the stored feedback data:\n\n"
+                
+                if rubric_evaluation:
+                    feedback_prompt += f"Overall Score: {rubric_evaluation.get('total_score', 0)}/4.0\n"
+                    feedback_prompt += "Areas Evaluated:\n"
+                    for area, data in rubric_evaluation.get('rubric_scores', {}).items():
+                        feedback_prompt += f"- {area}: {data.get('score', 0)}/4 ({data.get('score_level', 'N/A')})\n"
+                        feedback_prompt += f"  {data.get('rationale', '')}\n"
+                
+                if explored_areas:
+                    feedback_prompt += "\nAreas Already Discussed:\n"
+                    for area in explored_areas:
+                        feedback_prompt += f"- {area}\n"
+                
+                # Add the feedback prompt to the messages
+                messages.append(SystemMessage(content=feedback_prompt))
+                
+                # Add instruction for natural conversation
+                messages.append(SystemMessage(content="""
+                CRITICAL INSTRUCTIONS FOR FEEDBACK DELIVERY:
+                1. Speak naturally and conversationally
+                2. Focus on one area at a time
+                3. Be specific with examples
+                4. Maintain a constructive tone
+                5. Format the response for text-to-speech
+                """))
+                
+                # Set flag for audio synthesis
+                should_synthesize_speech = True
+            
+            # If no stored feedback, proceed with normal feedback interaction
+            else:
+                messages.append(SystemMessage(content="""
+                INSTRUCTIONS FOR FEEDBACK STAGE:
+                1. Explain that we need to gather feedback first
+                2. Ask which area they would like to explore
+                3. Use the feedback interaction tools to structure the conversation
+                """))
+        
+        return system_prompt

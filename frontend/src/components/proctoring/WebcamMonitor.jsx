@@ -72,24 +72,65 @@ const WebcamMonitor = ({
   // Effect to manage the stream on the external video ref
   useEffect(() => {
     console.log('[WebcamMonitor] External video ref effect triggered. Stream available:', !!stream, 'Camera isActive:', cameraIsActive, 'externalVideoRef.current available:', !!externalVideoRef?.current);
+    
     if (externalVideoRef && externalVideoRef.current) {
+      const videoElement = externalVideoRef.current;
+      
       if (stream && cameraIsActive) {
-        if (externalVideoRef.current.srcObject !== stream) {
+        // Only update stream if it's actually different to prevent interruptions
+        if (videoElement.srcObject !== stream) {
           console.log('[WebcamMonitor] Attaching stream to externalVideoRef.current');
-          externalVideoRef.current.srcObject = stream;
-          externalVideoRef.current.playsInline = true; 
-          externalVideoRef.current.autoplay = true; 
-          externalVideoRef.current.muted = true; 
-          externalVideoRef.current.play().then(() => {
-            console.log('[WebcamMonitor] externalVideoRef.current.play() successful');
-          }).catch(e => console.warn("[WebcamMonitor] Error playing external video ref:", e));
+          
+          // Store current time and paused state if video was playing
+          const wasPlaying = !videoElement.paused;
+          
+          // Set new stream
+          videoElement.srcObject = stream;
+          videoElement.playsInline = true; 
+          videoElement.autoplay = true; 
+          videoElement.muted = true;
+          
+          // Handle play with proper error handling and timing
+          const playVideo = async () => {
+            try {
+              // Small delay to ensure stream is ready
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              if (videoElement.srcObject === stream && cameraIsActive) {
+                await videoElement.play();
+                console.log('[WebcamMonitor] externalVideoRef.current.play() successful');
+              }
+            } catch (e) {
+              // Only log as warning if the error isn't due to rapid stream changes
+              if (e.name !== 'AbortError' || videoElement.srcObject === stream) {
+                console.warn("[WebcamMonitor] Error playing external video ref:", e);
+              }
+            }
+          };
+          
+          // Use loadedmetadata event for more reliable playback
+          const handleLoadedMetadata = () => {
+            playVideo();
+            videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
+          };
+          
+          if (videoElement.readyState >= 1) {
+            // Metadata already loaded
+            playVideo();
+          } else {
+            // Wait for metadata to load
+            videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+          }
         } else {
           console.log('[WebcamMonitor] Stream already attached to externalVideoRef or no change needed.');
         }
       } else {
-        console.log('[WebcamMonitor] Stream not available or camera not active for externalVideoRef. Not attaching/clearing stream.');
-        // Consider if srcObject should be cleared here if we are solely responsible for it.
-        // externalVideoRef.current.srcObject = null; // Example if needed
+        console.log('[WebcamMonitor] Stream not available or camera not active for externalVideoRef. Clearing stream if present.');
+        
+        // Only clear if there's actually a stream attached
+        if (videoElement.srcObject) {
+          videoElement.srcObject = null;
+        }
       }
     } else {
       console.log('[WebcamMonitor] externalVideoRef or externalVideoRef.current is not available.');
