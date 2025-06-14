@@ -9,6 +9,7 @@ import asyncio
 import logging
 import json
 import base64
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException, Depends
@@ -53,9 +54,9 @@ class GeminiLiveConnectionManager:
                 
                 # Get session metadata for context
                 session_manager = SessionManager(
-                    connection_uri="mongodb+srv://glitch:dattebayo@testcluster1.lccmg.mongodb.net/coordino?retryWrites=true&w=majority&appName=TestCluster1",
-                    database_name="coordino",
-                    collection_name="interview_metadata"
+                    connection_uri=os.getenv("MONGODB_URI"),
+                    database_name=os.getenv("MONGODB_DATABASE"),
+                    collection_name=os.getenv("MONGODB_METADATA_COLLECTION")
                 )
                 
                 session_data = session_manager.get_session(session_id)

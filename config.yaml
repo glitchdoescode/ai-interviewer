@@ -1,9 +1,9 @@
 database:
   provider: "mongodb"
-  uri: "mongodb+srv://glitch:dattebayo@testcluster1.lccmg.mongodb.net/coordino?retryWrites=true&w=majority&appName=TestCluster1"
-  database: "ai_interviewer"
-  sessions_collection: "interview_sessions"
-  metadata_collection: "interview_metadata"
+  uri: "${MONGODB_URI}"
+  database: "${MONGODB_DATABASE}"
+  sessions_collection: "${MONGODB_SESSIONS_COLLECTION}"
+  metadata_collection: "${MONGODB_METADATA_COLLECTION}"
   store_collection: "interview_memory_store"
   users_collection: "users"
   password_reset_tokens_collection: "password_reset_tokens"
